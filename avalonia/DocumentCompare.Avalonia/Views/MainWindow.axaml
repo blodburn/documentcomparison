@@ -1,0 +1,129 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="DocumentCompare.Avalonia.Views.MainWindow"
+        Width="1700" Height="980" MinWidth="1050" MinHeight="680"
+        Icon="/Assets/DocumentCompare.ico"
+        Title="문서 비교기 V5.19.4">
+  <Grid RowDefinitions="Auto,Auto,Auto,Auto,*" Margin="10">
+    <Menu Grid.Row="0" Margin="-4,-4,-4,6">
+      <MenuItem x:Name="HelpMenuItem" Header="도움말">
+        <MenuItem x:Name="QuickGuideMenuItem" Header="간단 사용설명서" Click="QuickGuide_Click"/>
+      </MenuItem>
+      <MenuItem x:Name="LanguageMenuItem" Header="언어">
+        <MenuItem x:Name="KoreanLanguageMenuItem" Header="✓ 한국어 (KR)" Click="KoreanLanguage_Click"/>
+        <MenuItem x:Name="EnglishLanguageMenuItem" Header="English (EN)" Click="EnglishLanguage_Click"/>
+      </MenuItem>
+    </Menu>
+
+    <StackPanel Grid.Row="1" Margin="4,0,4,8">
+      <TextBlock x:Name="AppTitleText" Text="문서 비교기" FontSize="22" FontWeight="Bold"/>
+    </StackPanel>
+
+    <Grid Grid.Row="2" ColumnDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,220,*" Margin="0,0,0,8">
+      <Button x:Name="CompareButton" Grid.Column="0" Content="비교 시작" MinWidth="100"
+              HorizontalContentAlignment="Center" Click="Compare_Click"/>
+      <Button x:Name="CancelButton" Grid.Column="1" Content="취소" Margin="6,0,0,0"
+              IsEnabled="False" Click="Cancel_Click"/>
+      <Button x:Name="ExcelButton" Grid.Column="2" Content="Excel 내보내기" Margin="6,0,0,0"
+              IsEnabled="False" Click="Excel_Click"/>
+      <Button x:Name="WordButton" Grid.Column="3" Content="Word 변경추적" Margin="6,0,0,0"
+              IsEnabled="False" Click="Word_Click"/>
+      <TextBlock x:Name="ModeLabel" Grid.Column="4" Text="비교 방식:" VerticalAlignment="Center" Margin="14,0,4,0"/>
+      <ComboBox x:Name="ModeBox" Grid.Column="5" Width="120" SelectedIndex="0">
+        <ComboBoxItem x:Name="ModeAutoItem" Content="자동"/>
+        <ComboBoxItem x:Name="ModeGeneralItem" Content="일반 문서"/>
+        <ComboBoxItem x:Name="ModeLegalItem" Content="법률·규정"/>
+      </ComboBox>
+      <CheckBox x:Name="CompareACBox" Grid.Column="6" Content="A↔C 추가 비교" Margin="12,0,0,0"
+                VerticalAlignment="Center" IsEnabled="False"/>
+      <CheckBox x:Name="PunctuationBox" Grid.Column="7" Content="특수문자 포함" Margin="12,0,0,0"
+                VerticalAlignment="Center" IsChecked="True"/>
+      <TextBlock x:Name="SearchLabel" Grid.Column="8" Text="검색:" VerticalAlignment="Center" Margin="14,0,4,0"/>
+      <TextBox x:Name="SearchBox" Grid.Column="9" Watermark="본문/변경사항 검색" TextChanged="SearchBox_TextChanged"/>
+      <TextBlock x:Name="StatusText" Grid.Column="10" Margin="14,0,0,0" VerticalAlignment="Center"
+                 TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" Text="준비됨"/>
+    </Grid>
+
+    <ProgressBar x:Name="CompareProgress" Grid.Row="3" Height="7" Minimum="0" Maximum="100" Value="0"
+                 IsVisible="False" Margin="0,0,0,6"/>
+
+    <!-- The comparison header itself is the file-input UI.  Drop a file onto A/B/C or click
+         anywhere in the header cell up to the baseline radio-button area. -->
+    <Grid x:Name="ResultArea" Grid.Row="4" RowDefinitions="Auto,*" ClipToBounds="True">
+      <!-- Header uses the exact same 3*:1* nesting as the body.  This avoids the 1px
+           star-rounding drift that previously made the header dividers miss the body lines. -->
+      <Grid x:Name="ComparisonHeader" Grid.Row="0" Height="48" ColumnDefinitions="3*,*" Background="#EEF2F6">
+        <Grid Grid.Column="0" ColumnDefinitions="*,*,*">
+          <Border Grid.Column="0" BorderBrush="#8E99A8" BorderThickness="1,1,1,1">
+            <Grid ColumnDefinitions="*,Auto">
+              <Border x:Name="DropA" Grid.Column="0" Background="Transparent" DragDrop.AllowDrop="True"
+                      HorizontalAlignment="Stretch" VerticalAlignment="Stretch">
+                <Button x:Name="ChooseAButton" Background="Transparent" BorderThickness="0" Padding="8,4"
+                        HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                        HorizontalContentAlignment="Left" VerticalContentAlignment="Center" Click="ChooseA_Click">
+                  <TextBlock x:Name="HeaderAText" Text="A · 파일 선택 또는 드롭" FontWeight="SemiBold"
+                             TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                </Button>
+              </Border>
+              <RadioButton x:Name="BaseA" Grid.Column="1" GroupName="baseDoc" Content="기준" IsChecked="True"
+                           Margin="6,0,8,0" VerticalAlignment="Center"/>
+            </Grid>
+          </Border>
+
+          <Border Grid.Column="1" BorderBrush="#8E99A8" BorderThickness="0,1,1,1">
+            <Grid ColumnDefinitions="*,Auto">
+              <Border x:Name="DropB" Grid.Column="0" Background="Transparent" DragDrop.AllowDrop="True"
+                      HorizontalAlignment="Stretch" VerticalAlignment="Stretch">
+                <Button x:Name="ChooseBButton" Background="Transparent" BorderThickness="0" Padding="8,4"
+                        HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                        HorizontalContentAlignment="Left" VerticalContentAlignment="Center" Click="ChooseB_Click">
+                  <TextBlock x:Name="HeaderBText" Text="B · 파일 선택 또는 드롭" FontWeight="SemiBold"
+                             TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                </Button>
+              </Border>
+              <RadioButton x:Name="BaseB" Grid.Column="1" GroupName="baseDoc" Content="기준"
+                           Margin="6,0,8,0" VerticalAlignment="Center"/>
+            </Grid>
+          </Border>
+
+          <Border Grid.Column="2" BorderBrush="#8E99A8" BorderThickness="0,1,1,1">
+            <Grid ColumnDefinitions="*,Auto">
+              <Border x:Name="DropC" Grid.Column="0" Background="Transparent" DragDrop.AllowDrop="True"
+                      HorizontalAlignment="Stretch" VerticalAlignment="Stretch">
+                <Button x:Name="ChooseCButton" Background="Transparent" BorderThickness="0" Padding="8,4"
+                        HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                        HorizontalContentAlignment="Left" VerticalContentAlignment="Center" Click="ChooseC_Click">
+                  <TextBlock x:Name="HeaderCText" Text="C · 파일 선택 또는 드롭 (선택)" FontWeight="SemiBold"
+                             TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                </Button>
+              </Border>
+              <RadioButton x:Name="BaseC" Grid.Column="1" GroupName="baseDoc" Content="기준"
+                           Margin="6,0,8,0" VerticalAlignment="Center"/>
+            </Grid>
+          </Border>
+        </Grid>
+
+        <Border Grid.Column="1" BorderBrush="#8E99A8" BorderThickness="0,1,1,1">
+          <TextBlock x:Name="ChangeHeaderText" Text="변경사항" HorizontalAlignment="Center" VerticalAlignment="Center"
+                     FontWeight="SemiBold"/>
+        </Border>
+      </Grid>
+
+      <!-- V5.18: A/B/C and 변경사항 share ONE outer document scroll, so whole articles
+           move together.  The fourth column is not one global change list: every article row
+           owns an independent inner change ScrollViewer.  Clicking [n] scrolls only that
+           article's change window while the article itself stays at the same screen position. -->
+      <Grid x:Name="ResultBody" Grid.Row="1" IsVisible="False" ClipToBounds="True">
+        <ScrollViewer x:Name="DocumentScroll"
+                      VerticalScrollBarVisibility="Visible" HorizontalScrollBarVisibility="Disabled">
+          <Grid ColumnDefinitions="3*,*" HorizontalAlignment="Stretch">
+            <ItemsControl x:Name="RowsRepeater" Grid.Column="0" HorizontalAlignment="Stretch"/>
+            <Border Grid.Column="1" BorderBrush="#8E99A8" BorderThickness="0,0,1,1" Background="White">
+              <ItemsControl x:Name="ChangeRowsRepeater" HorizontalAlignment="Stretch"/>
+            </Border>
+          </Grid>
+        </ScrollViewer>
+      </Grid>
+    </Grid>
+  </Grid>
+</Window>

@@ -1,0 +1,27 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="DocumentCompare.Avalonia.App">
+  <Application.Styles>
+    <FluentTheme />
+    <Style Selector="Button.marker">
+      <Setter Property="MinWidth" Value="20"/>
+      <Setter Property="MinHeight" Value="18"/>
+      <Setter Property="Padding" Value="3,0"/>
+      <Setter Property="Margin" Value="1,0"/>
+      <Setter Property="FontSize" Value="10"/>
+      <Setter Property="FontWeight" Value="Bold"/>
+      <Setter Property="CornerRadius" Value="3"/>
+    </Style>
+    <Style Selector="Border.documentCard">
+      <Setter Property="BorderBrush" Value="#B8C2CF"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="CornerRadius" Value="5"/>
+      <Setter Property="Padding" Value="9"/>
+      <Setter Property="Background" Value="#FBFCFE"/>
+    </Style>
+    <Style Selector="Border.dropCard:pointerover">
+      <Setter Property="Background" Value="#F4F8FC"/>
+      <Setter Property="BorderBrush" Value="#7D90A7"/>
+    </Style>
+  </Application.Styles>
+</Application>

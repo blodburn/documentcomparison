@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>DocumentCompare</AssemblyName>
+    <RootNamespace>DocumentCompare.Avalonia</RootNamespace>
+    <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
+    <AvaloniaNameGeneratorIsEnabled>false</AvaloniaNameGeneratorIsEnabled>
+    <ApplicationIcon>Assets\DocumentCompare.ico</ApplicationIcon>
+    <Company>blodburn</Company>
+    <Product>DocumentCompare</Product>
+    <Copyright>Copyright © 2026 blodburn. All rights reserved.</Copyright>
+    <!-- Release build creates this payload under the repository-level .build folder before dotnet publish.
+         It is optional for ordinary CHECK_AVALONIA_BUILD/dev compilation, where START_AVALONIA.cmd
+         supplies DOCUMENT_COMPARE_ENGINE explicitly. -->
+    <EmbeddedEnginePath>..\..\.build\engine_dist\DocumentCompare.Engine.exe</EmbeddedEnginePath>
+    <!-- Avalonia 12 analyzers are built with a newer Roslyn than some .NET 8 SDKs.
+         This project intentionally avoids analyzer/source-generator dependencies, so keep them off
+         for stable builds on the user's existing .NET 8 SDK. -->
+    <RunAnalyzers>false</RunAnalyzers>
+    <RunAnalyzersDuringBuild>false</RunAnalyzersDuringBuild>
+    <RunAnalyzersDuringLiveAnalysis>false</RunAnalyzersDuringLiveAnalysis>
+  </PropertyGroup>
+  <ItemGroup>
+    <AvaloniaResource Include="Assets\DocumentCompare.ico" />
+    <EmbeddedResource Include="$(EmbeddedEnginePath)"
+                      LogicalName="DocumentCompare.Embedded.DocumentCompare.Engine.exe"
+                      Condition="Exists('$(EmbeddedEnginePath)')" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="12.1.2" ExcludeAssets="analyzers" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.1.2" ExcludeAssets="analyzers" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.2" ExcludeAssets="analyzers" />
+  </ItemGroup>
+</Project>

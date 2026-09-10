@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Logs / temp
+*.log
+*.tmp
+*.bak
+
+# .NET / Avalonia
+**/bin/
+**/obj/
+.vs/
+*.user
+*.suo
+
+# Release artifacts
+RELEASE_AVALONIA/
+DocumentCompare_Avalonia_Windows_Portable.zip
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Current build outputs
+.build/
+DEPLOY_PACKAGE/
+DocumentCompare_Windows_x64_Portable.zip

@@ -1,0 +1,5 @@
+python-docx>=1.1.0
+XlsxWriter>=3.2.0
+tkinterdnd2>=0.4.2
+
+RapidFuzz>=3.14.0
