@@ -7,6 +7,15 @@ It is designed for general documents as well as structured legal, policy, and re
 
 > This repository is publicly viewable source code, but it is **not open source**. No permission is granted to use, copy, modify, redistribute, sublicense, sell, or create derivative works without prior written permission from the copyright holder. See `LICENSE` for details. Third-party components remain subject to their respective licenses.
 
+## Current release
+
+**V5.19.4.2 (Hotfix 2)**
+
+- Fixes edit decoration so the numbered marker endpoint is the single source of truth for underline/strikethrough ranges.
+- Keeps marker badge placement independent from the actual changed-text range.
+- One-sided insertions such as `별도로` underline only the inserted text; the opposite document receives a zero-width marker anchor only.
+- Keeps underline/strikethrough continuous across spaces inside one logical changed range.
+
 ## Features
 
 - Compare 2 or 3 documents in aligned A / B / C columns

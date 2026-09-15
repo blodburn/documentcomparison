@@ -7568,7 +7568,7 @@ def _v55_pairwise_segments(members: List[Optional[Unit]], base_index: int, attr:
     return [_v5194_join_internal_edit_whitespace(segs) for segs in result]
 
 
-APP_VERSION = "5.19.4-engine"
+APP_VERSION = "5.19.4.2-engine"
 
 # The entry point MUST be last so every version patch above is installed before the GUI starts.
 if __name__=='__main__':
