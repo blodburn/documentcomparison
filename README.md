@@ -11,7 +11,7 @@ It is designed for general documents as well as structured legal, policy, and re
 
 **V5.19.4.4 (Hotfix 4)**
 
-- 변경 엔진 개선
+- Improved comparison engine accuracy and change grouping.
 
 ## Features
 
