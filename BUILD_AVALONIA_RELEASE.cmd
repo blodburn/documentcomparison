@@ -10,7 +10,7 @@ set "ENGINE_DIST_DIR=.build\engine_dist"
 set "ENGINE_WORK_DIR=.build\engine_work"
 
 echo =====================================================
-echo   Document Compare V5.19.4.2 - One File Distribution
+echo   Document Compare V5.19.4.3 - One File Distribution
 echo =====================================================
 echo.
 where dotnet >nul 2>nul || (

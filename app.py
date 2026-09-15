@@ -7568,7 +7568,166 @@ def _v55_pairwise_segments(members: List[Optional[Unit]], base_index: int, attr:
     return [_v5194_join_internal_edit_whitespace(segs) for segs in result]
 
 
-APP_VERSION = "5.19.4.2-engine"
+APP_VERSION = "5.19.4.3-engine"
+
+# ---------------- V5.19.4.3: review-sized change hunks + sentence-boundary anchors ----------------
+# V3.4 intentionally merged weak equal islands so heavily rewritten clauses did not explode
+# into dozens of markers.  In long Korean legal clauses that can be too aggressive: several
+# distinct edits may collapse into one paragraph-sized marker even though meaningful unchanged
+# words remain between them.  Refine only LARGE V3.4 hunks, preserving the mature behavior for
+# ordinary/small edits.  A meaningful lexical equal run becomes a visual review anchor; pure
+# whitespace/punctuation and grammatical glue still stay inside one logical change phrase.
+_v51943_previous_change_hunks = _v34_change_hunks
+
+
+def _v51943_meaningful_equal(tokens: List[str], i1: int, i2: int) -> bool:
+    # A shared sentence boundary is itself a strong review anchor.  Without this, an
+    # insertion starting after a period can be merged into the preceding replacement.
+    raw=''.join(tokens[i1:i2])
+    if re.search(r'[.!?。！？](?:\s|$)|\n',raw):
+        return True
+    words=[]
+    for tok in tokens[i1:i2]:
+        if not _v34_lexical_token(tok):
+            continue
+        key=token_key(tok).strip().casefold()
+        if not key or key in _V34_STOPWORDS:
+            continue
+        visible=''.join(ch for ch in tok if ch.isalnum() or ('가' <= ch <= '힣'))
+        if len(visible) >= 2:
+            words.append(visible)
+    return bool(words)
+
+
+def _v51943_reverse_opcodes(a_keys: List[str], b_keys: List[str]):
+    """Build forward-coordinate opcodes from a suffix-biased reverse match.
+
+    difflib resolves repeated equal words greedily from the left.  Legal clauses often repeat
+    words such as "회원이"; the occurrence immediately before a long unchanged suffix is usually
+    the review-relevant anchor.  Running the same matcher in reverse supplies that alternative
+    without introducing a semantic model or changing the source text.
+    """
+    sm=SequenceMatcher(None,list(reversed(a_keys)),list(reversed(b_keys)),autojunk=False)
+    blocks=[]
+    for m in sm.get_matching_blocks():
+        if not m.size: continue
+        ai=len(a_keys)-(m.a+m.size); bj=len(b_keys)-(m.b+m.size)
+        blocks.append((ai,bj,m.size))
+    blocks.sort()
+    ops=[]; pa=pb=0
+    for ai,bj,n in blocks:
+        if ai<pa or bj<pb:
+            continue
+        if ai>pa or bj>pb:
+            tag='replace' if ai>pa and bj>pb else ('delete' if ai>pa else 'insert')
+            ops.append((tag,pa,ai,pb,bj))
+        ops.append(('equal',ai,ai+n,bj,bj+n))
+        pa=ai+n; pb=bj+n
+    if pa<len(a_keys) or pb<len(b_keys):
+        tag='replace' if pa<len(a_keys) and pb<len(b_keys) else ('delete' if pa<len(a_keys) else 'insert')
+        ops.append((tag,pa,len(a_keys),pb,len(b_keys)))
+    return ops
+
+
+def _v51943_anchor_score(tokens: List[str], ops) -> int:
+    score=0
+    for tag,i1,i2,_j1,_j2 in ops:
+        if tag!='equal' or not _v51943_meaningful_equal(tokens,i1,i2):
+            continue
+        words=[]
+        for tok in tokens[i1:i2]:
+            if not _v34_lexical_token(tok): continue
+            key=token_key(tok).strip().casefold()
+            if not key or key in _V34_STOPWORDS: continue
+            visible=''.join(ch for ch in tok if ch.isalnum() or ('가' <= ch <= '힣'))
+            if len(visible)>=2: words.append(visible)
+        score += sum(len(w) for w in words) + 3*len(words)
+    return score
+
+
+def _v51943_refine_large_hunk(at: List[str], bt: List[str], hunk):
+    a1,a2,b1,b2=hunk
+    old_raw=''.join(at[a1:a2]); new_raw=''.join(bt[b1:b2])
+    old_lex=sum(1 for t in at[a1:a2] if _v34_lexical_token(t))
+    new_lex=sum(1 for t in bt[b1:b2] if _v34_lexical_token(t))
+    # Small/ordinary edits keep V3.4 grouping exactly as before.
+    if max(len(old_raw),len(new_raw)) < 72 and max(old_lex,new_lex) < 12:
+        return [hunk]
+
+    asub=[token_key(x) for x in at[a1:a2]]; bsub=[token_key(x) for x in bt[b1:b2]]
+    forward=SequenceMatcher(None,asub,bsub,autojunk=False).get_opcodes()
+    reverse=_v51943_reverse_opcodes(asub,bsub)
+    # Prefer the direction that preserves more meaningful unchanged lexical context.  This
+    # resolves duplicate-word ambiguity near the right edge of long rewritten clauses.
+    local_ops=reverse if _v51943_anchor_score(at[a1:a2],reverse) > _v51943_anchor_score(at[a1:a2],forward) else forward
+    inside=[(tag,a1+x1,a1+x2,b1+y1,b1+y2) for tag,x1,x2,y1,y2 in local_ops]
+
+    refined=[]; cur=None
+    for tag,x1,x2,y1,y2 in inside:
+        if tag == 'equal':
+            if cur is not None and (_v51943_meaningful_equal(at,x1,x2) or
+                                    _v51943_meaningful_equal(bt,y1,y2)):
+                refined.append(tuple(cur)); cur=None
+            elif cur is not None:
+                # Weak bridge (spaces/punctuation/glue) remains part of the same visual edit.
+                cur[1]=x2; cur[3]=y2
+            continue
+        if cur is None:
+            cur=[x1,x2,y1,y2]
+        else:
+            cur[1]=x2; cur[3]=y2
+    if cur is not None:
+        refined.append(tuple(cur))
+
+    # Refinement should make review easier, not create a marker storm.  Keep V3.4's single
+    # hunk if the candidate split is excessive or failed to make a useful distinction.
+    if len(refined) <= 1 or len(refined) > 12:
+        return [hunk]
+    return refined
+
+
+def _v34_change_hunks(old: str, new: str):
+    at,bt,hunks=_v51943_previous_change_hunks(old,new)
+    out=[]
+    for h in hunks:
+        out.extend(_v51943_refine_large_hunk(at,bt,h))
+    return at,bt,out
+
+
+# Zero-width counterpart markers must describe the actual insertion/deletion boundary.  The
+# lexical mapper deliberately avoids placing a marker inside a word, but for sentence-level
+# insertions it used to stop BEFORE the surviving period.  If the source boundary follows
+# sentence punctuation, advance the mapped destination boundary across its corresponding
+# punctuation/spacing so the badge sits between the two sentences.
+_v51943_previous_map_boundary = _v59_map_boundary
+
+
+def _v51943_is_word_char(ch: str) -> bool:
+    return bool(ch) and (ch.isalnum() or ch == '_' or ('가' <= ch <= '힣'))
+
+
+def _v59_map_boundary(src: str, dst: str, pos: int) -> int:
+    src=src or ''; dst=dst or ''
+    pos=max(0,min(int(pos),len(src)))
+    mapped=_v51943_previous_map_boundary(src,dst,pos)
+
+    # Find the non-lexical separator immediately before the source boundary.
+    left=pos
+    while left>0 and not _v51943_is_word_char(src[left-1]):
+        left-=1
+    separator=src[left:pos]
+    if not separator or not re.search(r'[.!?。！？;:]|\n',separator):
+        return mapped
+
+    # The previous mapper lands at the end of the matched lexical context.  Move across only
+    # punctuation/whitespace in the destination; never consume the next word.
+    q=max(0,min(mapped,len(dst)))
+    while q < len(dst) and not _v51943_is_word_char(dst[q]):
+        q += 1
+    return q
+
+
+APP_VERSION = "5.19.4.3-engine"
 
 # The entry point MUST be last so every version patch above is installed before the GUI starts.
 if __name__=='__main__':

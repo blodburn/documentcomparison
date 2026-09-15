@@ -9,12 +9,13 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.19.4.2 (Hotfix 2)**
+**V5.19.4.3 (Hotfix 3)**
 
-- Fixes edit decoration so the numbered marker endpoint is the single source of truth for underline/strikethrough ranges.
-- Keeps marker badge placement independent from the actual changed-text range.
-- One-sided insertions such as `별도로` underline only the inserted text; the opposite document receives a zero-width marker anchor only.
-- Keeps underline/strikethrough continuous across spaces inside one logical changed range.
+- Splits paragraph-sized replacement markers into review-sized changes when meaningful unchanged text remains between edits.
+- Uses both left-biased and suffix-biased matching for long clauses so repeated words such as `회원이` anchor to the context that preserves more unchanged text.
+- Treats shared sentence punctuation as a review boundary, so a newly inserted sentence is not merged into the preceding replacement.
+- Places zero-width counterpart markers after surviving sentence punctuation when the insertion/deletion occurs between sentences.
+- Retains the Hotfix 2 endpoint-based underline/strikethrough range fix and continuous decoration across spaces inside one logical change.
 
 ## Features
 
