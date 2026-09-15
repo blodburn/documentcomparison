@@ -11,11 +11,7 @@ It is designed for general documents as well as structured legal, policy, and re
 
 **V5.19.4.3 (Hotfix 3)**
 
-- Splits paragraph-sized replacement markers into review-sized changes when meaningful unchanged text remains between edits.
-- Uses both left-biased and suffix-biased matching for long clauses so repeated words such as `회원이` anchor to the context that preserves more unchanged text.
-- Treats shared sentence punctuation as a review boundary, so a newly inserted sentence is not merged into the preceding replacement.
-- Places zero-width counterpart markers after surviving sentence punctuation when the insertion/deletion occurs between sentences.
-- Retains the Hotfix 2 endpoint-based underline/strikethrough range fix and continuous decoration across spaces inside one logical change.
+- 변경 엔진 개선
 
 ## Features
 
