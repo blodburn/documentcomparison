@@ -190,12 +190,15 @@ public sealed class ComparisonRowControl : UserControl
             FontWeight = bold ? FontWeight.SemiBold : FontWeight.Normal,
             LineHeight = 24
         };
+        // Keep the engine endpoint coordinates untouched.  They are the single source of
+        // truth for red/blue decoration.  MarkerAnchor() is a presentation-only adjustment
+        // for the [n] badge and must never widen or move the changed text span itself.
         var placements = _row.PlacementsFor(docIndex, part)
             .Select(p => new MarkerPlacementVm
             {
                 Num = p.Num,
                 DocIndex = p.DocIndex,
-                Start = MarkerAnchor(raw, p.Start, p.End),
+                Start = p.Start,
                 End = p.End,
                 Part = p.Part,
                 Role = p.Role,
@@ -208,7 +211,10 @@ public sealed class ComparisonRowControl : UserControl
         if (segments.Count == 0)
             segments = new List<SegmentVm> { new() { Text = raw, Style = "normal" } };
 
-        var byAnchor = placements.GroupBy(x => Math.Clamp(x.Start, 0, raw.Length))
+        // Badge anchors may move to a reader-friendly word boundary, but endpoint ranges stay
+        // exact.  This separation fixes cases where an insertion such as “별도로” caused the
+        // underline to leak into neighbouring unchanged words.
+        var byAnchor = placements.GroupBy(x => MarkerAnchor(raw, x.Start, x.End))
             .ToDictionary(g => g.Key, g => g.ToList());
         var emittedButtons = new HashSet<(int Anchor, int Num)>();
         var cursor = 0;
@@ -285,15 +291,16 @@ public sealed class ComparisonRowControl : UserControl
                 .Select(g => g.First())
                 .ToArray();
 
-            var effectiveStyle = style;
-            if (relevant.Length > 0 && style == "normal")
-            {
-                // Apply underline/strikethrough to the whole logical phrase, including spaces.
-                // This makes a phrase such as "윤리경영 파트" read as one continuous change.
-                var primaryRole = relevant[0].Role;
-                if (primaryRole == "insert") effectiveStyle = "insert";
-                else if (primaryRole == "delete") effectiveStyle = "delete";
-            }
+            // Marker endpoint ranges are the only authority for visible edit decoration.
+            // Pairwise diff segments are still useful for deterministic text chunking, but
+            // they must not paint a wider range than the numbered change event.  Because the
+            // endpoint itself spans the whole logical phrase, every internal space receives
+            // the same decoration automatically.  A zero-width counterpart has no overlap and
+            // therefore remains badge-only.
+            var roles = relevant.Select(p => p.Role).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var effectiveStyle = roles.Contains("insert") && roles.Contains("delete") ? "both" :
+                roles.Contains("insert") ? "insert" :
+                roles.Contains("delete") ? "delete" : "normal";
 
             var structuralNumber = relevant.Any(p => p.StructuralNumber);
             var run = new Run
