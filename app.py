@@ -7568,7 +7568,7 @@ def _v55_pairwise_segments(members: List[Optional[Unit]], base_index: int, attr:
     return [_v5194_join_internal_edit_whitespace(segs) for segs in result]
 
 
-APP_VERSION = "5.19.4.3-engine"
+APP_VERSION = "5.19.4.4-engine"
 
 # ---------------- V5.19.4.3: review-sized change hunks + sentence-boundary anchors ----------------
 # V3.4 intentionally merged weak equal islands so heavily rewritten clauses did not explode
@@ -7727,7 +7727,466 @@ def _v59_map_boundary(src: str, dst: str, pos: int) -> int:
     return q
 
 
-APP_VERSION = "5.19.4.3-engine"
+APP_VERSION = "5.19.4.4-engine"
+
+
+# ---------------- V5.19.4.4: location-paired replacements ----------------
+# A heavily rewritten phrase can defeat lexical/subpart similarity and arrive here as one
+# standalone deletion plus one standalone insertion.  If each event's zero-width counterpart
+# maps back to the other event's physical span, they are two endpoints of ONE logical
+# replacement, not independent 삭제/추가 changes.  Coalesce them before row-local numbering.
+_v51944_previous_pair_marker_events = _v31_pair_marker_events
+
+
+def _v51944_ep(event, doc_index):
+    for ep in event.get('endpoints') or []:
+        if int(ep.get('target_doc', -1)) == int(doc_index):
+            return ep
+    if int(event.get('target_doc', -1)) == int(doc_index):
+        return {
+            'target_doc': doc_index,
+            'char_start': int(event.get('char_start', 0)),
+            'char_end': int(event.get('char_end', event.get('char_start', 0))),
+        }
+    return None
+
+
+def _v51944_span_distance(pos: int, ep) -> int:
+    if not ep:
+        return 10**9
+    a=int(ep.get('char_start',0)); b=int(ep.get('char_end',a))
+    if b<a: a,b=b,a
+    if a <= pos <= b:
+        return 0
+    return min(abs(pos-a), abs(pos-b))
+
+
+def _v51944_lexical(value: str) -> bool:
+    return any(ch.isalnum() or ('가' <= ch <= '힣') for ch in str(value or ''))
+
+
+def _v51944_msg_prefix(message: str) -> str:
+    m=re.match(r'^\s*(\[[^\]]+\])\s*', str(message or ''))
+    return m.group(1) if m else ''
+
+
+def _v51944_coalesce_location_replacements(events, base_index: int, other_index: int):
+    deletes=[]; adds=[]
+    for idx,e in enumerate(events):
+        action=str(e.get('action') or '')
+        if action not in ('삭제','추가') or not _v51944_lexical(e.get('text','')):
+            continue
+        if int(e.get('relative_doc',other_index)) != int(other_index):
+            continue
+        (deletes if action=='삭제' else adds).append((idx,e))
+
+    candidates=[]
+    for di,d in deletes:
+        d_old=_v51944_ep(d,base_index); d_new=_v51944_ep(d,other_index)
+        if not d_old or not d_new:
+            continue
+        # Standalone deletion: real range in old doc, zero-width counterpart in new doc.
+        if int(d_old.get('char_end',0)) <= int(d_old.get('char_start',0)):
+            continue
+        if int(d_new.get('char_end',0)) != int(d_new.get('char_start',0)):
+            continue
+        for ai,a in adds:
+            if d.get('part','body') != a.get('part','body'):
+                continue
+            a_old=_v51944_ep(a,base_index); a_new=_v51944_ep(a,other_index)
+            if not a_old or not a_new:
+                continue
+            # Standalone insertion: zero-width counterpart in old doc, real range in new doc.
+            if int(a_old.get('char_end',0)) != int(a_old.get('char_start',0)):
+                continue
+            if int(a_new.get('char_end',0)) <= int(a_new.get('char_start',0)):
+                continue
+            old_text=str(d.get('text') or '').strip(); new_text=str(a.get('text') or '').strip()
+            if not old_text or not new_text or _v5189_semantic_equal(old_text,new_text):
+                continue
+            d_old_pos=int(a_old.get('char_start',0))
+            d_new_pos=int(d_new.get('char_start',0))
+            old_dist=_v51944_span_distance(d_old_pos,d_old)
+            new_dist=_v51944_span_distance(d_new_pos,a_new)
+            # Long rewrites may move the mapped boundary by one or two words.  Cap tolerance
+            # tightly enough that unrelated nearby additions/deletions are not paired.
+            tolerance=max(6,min(28,round((len(old_text)+len(new_text))*0.10)))
+            dp=_v51944_msg_prefix(d.get('message','')); ap=_v51944_msg_prefix(a.get('message',''))
+            same_struct=bool(dp and ap and dp==ap)
+            if old_dist>tolerance or new_dist>tolerance:
+                if not same_struct or old_dist>tolerance*2 or new_dist>tolerance*2:
+                    continue
+            score=old_dist+new_dist-(4 if same_struct else 0)
+            candidates.append((score,di,ai,d,a,d_old,a_new))
+
+    used_d=set(); used_a=set(); replacement={}
+    for _score,di,ai,d,a,d_old,a_new in sorted(candidates,key=lambda x:(x[0],x[1],x[2])):
+        if di in used_d or ai in used_a:
+            continue
+        used_d.add(di); used_a.add(ai)
+        old_text=str(d.get('text') or '').strip(); new_text=str(a.get('text') or '').strip()
+        prefix_d=_v51944_msg_prefix(d.get('message','')); prefix_a=_v51944_msg_prefix(a.get('message',''))
+        prefix=(prefix_d+' ') if prefix_d and prefix_d==prefix_a else ''
+        merged=dict(a)
+        merged.update({
+            'relative_doc': other_index,
+            'target_doc': other_index,
+            'action': '변경',
+            'text': new_text,
+            'char_start': int(a_new.get('char_start',0)),
+            'char_end': int(a_new.get('char_end',a_new.get('char_start',0))),
+            'endpoints': [
+                {'target_doc': base_index,
+                 'char_start': int(d_old.get('char_start',0)),
+                 'char_end': int(d_old.get('char_end',d_old.get('char_start',0)))},
+                {'target_doc': other_index,
+                 'char_start': int(a_new.get('char_start',0)),
+                 'char_end': int(a_new.get('char_end',a_new.get('char_start',0)))},
+            ],
+            'old_text': old_text,
+            'new_text': new_text,
+            'sort_key': min(tuple(d.get('sort_key') or ()), tuple(a.get('sort_key') or ())),
+            'message': f'{prefix}변경: “{re.sub(r"\s+", " ", old_text).strip()}” → “{re.sub(r"\s+", " ", new_text).strip()}”',
+        })
+        replacement[di]=merged
+
+    if not replacement:
+        return events
+    out=[]
+    for idx,e in enumerate(events):
+        if idx in replacement:
+            out.append(replacement[idx])
+        elif idx in used_a:
+            continue
+        else:
+            out.append(e)
+    return out
+
+
+def _v51944_pair_marker_events(base: Unit, other: Unit, base_index: int, other_index: int):
+    events=_v51944_previous_pair_marker_events(base,other,base_index,other_index)
+    return _v51944_coalesce_location_replacements(events,base_index,other_index)
+
+
+_v31_pair_marker_events = _v51944_pair_marker_events
+APP_VERSION = "5.19.4.4-engine"
+
+
+# V5.19.4.4: one-sided numbered-list expansion guard.
+# If one version introduces a real multi-item legal list while the other version has no
+# explicit items at all, the numbered items are additions/deletions.  Do not fuzzy-pair an
+# old prose sentence with an arbitrary new item merely because they share generic legal words.
+_v51944_previous_match_parts = _v35_match_parts
+
+
+def _v51944_match_parts(ap, bp):
+    a_struct=[i for i,p in enumerate(ap) if p.get('label') not in ('','본문')]
+    b_struct=[j for j,p in enumerate(bp) if p.get('label') not in ('','본문')]
+    one_sided=(len(a_struct)>=2 and not b_struct) or (len(b_struct)>=2 and not a_struct)
+    if not one_sided:
+        return _v51944_previous_match_parts(ap,bp)
+
+    # Only an unnumbered introduction can correspond to another unnumbered introduction.
+    # Every explicit 1./2./3./... item on the newly structured side remains unmatched and
+    # therefore becomes a clean 추가 (or 삭제 in the reverse direction).
+    pairs=[]; used_a=set(); used_b=set()
+    plain_a=[i for i,p in enumerate(ap) if p.get('label')=='본문']
+    plain_b=[j for j,p in enumerate(bp) if p.get('label')=='본문']
+    candidates=[]
+    for i in plain_a:
+        for j in plain_b:
+            ss=_v35_part_similarity(ap[i],bp[j])
+            if ss>=0.32 or normalize_text(ap[i].get('core',''))==normalize_text(bp[j].get('core','')):
+                candidates.append((ss,-abs(i-j),i,j))
+    for ss,_dist,i,j in sorted(candidates,reverse=True):
+        if i in used_a or j in used_b:
+            continue
+        pairs.append((i,j,max(ss,.50))); used_a.add(i); used_b.add(j)
+    return pairs,used_a,used_b
+
+
+_v35_match_parts = _v51944_match_parts
+
+
+# V5.19.4.4: Korean review-boundary refinement.
+# Korean legal revisions often keep a lexical stem while changing the attached expression:
+#   제공받거나 -> 제공되거나  =>  받거나 -> 되거나
+#   설치한 모바일 -> 설치된   =>  한 모바일 -> 된
+# Preserve meaningful equal Korean context as a hunk boundary, then trim only a shared
+# Hangul prefix inside a compact replacement.  Common suffixes are deliberately retained
+# because endings such as "거나" make the changed wording understandable to a reviewer.
+_v51944k_previous_strong_equal = _v34_strong_equal
+
+
+def _v34_strong_equal(tokens: List[str], i1: int, i2: int) -> bool:
+    if _v51944k_previous_strong_equal(tokens,i1,i2):
+        return True
+    words=[t for t in tokens[i1:i2] if _v34_lexical_token(t)]
+    if len(words) < 2:
+        return False
+    hangul_chars=sum(sum(1 for ch in w if '가' <= ch <= '힣') for w in words)
+    # Two consecutive Korean lexical tokens are a reliable review anchor even when they
+    # are much shorter than English legal terms (e.g. "최종 이용자의").
+    return hangul_chars >= 5
+
+
+# Do not change global hunk grouping; refine only compact Korean replacement markers below.
+_v34_strong_equal = _v51944k_previous_strong_equal
+
+_v51944k_previous_pair_marker_events = _v31_pair_marker_events
+
+
+def _v51944k_unit_part_text(unit: Unit, part: str):
+    return (unit.header or '') if part=='header' else (unit.body or '')
+
+
+def _v51944k_local_endpoint(unit: Unit, ep, part: str):
+    offset=0 if part=='header' else len(unit.header or '')+1
+    a=max(0,int(ep.get('char_start',0))-offset)
+    b=max(a,int(ep.get('char_end',ep.get('char_start',0)))-offset)
+    text=_v51944k_unit_part_text(unit,part)
+    a=min(a,len(text)); b=min(b,len(text))
+    return a,b,text[a:b]
+
+
+def _v51944k_hangul_prefix_len(old: str, new: str) -> int:
+    n=min(len(old),len(new)); i=0
+    while i<n and old[i]==new[i]:
+        i+=1
+    prefix=old[:i]
+    # Strip only a lexical Hangul prefix.  Do not remove a shared phrase such as "회사의 "
+    # from a long replacement; that context is useful and was explicitly requested.
+    if len(prefix)<2 or any(ch.isspace() for ch in prefix):
+        return 0
+    if sum(1 for ch in prefix if '가'<=ch<='힣') < 2:
+        return 0
+    return i
+
+
+def _v51944k_trim_pair(old: str, new: str, old_start: int, new_start: int):
+    cut=_v51944k_hangul_prefix_len(old,new)
+    if not cut:
+        return old,new,old_start,new_start
+    o=old[cut:]; n=new[cut:]
+    # Never reduce a replacement to an empty side; that would change replacement semantics
+    # into an insertion/deletion and can make marker placement ambiguous.
+    if not o.strip() or not n.strip():
+        return old,new,old_start,new_start
+    ol=len(o)-len(o.lstrip()); nl=len(n)-len(n.lstrip())
+    return o.lstrip(),n.lstrip(),old_start+cut+ol,new_start+cut+nl
+
+
+def _v51944k_word_spans(text: str):
+    return [(m.start(),m.end(),m.group(0)) for m in re.finditer(r'\S+',text or '')]
+
+
+
+def _v51944k_lex_spans(text: str):
+    return [(m.start(),m.end(),m.group(0)) for m in re.finditer(r'[가-힣A-Za-z]+|\d+(?:,\d{3})*(?:\.\d+)?%?',text or '')]
+
+
+def _v51944k_word_relation(a: str, b: str):
+    if _v5189_semantic_equal(a,b):
+        return 'equal',0.0
+    cut=_v51944k_hangul_prefix_len(a,b)
+    if cut>=2:
+        # Shared Korean stem: prefer substitution over a delete+insert pair.
+        return 'fuzzy',0.24 + 0.03*abs(len(a)-len(b))
+    return 'none',1.45
+
+
+def _v51944k_align_words(old: str, new: str):
+    a=_v51944k_lex_spans(old); b=_v51944k_lex_spans(new)
+    n,m=len(a),len(b); gap=.68
+    dp=[[0.0]*(m+1) for _ in range(n+1)]
+    prev=[[None]*(m+1) for _ in range(n+1)]
+    for i in range(1,n+1): dp[i][0]=dp[i-1][0]+gap; prev[i][0]='D'
+    for j in range(1,m+1): dp[0][j]=dp[0][j-1]+gap; prev[0][j]='I'
+    for i in range(1,n+1):
+        for j in range(1,m+1):
+            rel,cost=_v51944k_word_relation(a[i-1][2],b[j-1][2])
+            choices=[(dp[i-1][j-1]+cost,'M'),(dp[i-1][j]+gap,'D'),(dp[i][j-1]+gap,'I')]
+            dp[i][j],prev[i][j]=min(choices,key=lambda x:x[0])
+    ops=[]; i=n; j=m
+    while i or j:
+        op=prev[i][j]
+        if op=='M':
+            rel,_=_v51944k_word_relation(a[i-1][2],b[j-1][2]); ops.append((rel,i-1,j-1)); i-=1; j-=1
+        elif op=='D': ops.append(('delete',i-1,None)); i-=1
+        else: ops.append(('insert',None,j-1)); j-=1
+    return a,b,list(reversed(ops))
+
+
+def _v51944k_morph_pieces(old: str, new: str):
+    # Only compact Korean edits are refined.  Large paragraph rewrites stay under the
+    # review-sized hunk logic from Hotfix 3.
+    if max(len(old),len(new))>96:
+        return None
+    a,b,ops=_v51944k_align_words(old,new)
+    exact=sum(1 for op,_,_ in ops if op=='equal')
+    fuzzy=sum(1 for op,_,_ in ops if op=='fuzzy')
+    if exact<2 or fuzzy<2:
+        return None
+    pieces=[]; k=0
+    while k<len(ops):
+        op,ai,bj=ops[k]
+        if op=='equal':
+            k+=1; continue
+        if op=='fuzzy':
+            as_,ae,at=a[ai]; bs,be,bt=b[bj]
+            # Absorb an immediately following deletion/insertion into the same grammatical
+            # replacement. This produces 설치한 모바일 -> 설치된 rather than a tiny stem
+            # change plus a detached '모바일' deletion.
+            old_end=ae; new_end=be
+            if k+1<len(ops) and ops[k+1][0]=='delete':
+                dai=ops[k+1][1]
+                # Only absorb if the deleted word follows directly (whitespace/punctuation only).
+                if dai==ai+1 and not re.search(r'[가-힣A-Za-z0-9]',old[ae:a[dai][0]]):
+                    old_end=a[dai][1]; k+=1
+            elif k+1<len(ops) and ops[k+1][0]=='insert':
+                ibj=ops[k+1][2]
+                if ibj==bj+1 and not re.search(r'[가-힣A-Za-z0-9]',new[be:b[ibj][0]]):
+                    new_end=b[ibj][1]; k+=1
+            ot=old[as_:old_end]; nt=new[bs:new_end]
+            oo,nn,ost,nst=_v51944k_trim_pair(ot,nt,as_,bs)
+            pieces.append(('change',ost,old_end,nst,new_end,oo,nn))
+        elif op=='delete':
+            as_,ae,at=a[ai]; pieces.append(('delete',as_,ae,None,None,old[as_:ae],''))
+        elif op=='insert':
+            bs,be,bt=b[bj]; pieces.append(('insert',None,None,bs,be,'',new[bs:be]))
+        else:
+            # unrelated substitution is deliberately left to the broad original marker
+            return None
+        k+=1
+    return pieces if 2<=len(pieces)<=8 else None
+
+
+def _v51944k_events_from_morph(event, pieces, base: Unit, other: Unit, base_index: int, other_index: int,
+                               oa: int, na: int, part: str):
+    old_part=_v51944k_unit_part_text(base,part); new_part=_v51944k_unit_part_text(other,part)
+    old_offset=0 if part=='header' else len(base.header or '')+1
+    new_offset=0 if part=='header' else len(other.header or '')+1
+    sk=tuple(event.get('sort_key') or ())
+    out=[]
+    for idx,(kind,os,oe,ns,ne,ot,nt) in enumerate(pieces):
+        e=dict(event); e['sort_key']=sk+(idx,) if sk else (idx,)
+        if kind=='change':
+            abs_os=oa+os; abs_oe=oa+oe; abs_ns=na+ns; abs_ne=na+ne
+            e.update({
+                'action':'변경','text':nt.strip(),'old_text':ot.strip(),'new_text':nt.strip(),
+                'target_doc':other_index,
+                'char_start':new_offset+abs_ns,'char_end':new_offset+abs_ne,
+                'endpoints':[
+                    {'target_doc':base_index,'char_start':old_offset+abs_os,'char_end':old_offset+abs_oe},
+                    {'target_doc':other_index,'char_start':new_offset+abs_ns,'char_end':new_offset+abs_ne},
+                ],
+                'message':f'변경: “{re.sub(r"\\s+"," ",ot).strip()}” → “{re.sub(r"\\s+"," ",nt).strip()}”',
+            })
+        elif kind=='delete':
+            abs_os=oa+os; abs_oe=oa+oe
+            anchor=_v59_map_boundary(old_part,new_part,abs_os)
+            e.update({
+                'action':'삭제','text':ot.strip(),'target_doc':base_index,
+                'char_start':old_offset+abs_os,'char_end':old_offset+abs_oe,
+                'endpoints':[
+                    {'target_doc':base_index,'char_start':old_offset+abs_os,'char_end':old_offset+abs_oe},
+                    {'target_doc':other_index,'char_start':new_offset+anchor,'char_end':new_offset+anchor},
+                ],
+                'message':f'삭제: “{re.sub(r"\\s+"," ",ot).strip()}”',
+            })
+            e.pop('old_text',None); e.pop('new_text',None)
+        else:
+            abs_ns=na+ns; abs_ne=na+ne
+            anchor=_v59_map_boundary(new_part,old_part,abs_ns)
+            e.update({
+                'action':'추가','text':nt.strip(),'target_doc':other_index,
+                'char_start':new_offset+abs_ns,'char_end':new_offset+abs_ne,
+                'endpoints':[
+                    {'target_doc':base_index,'char_start':old_offset+anchor,'char_end':old_offset+anchor},
+                    {'target_doc':other_index,'char_start':new_offset+abs_ns,'char_end':new_offset+abs_ne},
+                ],
+                'message':f'추가: “{re.sub(r"\\s+"," ",nt).strip()}”',
+            })
+            e.pop('old_text',None); e.pop('new_text',None)
+        out.append(e)
+    return out
+
+
+def _v51944k_refine_change_event(event, base: Unit, other: Unit, base_index: int, other_index: int):
+    if str(event.get('action') or '')!='변경':
+        return [event]
+    eps=event.get('endpoints') or []
+    old_ep=next((x for x in eps if int(x.get('target_doc',-1))==base_index),None)
+    new_ep=next((x for x in eps if int(x.get('target_doc',-1))==other_index),None)
+    if not old_ep or not new_ep:
+        return [event]
+    part=str(event.get('part') or 'body')
+    oa,ob,old=_v51944k_local_endpoint(base,old_ep,part)
+    na,nb,new=_v51944k_local_endpoint(other,new_ep,part)
+    if not old.strip() or not new.strip() or not (re.search(r'[가-힣]',old) and re.search(r'[가-힣]',new)):
+        return [event]
+
+    morph=_v51944k_morph_pieces(old,new)
+    if morph:
+        return _v51944k_events_from_morph(event,morph,base,other,base_index,other_index,oa,na,part)
+
+    ow=_v51944k_word_spans(old); nw=_v51944k_word_spans(new)
+    pieces=[]
+    # Two or three parallel Korean words can contain independent edits that deserve separate
+    # review markers.  Require a shared Hangul prefix in EVERY paired word so unrelated phrase
+    # rewrites stay together as one change.
+    if 2 <= len(ow) == len(nw) <= 3:
+        cuts=[_v51944k_hangul_prefix_len(x[2],y[2]) for x,y in zip(ow,nw)]
+        if all(c>=2 for c in cuts):
+            for idx,((os,oe,ot),(ns,ne,nt)) in enumerate(zip(ow,nw)):
+                oo,nn,ost,nst=_v51944k_trim_pair(ot,nt,oa+os,na+ns)
+                if _v5189_semantic_equal(oo,nn):
+                    continue
+                pieces.append((idx,oo,nn,ost,oa+oe,nst,na+ne))
+
+    if not pieces:
+        # Compact one-to-one phrase: remove only a common Hangul stem from the LEFT edge.
+        # This intentionally keeps a common suffix such as "거나" inside the visible change.
+        if len(ow)<=2 and len(nw)<=2:
+            oo,nn,ost,nst=_v51944k_trim_pair(old,new,oa,na)
+            if (oo,nn)!=(old,new):
+                pieces=[(0,oo,nn,ost,ob,nst,nb)]
+
+    if not pieces:
+        return [event]
+
+    old_offset=0 if part=='header' else len(base.header or '')+1
+    new_offset=0 if part=='header' else len(other.header or '')+1
+    sk=tuple(event.get('sort_key') or ())
+    out=[]
+    for idx,oo,nn,ost,oend,nst,nend in pieces:
+        e=dict(event)
+        e['text']=nn.strip(); e['old_text']=oo.strip(); e['new_text']=nn.strip()
+        e['char_start']=new_offset+nst; e['char_end']=new_offset+nend
+        e['endpoints']=[
+            {'target_doc':base_index,'char_start':old_offset+ost,'char_end':old_offset+oend},
+            {'target_doc':other_index,'char_start':new_offset+nst,'char_end':new_offset+nend},
+        ]
+        e['sort_key']=sk+(idx,) if sk else (idx,)
+        prefix=''
+        mm=re.match(r'^\s*(\[[^\]]+\])\s*',str(event.get('message') or ''))
+        if mm and not re.match(r'^\[\d+\]$',mm.group(1)):
+            prefix=mm.group(1)+' '
+        e['message']=f'{prefix}변경: “{re.sub(r"\s+"," ",oo).strip()}” → “{re.sub(r"\s+"," ",nn).strip()}”'
+        out.append(e)
+    return out or [event]
+
+
+def _v51944k_pair_marker_events(base: Unit, other: Unit, base_index: int, other_index: int):
+    events=_v51944k_previous_pair_marker_events(base,other,base_index,other_index)
+    out=[]
+    for e in events:
+        out.extend(_v51944k_refine_change_event(e,base,other,base_index,other_index))
+    return out
+
+
+_v31_pair_marker_events = _v51944k_pair_marker_events
+APP_VERSION = "5.19.4.4-engine"
 
 # The entry point MUST be last so every version patch above is installed before the GUI starts.
 if __name__=='__main__':

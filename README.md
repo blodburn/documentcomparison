@@ -9,7 +9,7 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.19.4.3 (Hotfix 3)**
+**V5.19.4.4 (Hotfix 4)**
 
 - 변경 엔진 개선
 
