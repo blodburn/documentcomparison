@@ -29,7 +29,7 @@ It is designed for general documents as well as structured legal, policy, and re
   - KR / EN can also be switched manually from the menu
 - Self-contained Windows x64 distribution
   - Final package contains a single visible `DocumentCompare.exe`
-  - The comparison engine is embedded in the main executable and extracted automatically at runtime
+  - The native C# comparison engine is compiled directly into the main executable
 
 ## Supported input
 
@@ -44,9 +44,6 @@ For building from source:
 
 - Windows 10/11 x64
 - .NET 8 SDK
-- Python 3
-
-Python is required only to build the embedded comparison engine. The completed application does not require the user to install Python or .NET separately.
 
 ### Build the release
 
@@ -73,13 +70,12 @@ CHECK_AVALONIA_BUILD.cmd
 ## Source layout
 
 ```text
-app.py                              Python document/diff engine
-engine_bridge.py                    JSON bridge entry point
-avalonia/DocumentCompare.Avalonia/  Avalonia desktop UI
-BUILD_AVALONIA_RELEASE.cmd          Release build/packaging script
-BUILD_ENGINE_SIDECAR.cmd            Embedded engine build script
-CHECK_AVALONIA_BUILD.cmd            Avalonia build check
-INSTALL_DOTNET8_SDK.cmd             .NET 8 SDK helper
+avalonia/DocumentCompare.Avalonia/Engine/NativeComparisonEngine.cs   Native C# document/diff engine
+avalonia/DocumentCompare.Avalonia/Engine/NativeDocumentReader.cs    Native DOCX/TXT reader
+avalonia/DocumentCompare.Avalonia/Engine/NativeOfficeExporter.cs    Excel / Word exporter
+avalonia/DocumentCompare.Avalonia/                                  Avalonia desktop application
+BUILD_AVALONIA_RELEASE.cmd                                            Final Windows one-file build script
+CHECK_AVALONIA_BUILD.cmd                                             Avalonia/C# build check
 ```
 
 ## License / Copyright

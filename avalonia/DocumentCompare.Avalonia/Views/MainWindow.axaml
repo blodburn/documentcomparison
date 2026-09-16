@@ -39,7 +39,7 @@
       <CheckBox x:Name="PunctuationBox" Grid.Column="7" Content="특수문자 포함" Margin="12,0,0,0"
                 VerticalAlignment="Center" IsChecked="True"/>
       <TextBlock x:Name="SearchLabel" Grid.Column="8" Text="검색:" VerticalAlignment="Center" Margin="14,0,4,0"/>
-      <TextBox x:Name="SearchBox" Grid.Column="9" Watermark="본문/변경사항 검색" TextChanged="SearchBox_TextChanged"/>
+      <TextBox x:Name="SearchBox" Grid.Column="9" PlaceholderText="본문/변경사항 검색" TextChanged="SearchBox_TextChanged"/>
       <TextBlock x:Name="StatusText" Grid.Column="10" Margin="14,0,0,0" VerticalAlignment="Center"
                  TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" Text="준비됨"/>
     </Grid>

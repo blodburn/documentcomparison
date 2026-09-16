@@ -16,13 +16,15 @@ namespace DocumentCompare.Avalonia.Views;
 
 public partial class MainWindow : Window
 {
-    private readonly IComparisonEngine _engine = new PythonBridgeComparisonEngine();
+    private readonly IComparisonEngine _engine = new NativeComparisonEngine();
     private CancellationTokenSource? _operationCts;
     private ComparisonResultVm? _result;
     private readonly ObservableCollection<ComparisonRowVm> _visibleRows = new();
     private readonly string?[] _selectedPaths = new string?[3];
     private readonly Dictionary<int, ComparisonRowControl> _documentRows = new();
     private readonly Dictionary<int, ChangeRowControl> _changeRows = new();
+    private readonly Dictionary<int, (string Normal, string Compact)> _searchIndex = new();
+    private readonly DispatcherTimer _searchDebounceTimer = new() { Interval = TimeSpan.FromMilliseconds(180) };
     private string[] _lastPaths = Array.Empty<string>();
     private int _lastBaseIndex;
     private string _lastMode = "auto";
@@ -83,6 +85,11 @@ public partial class MainWindow : Window
         RegisterDropZone(DropA, 0, "A");
         RegisterDropZone(DropB, 1, "B");
         RegisterDropZone(DropC, 2, "C");
+        _searchDebounceTimer.Tick += (_, _) =>
+        {
+            _searchDebounceTimer.Stop();
+            ApplySearch();
+        };
         Opened += async (_, _) => await WarmEngineAsync();
         Closed += (_, _) => _ = _engine.DisposeAsync();
         ResultBody.SizeChanged += (_, _) => ResetAndQueueRowHeightSync();
@@ -365,10 +372,8 @@ public partial class MainWindow : Window
         });
         try
         {
-            using var response = await _engine.SendAsync(
-                new CompareRequest("compare", paths, baseIndex, mode,
-                    IncludeAC: includeAc, IncludePunctuation: includePunctuation, WantProgress: true), _operationCts.Token, progress);
-            _result = EngineResultMapper.Parse(response.RootElement);
+            _result = await _engine.CompareAsync(
+                paths, baseIndex, mode, includeAc, includePunctuation, _operationCts.Token, progress);
             _lastPaths = paths;
             _lastBaseIndex = baseIndex;
             _lastMode = mode;
@@ -425,6 +430,7 @@ public partial class MainWindow : Window
                 control.SizeChanged += (_, _) => QueueRowHeightSync();
                 return control;
             }, true);
+        RebuildSearchIndex(result);
         ApplySearch();
         DocumentScroll.Offset = Vector.Zero;
         Dispatcher.UIThread.Post(QueueRowHeightSync, DispatcherPriority.Background);
@@ -533,18 +539,39 @@ public partial class MainWindow : Window
         StatusText.Text = L("취소 중...", "Canceling...");
     }
 
-    private void SearchBox_TextChanged(object? sender, TextChangedEventArgs e) => ApplySearch();
+    private void SearchBox_TextChanged(object? sender, TextChangedEventArgs e)
+    {
+        _searchDebounceTimer.Stop();
+        _searchDebounceTimer.Start();
+    }
+
+    private static string CompactSearchText(string value) =>
+        string.Concat(value.Where(ch => !char.IsWhiteSpace(ch)));
+
+    private void RebuildSearchIndex(ComparisonResultVm result)
+    {
+        _searchIndex.Clear();
+        foreach (var row in result.Rows)
+        {
+            var source = string.Join("\n",
+                row.Members.Where(x => x is not null).Select(x => x!.Text)
+                    .Concat(row.DisplayMessages));
+            var normal = NativeComparisonEngine.Normalize(source);
+            _searchIndex[row.Id] = (normal, CompactSearchText(normal));
+        }
+    }
 
     private void ApplySearch()
     {
         if (_result is null) return;
-        var query = SearchBox.Text?.Trim();
+        var query = NativeComparisonEngine.Normalize(SearchBox.Text ?? string.Empty);
         IEnumerable<ComparisonRowVm> filtered = _result.Rows;
         if (!string.IsNullOrWhiteSpace(query))
         {
-            filtered = filtered.Where(r =>
-                r.Members.Any(m => m?.Text.Contains(query, StringComparison.CurrentCultureIgnoreCase) == true) ||
-                r.DisplayMessages.Any(m => m.Contains(query, StringComparison.CurrentCultureIgnoreCase)));
+            var compact = CompactSearchText(query);
+            filtered = filtered.Where(r => _searchIndex.TryGetValue(r.Id, out var text) &&
+                (text.Normal.Contains(query, StringComparison.Ordinal) ||
+                 (compact.Length > 0 && text.Compact.Contains(compact, StringComparison.Ordinal))));
         }
         var rows = filtered.ToList();
         _documentRows.Clear();
@@ -563,9 +590,7 @@ public partial class MainWindow : Window
         SetBusy(true, L("Excel 생성 중...", "Creating Excel file..."));
         try
         {
-            using var _ = await _engine.SendAsync(new CompareRequest(
-                "export_xlsx", _lastPaths, _lastBaseIndex, _lastMode, OutputPath: save,
-                IncludeAC: _lastIncludeAc, IncludePunctuation: _lastIncludePunctuation));
+            await _engine.ExportExcelAsync(_result, save, _operationCts?.Token ?? CancellationToken.None);
             StatusText.Text = L("Excel 저장 완료: ", "Excel saved: ") + save;
         }
         catch (Exception ex) { StatusText.Text = L("Excel 저장 실패: ", "Excel save failed: ") + CompactError(ex); }
@@ -587,11 +612,9 @@ public partial class MainWindow : Window
         SetBusy(true, L("Word 변경추적 문서 생성 중...", "Creating Word tracked-changes document..."));
         try
         {
-            using var _ = await _engine.SendAsync(new CompareRequest(
-                "export_word", Array.Empty<string>(), 0, _lastMode,
-                OutputPath: save, OriginalPath: original, RevisedPath: revised,
-                Author: Path.GetFileNameWithoutExtension(revised),
-                IncludePunctuation: _lastIncludePunctuation));
+            await _engine.ExportWordAsync(
+                original, revised, save, Path.GetFileNameWithoutExtension(revised),
+                _lastIncludePunctuation, _operationCts?.Token ?? CancellationToken.None);
             StatusText.Text = L($"Word 저장 완료 · 변경 전 {Path.GetFileName(original)} → 최종 {Path.GetFileName(revised)}", $"Word saved · Original {Path.GetFileName(original)} → Revised {Path.GetFileName(revised)}");
         }
         catch (Exception ex) { StatusText.Text = L("Word 저장 실패: ", "Word save failed: ") + CompactError(ex); }
