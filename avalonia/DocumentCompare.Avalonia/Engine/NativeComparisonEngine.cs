@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Numerics;
 using System.Text;
 using System.Text.RegularExpressions;
 using DocumentCompare.Avalonia.Models;
@@ -16,6 +17,12 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     private static readonly Regex SectionHeading = new(
         """^\s*(?:제\s*\d+\s*(?:장|절|관)\b.*|(?:Chapter|Part)\s+\d+(?:[-.]\d+)*\b.*)$""",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex EnglishHierarchy = new(
+        """^\s*(?:[•●▪◦·*]+\s*)?(?<level>Chapter|Part)\s+(?<num>(?:\d+(?:[-.]\d+)*)|(?:[IVXLCDM]+))\s*[.\-:–—]?\s*(?<title>.*?)\s*$""",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex KoreanHierarchy = new(
+        """^\s*(?:[•●▪◦·*]+\s*)?제\s*(?<num>\d+)\s*(?<level>장|절|관)\s*(?:\((?<p>[^)\n]*)\)|\[(?<b>[^]\n]*)\]|(?<title>.*?))\s*$""",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex ExplicitItem = new(
         """^[ \t]*(?<label>(?:[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|\(\d+\)|\d+[.)]|[가-하A-Za-z][.)]))(?<ws>[ \t]+)""",
         RegexOptions.Compiled | RegexOptions.Multiline | RegexOptions.CultureInvariant);
@@ -172,6 +179,35 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return (at.Length > 0 || bt.Length > 0) && at == bt;
     }
 
+    private static (int Start, int End)? HeaderNumberSpan(NativeUnit unit)
+    {
+        if (unit.Header.Length == 0 || unit.Number.Length == 0) return null;
+        var em = EnglishArticle.Match(unit.Header);
+        if (em.Success && em.Groups[1].Success)
+            return (em.Groups[1].Index, em.Groups[1].Index + em.Groups[1].Length);
+        var km = KoreanArticle.Match(unit.Header);
+        if (km.Success && km.Groups[1].Success)
+        {
+            var start = km.Groups[1].Index;
+            var end = km.Groups[2].Success ? km.Groups[2].Index + km.Groups[2].Length : km.Groups[1].Index + km.Groups[1].Length;
+            return (start, end);
+        }
+        var at = unit.Header.IndexOf(unit.Number, StringComparison.OrdinalIgnoreCase);
+        return at >= 0 ? (at, at + unit.Number.Length) : null;
+    }
+
+    private static (int Start, int End) HeaderTitleSpan(NativeUnit unit)
+    {
+        if (unit.Title.Length > 0)
+        {
+            var at = unit.Header.IndexOf(unit.Title, StringComparison.OrdinalIgnoreCase);
+            if (at >= 0) return (at, at + unit.Title.Length);
+        }
+        var number = HeaderNumberSpan(unit);
+        var anchor = number?.End ?? unit.Header.Length;
+        return (anchor, anchor);
+    }
+
     private static bool LooksLegal(string text)
     {
         var count = 0;
@@ -183,95 +219,307 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return false;
     }
 
+    private static bool TitleCandidate(string value)
+    {
+        var s = (value ?? string.Empty).Trim(' ', '\t', '|', ':', '-', '–', '—');
+        if (s.Length == 0 || s.Length > 160) return false;
+        if (EnglishArticle.IsMatch(s) || KoreanArticle.IsMatch(s) || EnglishHierarchy.IsMatch(s) || KoreanHierarchy.IsMatch(s)) return false;
+        if (ExplicitItem.IsMatch(s)) return false;
+        var words = Regex.Matches(s, "[A-Za-z가-힣]+").Count;
+        if (words == 0 || words > 16) return false;
+        if (Regex.IsMatch(s, "[!?;]\\s*$")) return false;
+        if (words > 8 && Regex.IsMatch(s, "^(?:the|a|an|if|when|where|provided|notwithstanding|company|member|members|user|users)\\b", RegexOptions.IgnoreCase)) return false;
+        if (Regex.IsMatch(s, "\\b(?:shall|must|may|means|will|hereby)\\b", RegexOptions.IgnoreCase)) return false;
+        return true;
+    }
+
+    private static double? ArticleNumberValue(string value)
+    {
+        var s = (value ?? string.Empty).Trim();
+        if (Regex.IsMatch(s, "^[IVXLCDM]+$", RegexOptions.IgnoreCase))
+        {
+            var vals = new Dictionary<char, int> { ['I']=1,['V']=5,['X']=10,['L']=50,['C']=100,['D']=500,['M']=1000 };
+            var total = 0; var prev = 0;
+            foreach (var ch in s.ToUpperInvariant().Reverse())
+            {
+                var v = vals[ch]; if (v < prev) total -= v; else { total += v; prev = v; }
+            }
+            return total;
+        }
+        var m = Regex.Match(s, @"^(\d+)(?:[.-](\d+))?");
+        if (!m.Success) return null;
+        var a = double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);
+        if (m.Groups[2].Success) a += double.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture) / 1000.0;
+        return a;
+    }
+
+    private static HashSet<int> FalseEnglishArticleHeaderLines(string[] lines)
+    {
+        var markers = new List<(int Line, string Number)>();
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var m = EnglishArticle.Match(lines[i].Trim());
+            if (m.Success) markers.Add((i, m.Groups[1].Value));
+        }
+        if (markers.Count < 3) return new();
+        var falseLines = new HashSet<int>();
+        var byNumber = markers.GroupBy(x => x.Number, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.Select(x => x.Line).ToList(), StringComparer.OrdinalIgnoreCase);
+
+        for (var i = 1; i + 1 < markers.Count; i++)
+        {
+            var p = ArticleNumberValue(markers[i - 1].Number);
+            var c = ArticleNumberValue(markers[i].Number);
+            var n = ArticleNumberValue(markers[i + 1].Number);
+            if (p is null || c is null || n is null) continue;
+            var neighboursConsecutive = n.Value - p.Value >= .5 && n.Value - p.Value <= 1.5;
+            var outside = !(Math.Min(p.Value, n.Value) <= c.Value && c.Value <= Math.Max(p.Value, n.Value));
+            var jump = Math.Min(Math.Abs(c.Value - p.Value), Math.Abs(c.Value - n.Value));
+            if (!neighboursConsecutive || !outside || jump < 3) continue;
+            var duplicateLater = byNumber.TryGetValue(markers[i].Number, out var dup) && dup.Any(x => x > markers[i].Line);
+            if (duplicateLater || jump >= 5) falseLines.Add(markers[i].Line);
+        }
+
+        // Python V2.0 second pass: after removing one citation, another large spike between the
+        // same monotonic neighbours may become visible.
+        var changed = true;
+        while (changed)
+        {
+            changed = false;
+            var kept = markers.Where(x => !falseLines.Contains(x.Line)).ToList();
+            for (var i = 1; i + 1 < kept.Count; i++)
+            {
+                var p = ArticleNumberValue(kept[i - 1].Number);
+                var c = ArticleNumberValue(kept[i].Number);
+                var n = ArticleNumberValue(kept[i + 1].Number);
+                if (p is null || c is null || n is null) continue;
+                var jump = Math.Min(Math.Abs(c.Value - p.Value), Math.Abs(c.Value - n.Value));
+                if (n.Value - p.Value >= .5 && n.Value - p.Value <= 1.5 &&
+                    !(Math.Min(p.Value, n.Value) <= c.Value && c.Value <= Math.Max(p.Value, n.Value)) && jump >= 4)
+                {
+                    falseLines.Add(kept[i].Line); changed = true; break;
+                }
+            }
+        }
+        return falseLines;
+    }
+
     private static List<NativeUnit> ParseLegalUnits(string text)
     {
         var units = new List<NativeUnit>();
-        var preamble = new List<string>();
         var body = new List<string>();
         string? header = null, number = null, title = null;
-        var section = string.Empty;
+        var sections = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var preamble = new List<string>();
+        var lines = text.Split('\n');
+        var falseArticleLines = FalseEnglishArticleHeaderLines(lines);
 
-        void Flush()
+        string CurrentSection()
         {
-            if (header is null)
-            {
-                if (preamble.Count == 0) return;
-                var pre = string.Join("\n", preamble).Trim(); preamble.Clear();
-                if (pre.Length > 0) units.Add(NativeUnit.Create(units.Count, $"p{units.Count + 1}", "", "", pre, section));
-                return;
-            }
+            var order = new[] { "part", "chapter", "장", "절", "관" };
+            return string.Join(" > ", order.Where(sections.ContainsKey).Select(k => sections[k]).Distinct());
+        }
+        void SetSection(string level, string label)
+        {
+            sections[level] = label;
+            if (level is "part" or "장") { sections.Remove("chapter"); sections.Remove("절"); sections.Remove("관"); }
+            else if (level is "chapter" or "절") sections.Remove("관");
+        }
+        void FlushArticle()
+        {
+            if (header is null) return;
             var b = string.Join("\n", body).Trim(); body.Clear();
-            units.Add(NativeUnit.Create(units.Count, number ?? "", title ?? "", header, b, section));
+            units.Add(NativeUnit.Create(units.Count, number ?? string.Empty, title ?? string.Empty, header, b, CurrentSection()));
             header = number = title = null;
         }
-
-        foreach (var raw in text.Split('\n'))
+        string? NextTitle(ref int i)
         {
-            var line = raw.Trim();
+            for (var j = i + 1; j < lines.Length && j <= i + 2; j++)
+            {
+                var cand = lines[j].Trim(' ', '\t', '|');
+                if (cand.Length == 0) continue;
+                if (!TitleCandidate(cand)) return null;
+                i = j;
+                return cand.Trim('(', ')', '[', ']', '{', '}', ' ', '\t', '|', ':', '-', '–', '—');
+            }
+            return null;
+        }
+
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i].Trim();
             if (line.Length == 0) continue;
-            var sm = SectionHeading.Match(line);
-            if (sm.Success) { Flush(); section = line; continue; }
-            var km = KoreanArticle.Match(line);
-            var em = EnglishArticle.Match(line);
+
+            var eh = EnglishHierarchy.Match(line);
+            var kh = KoreanHierarchy.Match(line);
+            if (eh.Success || kh.Success)
+            {
+                FlushArticle();
+                if (eh.Success)
+                {
+                    var level = eh.Groups["level"].Value.ToLowerInvariant();
+                    var num = eh.Groups["num"].Value;
+                    var t = eh.Groups["title"].Value.Trim();
+                    if (t.Length == 0) t = NextTitle(ref i) ?? string.Empty;
+                    SetSection(level, char.ToUpperInvariant(level[0]) + level[1..] + " " + num + (t.Length > 0 ? ". " + t : string.Empty));
+                }
+                else
+                {
+                    var level = kh.Groups["level"].Value;
+                    var num = kh.Groups["num"].Value;
+                    var t = (kh.Groups["p"].Value + kh.Groups["b"].Value + kh.Groups["title"].Value).Trim();
+                    if (t.Length == 0) t = NextTitle(ref i) ?? string.Empty;
+                    SetSection(level, $"제{num}{level}" + (t.Length > 0 ? " " + t : string.Empty));
+                }
+                continue;
+            }
+
+            var km = KoreanArticle.Match(line); var em = falseArticleLines.Contains(i) ? Match.Empty : EnglishArticle.Match(line);
             if (km.Success || em.Success)
             {
-                Flush(); header = line;
+                FlushArticle();
                 if (km.Success)
                 {
-                    number = km.Groups[2].Success ? $"{km.Groups[1].Value}-{km.Groups[2].Value}" : km.Groups[1].Value;
+                    number = km.Groups[2].Success ? $"{km.Groups[1].Value}의{km.Groups[2].Value}" : km.Groups[1].Value;
                     title = km.Groups[3].Value.Trim();
-                    var tail = km.Groups[4].Value.Trim(); if (tail.Length > 0) body.Add(tail);
+                    var tail = km.Groups[4].Value.Trim();
+                    if (title.Length == 0 && tail.Length == 0) title = NextTitle(ref i) ?? string.Empty;
+                    else if (title.Length == 0 && tail.Length > 0 && TitleCandidate(tail)) { title = CleanArticleTitle(tail); tail = string.Empty; }
+                    header = $"제{number}조" + (title.Length > 0 ? $"({title})" : string.Empty);
+                    if (tail.Length > 0) body.Add(tail);
                 }
                 else
                 {
                     number = em.Groups[1].Value;
                     var parsed = ParseEnglishArticleRest(em.Groups[2].Value);
-                    title = parsed.Title;
-                    if (parsed.BodyTail.Length > 0) body.Add(parsed.BodyTail);
+                    title = parsed.Title; var tail = parsed.BodyTail;
+                    if (title.Length == 0 && tail.Length == 0) title = NextTitle(ref i) ?? string.Empty;
+                    header = $"Article {number}" + (title.Length > 0 ? $" ({title})" : string.Empty);
+                    if (tail.Length > 0) body.Add(tail);
                 }
                 continue;
             }
+
             if (header is null) preamble.Add(line); else body.Add(line);
+        }
+        FlushArticle();
+
+        // Python V2.8 excludes preamble from legal article comparison once real articles exist.
+        if (units.Count > 0) return units;
+        foreach (var line in preamble)
+        {
+            if (EnglishHierarchy.IsMatch(line) || KoreanHierarchy.IsMatch(line)) continue;
+            units.Add(NativeUnit.Create(units.Count, $"p{units.Count + 1}", $"문단 {units.Count + 1}", $"문단 {units.Count + 1}", line, string.Empty));
+        }
+        return units;
+    }
+
+    private static (string Number, string Header)? GenericHeading(string line)
+    {
+        var s = (line ?? string.Empty).Trim();
+        if (s.Length == 0 || s.Length > 180) return null;
+        var numbered = Regex.Match(s, @"^\s*((?:\d+(?:\.\d+){0,5})|(?:[IVXLCDM]+)|(?:[A-Z]))[.)]?\s+(.{1,140})$", RegexOptions.IgnoreCase);
+        if (numbered.Success)
+        {
+            var title = numbered.Groups[2].Value.Trim();
+            if (title.Length <= 110 && !Regex.IsMatch(title, @"[.!?;]\s*$"))
+                return (numbered.Groups[1].Value, s);
+        }
+
+        var words = Regex.Matches(s, "[A-Za-z가-힣0-9]+").Cast<Match>().Select(m => m.Value).ToList();
+        if (words.Count is >= 1 and <= 10 && s.Length <= 80 && !Regex.IsMatch(s, @"[.!?;:]\s*$"))
+        {
+            var latin = Regex.IsMatch(s, "[A-Za-z]");
+            var uppercase = s.Any(char.IsLetter) && s.Where(char.IsLetter).All(ch => !char.IsLower(ch));
+            var titleCase = latin && words.Count(w => w.Length > 0 && char.IsUpper(w[0])) >= Math.Max(1, words.Count / 2);
+            if (uppercase || titleCase) return (string.Empty, s);
+        }
+        return null;
+    }
+
+    private static List<NativeUnit> ParseGeneralUnits(string text)
+    {
+        text = NativeDocumentReader.NormalizeNewlines(text ?? string.Empty);
+        var paras = text.Split('\n').Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
+        if (paras.Count == 0) return new();
+
+        var units = new List<NativeUnit>();
+        (string Number, string Header)? current = null;
+        var body = new List<string>();
+        var seq = 0;
+        void Flush()
+        {
+            if (current is null && body.Count == 0) return;
+            seq++;
+            if (current is not null)
+            {
+                var b = string.Join("\n", body).Trim();
+                var num = current.Value.Number;
+                var header = current.Value.Header;
+                var title = num.Length > 0
+                    ? Regex.Replace(header, "^\\s*" + Regex.Escape(num) + @"[.)]?\s*", string.Empty).Trim()
+                    : header;
+                units.Add(NativeUnit.Create(units.Count, num.Length > 0 ? num : $"g{seq}", title, header, b, string.Empty));
+            }
+            else
+            {
+                var b = string.Join("\n", body).Trim();
+                units.Add(NativeUnit.Create(units.Count, $"g{seq}", string.Empty, string.Empty, b, string.Empty));
+            }
+            current = null; body.Clear();
+        }
+
+        foreach (var para in paras)
+        {
+            var heading = GenericHeading(para);
+            if (heading is not null)
+            {
+                Flush(); current = heading;
+            }
+            else
+            {
+                if (current is null && body.Count > 0) Flush();
+                body.Add(para);
+            }
         }
         Flush();
         return units;
     }
 
-    private static List<NativeUnit> ParseGeneralUnits(string text)
-    {
-        var units = new List<NativeUnit>();
-        foreach (var raw in text.Split('\n'))
-        {
-            var line = raw.Trim(); if (line.Length == 0) continue;
-            units.Add(NativeUnit.Create(units.Count, $"g{units.Count + 1}", "", "", line, ""));
-        }
-        return units;
-    }
-
     private static List<NativeUnit?[]> BuildRows(IReadOnlyList<List<NativeUnit>> docs, int baseIndex, CancellationToken token)
     {
-        var n = docs.Count; var baseline = docs[baseIndex];
+        var n = docs.Count;
+        var baseline = docs[baseIndex];
         var rows = baseline.Select(u => { var r = new NativeUnit?[n]; r[baseIndex] = u; return r; }).ToList();
         var additions = new List<(int Slot, int Doc, NativeUnit Unit)>();
+
         for (var d = 0; d < n; d++)
         {
             if (d == baseIndex) continue;
-            var matches = MatchUnitSequence(baseline, docs[d]);
+            token.ThrowIfCancellationRequested();
+            var matches = MatchUnitSequence(baseline, docs[d], token);
             var used = matches.Select(x => x.Other).ToHashSet();
-            foreach (var (bi, oi) in matches) rows[bi][d] = docs[d][oi];
+            foreach (var match in matches) rows[match.Base][d] = docs[d][match.Other];
+
             foreach (var oi in Enumerable.Range(0, docs[d].Count).Where(x => !used.Contains(x)))
             {
                 token.ThrowIfCancellationRequested();
-                var prev = matches.Where(x => x.Other < oi).OrderBy(x => x.Other).LastOrDefault();
-                additions.Add((prev == default ? 0 : prev.Base + 1, d, docs[d][oi]));
+                additions.Add((AdditionSlot(oi, matches, baseline.Count), d, docs[d][oi]));
             }
         }
+
+        // Python V2.9 keeps the selected baseline as the immutable vertical axis. Comparison-only
+        // additions are inserted only into the gap determined by their mapped neighbours.
         foreach (var g in additions.GroupBy(x => x.Slot).OrderByDescending(x => x.Key))
         {
             var pending = new List<NativeUnit?[]>();
             foreach (var x in g.OrderBy(x => x.Unit.Index).ThenBy(x => x.Doc))
             {
-                var merge = pending.FirstOrDefault(r => r.FirstOrDefault(u => u is not null) is NativeUnit ex && Similarity(ex.Body, x.Unit.Body) >= .84);
+                var merge = pending.FirstOrDefault(r =>
+                {
+                    var ex = r.FirstOrDefault(u => u is not null);
+                    return ex is not null && UnitLineageSimilarity(ex, x.Unit) >= .84;
+                });
                 if (merge is null) { merge = new NativeUnit?[n]; pending.Add(merge); }
                 merge[x.Doc] = x.Unit;
             }
@@ -280,82 +528,257 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return rows;
     }
 
-    private static List<(int Base, int Other)> MatchUnitSequence(IReadOnlyList<NativeUnit> a, IReadOnlyList<NativeUnit> b)
+    private static int AdditionSlot(int otherIndex, IReadOnlyList<UnitMatch> matches, int baseCount)
     {
-        var result = new List<(int Base, int Other)>();
-        var usedA = new HashSet<int>();
-        var usedB = new HashSet<int>();
-        void Take(int i, int j)
-        {
-            if (usedA.Add(i) && usedB.Add(j)) result.Add((i, j));
-        }
+        var prev = matches.Where(x => x.Other < otherIndex).OrderByDescending(x => x.Other).FirstOrDefault();
+        var next = matches.Where(x => x.Other > otherIndex).OrderBy(x => x.Other).FirstOrDefault();
+        if (prev is not null && next is not null && prev.Base < next.Base) return next.Base;
+        if (prev is not null) return Math.Min(baseCount, prev.Base + 1);
+        if (next is not null) return Math.Max(0, next.Base);
+        return baseCount;
+    }
 
-        // 1) Stable legal identity first: same article number + same normalized title.
-        for (var i = 0; i < a.Count; i++)
-        {
-            if (usedA.Contains(i) || string.IsNullOrWhiteSpace(a[i].Number)) continue;
-            var nt = Normalize(CleanArticleTitle(a[i].Title));
-            if (nt.Length == 0) continue;
-            var cand = Enumerable.Range(0, b.Count)
-                .Where(j => !usedB.Contains(j) && a[i].Number == b[j].Number && nt == Normalize(CleanArticleTitle(b[j].Title)))
-                .ToList();
-            if (cand.Count == 1) Take(i, cand[0]);
-        }
+    private sealed record UnitMatch(int Base, int Other, double Score, string Mode);
 
-        // 2) Exact body/text lineage detects true moved/renumbered blocks without fuzzy guessing.
-        for (var i = 0; i < a.Count; i++)
-        {
-            if (usedA.Contains(i) || a[i].NormalizedBody.Length == 0) continue;
-            var cand = Enumerable.Range(0, b.Count)
-                .Where(j => !usedB.Contains(j) && a[i].NormalizedBody == b[j].NormalizedBody)
-                .OrderBy(j => Math.Abs(i - j)).ToList();
-            if (cand.Count > 0) Take(i, cand[0]);
-        }
+    private static List<UnitMatch> MatchUnitSequence(IReadOnlyList<NativeUnit> a, IReadOnlyList<NativeUnit> b, CancellationToken token)
+    {
+        var articleA = Enumerable.Range(0, a.Count).Where(i => IsLegalArticle(a[i])).ToList();
+        var articleB = Enumerable.Range(0, b.Count).Where(i => IsLegalArticle(b[i])).ToList();
 
-        // 3) Exact title lineage can survive article renumbering even when the body changed.
-        for (var i = 0; i < a.Count; i++)
-        {
-            if (usedA.Contains(i)) continue;
-            var nt = Normalize(CleanArticleTitle(a[i].Title)); if (nt.Length == 0) continue;
-            var cand = Enumerable.Range(0, b.Count)
-                .Where(j => !usedB.Contains(j) && nt == Normalize(CleanArticleTitle(b[j].Title)))
-                .OrderBy(j => Math.Abs(i - j)).ToList();
-            if (cand.Count == 1) Take(i, cand[0]);
-        }
+        // Paragraph/general fallback is intentionally separate, mirroring Python's fallback.
+        if (articleA.Count == 0 || articleB.Count == 0)
+            return MatchGenericUnits(a, b);
 
-        // 4) Same legal article number is a strong fallback, but only when some content remains
-        // recognizably related. Synthetic generic g1/g2 ids are deliberately excluded.
-        for (var i = 0; i < a.Count; i++)
-        {
-            if (usedA.Contains(i) || string.IsNullOrWhiteSpace(a[i].Number) || a[i].Number.StartsWith('g') || a[i].Number.StartsWith('p')) continue;
-            var cand = Enumerable.Range(0, b.Count)
-                .Where(j => !usedB.Contains(j) && a[i].Number == b[j].Number)
-                .Select(j => (J: j, Score: UnitSimilarity(a[i], b[j])))
-                .OrderByDescending(x => x.Score).FirstOrDefault();
-            if (cand != default && cand.Score >= .28) Take(i, cand.J);
-        }
+        var n = articleA.Count;
+        var m = articleB.Count;
+        const double gap = .48;
+        var dp = new double[n + 1, m + 1];
+        var prev = new char[n + 1, m + 1];
+        for (var i = 1; i <= n; i++) { dp[i, 0] = dp[i - 1, 0] + gap; prev[i, 0] = 'D'; }
+        for (var j = 1; j <= m; j++) { dp[0, j] = dp[0, j - 1] + gap; prev[0, j] = 'I'; }
 
-        // 5) Residual fuzzy matching is last and intentionally stricter than the old greedy pass.
-        var fuzzy = new List<(double Score, int A, int B)>();
-        for (var i = 0; i < a.Count; i++) if (!usedA.Contains(i))
-            for (var j = 0; j < b.Count; j++) if (!usedB.Contains(j))
+        var simCache = new Dictionary<(int, int), double>();
+        double Sim(int ai, int bj)
+        {
+            var key = (ai, bj);
+            if (!simCache.TryGetValue(key, out var s0))
             {
-                var score = UnitSimilarity(a[i], b[j]);
-                if (score >= .52) fuzzy.Add((score, i, j));
+                s0 = UnitLineageSimilarity(a[articleA[ai]], b[articleB[bj]]);
+                simCache[key] = s0;
             }
-        foreach (var x in fuzzy.OrderByDescending(x => x.Score).ThenBy(x => Math.Abs(x.A - x.B)))
-            if (!usedA.Contains(x.A) && !usedB.Contains(x.B)) Take(x.A, x.B);
+            return s0;
+        }
 
-        result.Sort((x, y) => x.Base.CompareTo(y.Base));
+        for (var i = 1; i <= n; i++)
+        {
+            token.ThrowIfCancellationRequested();
+            for (var j = 1; j <= m; j++)
+            {
+                var sim = Sim(i - 1, j - 1);
+                var matchCost = sim >= .43 ? .94 * (1.0 - sim) : 1.08;
+                var mc = dp[i - 1, j - 1] + matchCost;
+                var dc = dp[i - 1, j] + gap;
+                var ic = dp[i, j - 1] + gap;
+                if (mc <= dc && mc <= ic) { dp[i, j] = mc; prev[i, j] = 'M'; }
+                else if (dc <= ic) { dp[i, j] = dc; prev[i, j] = 'D'; }
+                else { dp[i, j] = ic; prev[i, j] = 'I'; }
+            }
+        }
+
+        var ops = new List<(char Op, int A, int B)>();
+        var x = n; var y = m;
+        while (x > 0 || y > 0)
+        {
+            var op = prev[x, y];
+            if (op == 'M') { ops.Add(('M', x - 1, y - 1)); x--; y--; }
+            else if (op == 'D') { ops.Add(('D', x - 1, -1)); x--; }
+            else { ops.Add(('I', -1, y - 1)); y--; }
+        }
+        ops.Reverse();
+
+        var mapping = new Dictionary<int, UnitMatch>();
+        var usedB = new HashSet<int>();
+        foreach (var op in ops)
+        {
+            if (op.Op != 'M') continue;
+            var bi = articleA[op.A]; var oj = articleB[op.B]; var sim = Sim(op.A, op.B);
+            if (sim < .43) continue;
+            var mode = string.Equals(a[bi].Number, b[oj].Number, StringComparison.OrdinalIgnoreCase) ? "same" : "renumbered";
+            mapping[bi] = new UnitMatch(bi, oj, sim, mode);
+            usedB.Add(oj);
+        }
+
+        // Python V2.9 residual pass: high-confidence non-monotonic moves are allowed after
+        // sequence alignment.  This is what keeps a genuine moved article from becoming
+        // detached delete/add records.
+        var residual = new List<(double Rank, int A, int B, double Sim)>();
+        foreach (var bi in articleA)
+        {
+            if (mapping.ContainsKey(bi)) continue;
+            foreach (var oj in articleB)
+            {
+                if (usedB.Contains(oj)) continue;
+                var sim = UnitLineageSimilarity(a[bi], b[oj]);
+                var tr = TitleSimilarity(a[bi], b[oj]);
+                var br = BodySimilarity(a[bi], b[oj]);
+                if (sim >= .70 || tr >= .82 || (tr >= .68 && br >= .48) || br >= .84)
+                    residual.Add((sim + .10 * tr + .04 * br, bi, oj, sim));
+            }
+        }
+        foreach (var r in residual.OrderByDescending(z => z.Rank))
+        {
+            if (mapping.ContainsKey(r.A) || usedB.Contains(r.B)) continue;
+            mapping[r.A] = new UnitMatch(r.A, r.B, r.Sim, "moved");
+            usedB.Add(r.B);
+        }
+
+        // Mark inverted pairs as positional moves, like the Python implementation.
+        var ordered = mapping.Values.OrderBy(z => z.Base).ToList();
+        var movedBase = new HashSet<int>();
+        for (var i = 0; i < ordered.Count; i++)
+        for (var j = i + 1; j < ordered.Count; j++)
+            if (ordered[i].Other > ordered[j].Other)
+            {
+                movedBase.Add(ordered[i].Base); movedBase.Add(ordered[j].Base);
+            }
+        foreach (var bi in movedBase)
+        {
+            var r = mapping[bi]; mapping[bi] = r with { Mode = "moved" };
+        }
+
+        // Preamble maps only to preamble and never participates in article lineage.
+        var preA = Enumerable.Range(0, a.Count).Where(i => !IsLegalArticle(a[i])).ToList();
+        var preB = Enumerable.Range(0, b.Count).Where(i => !IsLegalArticle(b[i]) && !usedB.Contains(i)).ToList();
+        foreach (var ai in preA)
+        {
+            var best = preB.Where(j => !usedB.Contains(j))
+                .Select(j => (J: j, S: Similarity(a[ai].Body, b[j].Body)))
+                .OrderByDescending(z => z.S).FirstOrDefault();
+            if (best != default && best.S >= .48)
+            {
+                mapping[ai] = new UnitMatch(ai, best.J, best.S, "same"); usedB.Add(best.J);
+            }
+        }
+
+        return mapping.Values.OrderBy(z => z.Base).ToList();
+    }
+
+    private static List<UnitMatch> MatchGenericUnits(IReadOnlyList<NativeUnit> a, IReadOnlyList<NativeUnit> b)
+    {
+        var candidates = new List<(double Rank, int A, int B, double Score)>();
+        for (var i = 0; i < a.Count; i++)
+        for (var j = 0; j < b.Count; j++)
+        {
+            var score = Similarity(a[i].Body, b[j].Body);
+            if (score < .48) continue;
+            var proximity = 1.0 - Math.Min(Math.Abs(i - j) / (double)Math.Max(1, Math.Max(a.Count, b.Count)), 1.0);
+            candidates.Add((score + proximity * .015, i, j, score));
+        }
+        var usedA = new HashSet<int>(); var usedB = new HashSet<int>(); var result = new List<UnitMatch>();
+        foreach (var c in candidates.OrderByDescending(z => z.Rank))
+            if (usedA.Add(c.A) && usedB.Add(c.B)) result.Add(new UnitMatch(c.A, c.B, c.Score, "same"));
+        return result.OrderBy(z => z.Base).ToList();
+    }
+
+    private static bool IsLegalArticle(NativeUnit u) =>
+        u.Header.Length > 0 && u.Number.Length > 0 && !u.Number.StartsWith('p') && !u.Number.StartsWith('g');
+
+    private static readonly HashSet<string> TitleStopWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        // Python 5.19.4.4 _TITLE_STOPWORDS_V17: keep this set exact.
+        "the","a","an","of","for","to","and","or","etc","etcetera","on","in","regarding","concerning",
+        "article","section","clause"
+    };
+
+    private static HashSet<string> TitleConcepts(string title)
+    {
+        var result = new HashSet<string>(StringComparer.Ordinal);
+        foreach (Match m in Regex.Matches((title ?? string.Empty).ToLowerInvariant(), "[A-Za-z]+|[가-힣]+"))
+        {
+            var w = m.Value;
+            if (TitleStopWords.Contains(w)) continue;
+            if (w.StartsWith("provid") || w.StartsWith("provis")) w = "provide";
+            else if (w.StartsWith("inform")) w = "information";
+            else if (w.StartsWith("operat") || w.StartsWith("policy")) w = "operation";
+            else if (w.StartsWith("protect") || w.StartsWith("privacy") || w.StartsWith("person")) w = "privacy";
+            else if (w.StartsWith("obligat") || w.StartsWith("duti")) w = "obligation";
+            else if (w.StartsWith("terminat") || w.StartsWith("cancel")) w = "termination";
+            else if (w.StartsWith("compensat") || w.StartsWith("damage")) w = "damages";
+            else if (w.StartsWith("confidenti") || w.StartsWith("secret")) w = "confidentiality";
+            else if (w.StartsWith("use") || w.StartsWith("usage")) w = "use";
+            else if (w.StartsWith("pay") || w.StartsWith("payment")) w = "payment";
+            else if (w.StartsWith("applic") || w.StartsWith("scope")) w = "scope";
+            else if (w.StartsWith("defin") || w.StartsWith("meaning")) w = "definition";
+            else if (w.StartsWith("amend") || w.StartsWith("revis") || w.StartsWith("modif") || w.StartsWith("chang")) w = "amendment";
+            else if (w.StartsWith("company") || w.StartsWith("corporat")) w = "company";
+            else if (w.StartsWith("member") || w.StartsWith("user")) w = "user";
+            w = Regex.Replace(w, "(등|관련|관한|관하여|사항)$", string.Empty);
+            if (w.Length > 0) result.Add(w);
+        }
         return result;
     }
 
-    private static double UnitSimilarity(NativeUnit a, NativeUnit b)
+    private static string LineageNormalize(string value)
     {
-        if (a.NormalizedText.Length > 0 && a.NormalizedText == b.NormalizedText) return 1.0;
-        if (a.NormalizedBody.Length > 0 && a.NormalizedBody == b.NormalizedBody) return .99;
-        var score = Similarity(a.Body, b.Body) * .76 + Similarity(a.Title, b.Title) * .12;
-        if (a.Number.Length > 0 && a.Number == b.Number) score += .16;
+        var s = (value ?? string.Empty).Normalize(NormalizationForm.FormC);
+        s = Regex.Replace(s, @"(?i)^\s*Article\s+(?:\d+(?:[-.]\d+)*[A-Za-z]?|[IVXLCDM]+)\b", " ");
+        s = Regex.Replace(s, @"^\s*제\s*\d+\s*조(?:\s*의\s*\d+)?", " ");
+        s = Regex.Replace(s, @"\s+", string.Empty);
+        s = Regex.Replace(s, @"[^0-9A-Za-z가-힣%]", string.Empty);
+        return s.ToLowerInvariant();
+    }
+
+    private static double TitleSimilarity(NativeUnit a, NativeUnit b)
+    {
+        var literal = IndelRatio(LineageNormalize(a.Title), LineageNormalize(b.Title));
+        var ta = TitleConcepts(a.Title); var tb = TitleConcepts(b.Title);
+        if (ta.Count == 0 || tb.Count == 0) return literal;
+        var shared = ta.Intersect(tb).Count();
+        var jac = shared / (double)Math.Max(1, ta.Union(tb).Count());
+        var contain = shared / (double)Math.Max(1, Math.Min(ta.Count, tb.Count));
+        return Math.Max(literal, Math.Max(jac, .94 * contain));
+    }
+
+    private static double BodySimilarity(NativeUnit a, NativeUnit b)
+    {
+        if (LineageNormalize(a.Body) is var na && na.Length > 0 && na == LineageNormalize(b.Body)) return 1.0;
+        var seq = IndelRatio(LineageNormalize(a.Body), LineageNormalize(b.Body));
+        var wa = WordSet(a.Body); var wb = WordSet(b.Body);
+        if (wa.Count == 0 || wb.Count == 0) return seq;
+        var shared = wa.Intersect(wb).Count();
+        var jac = shared / (double)Math.Max(1, wa.Union(wb).Count());
+        var contain = shared / (double)Math.Max(1, Math.Min(wa.Count, wb.Count));
+        return Math.Max(seq, Math.Max(.88 * contain, .82 * jac));
+    }
+
+    private static (int Circled, int Numeric, int Korean) StructureSignature(string body)
+    {
+        var circled = Regex.Matches(body ?? string.Empty, "[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]").Count;
+        var numeric = Regex.Matches(body ?? string.Empty, "(?m)^\\s*\\d+\\s*[.)]\\s*").Count;
+        var korean = Regex.Matches(body ?? string.Empty, "(?m)^\\s*[가-하]\\s*[.)]\\s*").Count;
+        return (circled, numeric, korean);
+    }
+
+    private static double StructureSimilarity(string a, string b)
+    {
+        var x = StructureSignature(a); var y = StructureSignature(b);
+        var diff = Math.Abs(x.Circled - y.Circled) + Math.Abs(x.Numeric - y.Numeric) + Math.Abs(x.Korean - y.Korean);
+        var den = Math.Max(1, x.Circled + x.Numeric + x.Korean + y.Circled + y.Numeric + y.Korean);
+        return Math.Max(0.0, 1.0 - diff / (double)den);
+    }
+
+    private static double UnitLineageSimilarity(NativeUnit a, NativeUnit b)
+    {
+        var tr = a.Title.Length > 0 && b.Title.Length > 0 ? TitleSimilarity(a, b) : 0.0;
+        var br = BodySimilarity(a, b);
+        var st = StructureSimilarity(a.Body, b.Body);
+        double score = a.Title.Length > 0 && b.Title.Length > 0
+            ? .54 * tr + .40 * br + .06 * st
+            : .90 * br + .10 * st;
+        if (a.Number.Length > 0 && string.Equals(a.Number, b.Number, StringComparison.OrdinalIgnoreCase)) score += .015;
+        if (tr >= .88) score = Math.Max(score, .84);
+        if (br >= .88) score = Math.Max(score, .84);
+        if (tr >= .72 && br >= .35) score = Math.Max(score, .74);
         return Math.Min(1.0, score);
     }
 
@@ -370,7 +793,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             foreach (var unit in doc)
             foreach (var part in ParseParts(unit.Body))
             {
-                var key = Normalize(part.Core);
+                var key = LineageNormalize(part.Core);
                 if (key.Length < 4) continue;
                 if (!index.TryGetValue(key, out var list)) index[key] = list = new List<PartLocation>();
                 list.Add(new PartLocation(unit.Index, part.Label, unit.HeaderOrBody));
@@ -436,9 +859,30 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         IReadOnlyList<Dictionary<string, List<PartLocation>>> globalParts)
     {
         var result = new List<NativeMarker>();
-        if (!HeaderEquivalent(old, revised) && !SemanticEqual(old.Header, revised.Header) &&
-            (old.Header.Length > 0 || revised.Header.Length > 0))
+        // Python lineage treats article number and article title as separate structural facts.
+        // Wrapper punctuation such as `(Purpose)` -> `: Purpose` is not a substantive change.
+        if (IsLegalArticle(old) && IsLegalArticle(revised))
+        {
+            if (!string.Equals(old.Number, revised.Number, StringComparison.OrdinalIgnoreCase))
+            {
+                var os = HeaderNumberSpan(old); var ns = HeaderNumberSpan(revised);
+                if (os is not null && ns is not null)
+                    result.Add(NativeMarker.ArticleNumberChange(pair, pairOrder, oldDoc, newDoc,
+                        old.Number, revised.Number, os.Value.Start, os.Value.End, ns.Value.Start, ns.Value.End));
+                structural.Add($"{pair} · 조 번호 변경: {old.Header} → {revised.Header}");
+            }
+            if (!SemanticEqual(CleanArticleTitle(old.Title), CleanArticleTitle(revised.Title)))
+            {
+                var ot = HeaderTitleSpan(old); var nt = HeaderTitleSpan(revised);
+                result.AddRange(DiffText(old.Title, revised.Title, ot.Start, nt.Start,
+                    oldDoc, newDoc, pair, pairOrder, "header", includePunctuation, 0));
+            }
+        }
+        else if (!HeaderEquivalent(old, revised) && !SemanticEqual(old.Header, revised.Header) &&
+                 (old.Header.Length > 0 || revised.Header.Length > 0))
+        {
             result.AddRange(DiffText(old.Header, revised.Header, 0, 0, oldDoc, newDoc, pair, pairOrder, "header", includePunctuation, 0));
+        }
 
         var oldParts = ParseParts(old.Body);
         var newParts = ParseParts(revised.Body);
@@ -486,7 +930,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         foreach (var i in Enumerable.Range(0, oldParts.Count).Where(i => !usedOld.Contains(i)))
         {
             var p = oldParts[i]; if (string.IsNullOrWhiteSpace(p.Core)) continue;
-            var key = Normalize(p.Core);
+            var key = LineageNormalize(p.Core);
             if (TryUniqueMovedPart(globalParts[newDoc], key, revised.Index, out var movedTo))
             {
                 structural.Add($"{pair} · 항/호 번호·위치 변경: {p.Label} → {movedTo.Label} ({movedTo.Header})");
@@ -501,7 +945,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         foreach (var j in Enumerable.Range(0, newParts.Count).Where(j => !usedNew.Contains(j)))
         {
             var p = newParts[j]; if (string.IsNullOrWhiteSpace(p.Core)) continue;
-            var key = Normalize(p.Core);
+            var key = LineageNormalize(p.Core);
             // The source-side row reports the move. Suppress a duplicate insertion when the
             // exact item exists uniquely elsewhere in the old document.
             if (TryUniqueMovedPart(globalParts[oldDoc], key, old.Index, out _))
@@ -513,7 +957,90 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             var oldAnchor = oldOffset + StructuralGapAnchor(newParts, oldParts, matches, j, sourceIsNew: true);
             result.Add(NativeMarker.Insert(pair, pairOrder, oldDoc, newDoc, p.Core.Trim(), oldAnchor, start, end, "body", j));
         }
-        return result;
+        return CoalesceLocationReplacements(result, oldDoc, newDoc);
+    }
+
+    private static List<NativeMarker> CoalesceLocationReplacements(List<NativeMarker> events, int oldDoc, int newDoc)
+    {
+        static MarkerEndpointVm? Endpoint(NativeMarker e, int doc) => e.Endpoints.FirstOrDefault(x => x.TargetDoc == doc);
+        static int SpanDistance(int pos, MarkerEndpointVm ep)
+        {
+            var lo = Math.Min(ep.CharStart, ep.CharEnd); var hi = Math.Max(ep.CharStart, ep.CharEnd);
+            return pos >= lo && pos <= hi ? 0 : Math.Min(Math.Abs(pos - lo), Math.Abs(pos - hi));
+        }
+        static bool Lexical(string value) => (value ?? string.Empty).Any(char.IsLetterOrDigit);
+
+        var deletes = events.Select((e, i) => (Event: e, Index: i))
+            .Where(x => x.Event.Action == "삭제" && x.Event.RelativeDoc == newDoc && Lexical(x.Event.Text)).ToList();
+        var adds = events.Select((e, i) => (Event: e, Index: i))
+            .Where(x => x.Event.Action == "추가" && x.Event.RelativeDoc == newDoc && Lexical(x.Event.Text)).ToList();
+        if (deletes.Count == 0 || adds.Count == 0) return events;
+
+        var candidates = new List<(int Score, int D, int A, NativeMarker Del, NativeMarker Add, MarkerEndpointVm OldEp, MarkerEndpointVm NewEp)>();
+        foreach (var d in deletes)
+        {
+            var dOld = Endpoint(d.Event, oldDoc); var dNew = Endpoint(d.Event, newDoc);
+            if (dOld is null || dNew is null || dOld.CharEnd <= dOld.CharStart || dNew.CharEnd != dNew.CharStart) continue;
+            foreach (var a in adds)
+            {
+                if (d.Event.Part != a.Event.Part) continue;
+                var aOld = Endpoint(a.Event, oldDoc); var aNew = Endpoint(a.Event, newDoc);
+                if (aOld is null || aNew is null || aOld.CharEnd != aOld.CharStart || aNew.CharEnd <= aNew.CharStart) continue;
+                if (SemanticEqual(d.Event.Text, a.Event.Text)) continue;
+                var oldDist = SpanDistance(aOld.CharStart, dOld);
+                var newDist = SpanDistance(dNew.CharStart, aNew);
+                var tolerance = Math.Max(6, Math.Min(28, (int)Math.Round((d.Event.Text.Length + a.Event.Text.Length) * .10)));
+                var sameStruct = d.Event.ItemOrder == a.Event.ItemOrder;
+                if (oldDist > tolerance || newDist > tolerance)
+                {
+                    if (!sameStruct || oldDist > tolerance * 2 || newDist > tolerance * 2) continue;
+                }
+                candidates.Add((oldDist + newDist - (sameStruct ? 4 : 0), d.Index, a.Index, d.Event, a.Event, dOld, aNew));
+            }
+        }
+        if (candidates.Count == 0) return events;
+
+        var usedD = new HashSet<int>(); var usedA = new HashSet<int>();
+        var replacements = new Dictionary<int, NativeMarker>();
+        foreach (var c in candidates.OrderBy(x => x.Score).ThenBy(x => x.D).ThenBy(x => x.A))
+        {
+            if (!usedD.Add(c.D) || !usedA.Add(c.A)) continue;
+            replacements[c.D] = NativeMarker.Change(c.Add.Pair, c.Add.PairOrder, oldDoc, newDoc,
+                c.Del.Text.Trim(), c.Add.Text.Trim(), c.OldEp.CharStart, c.OldEp.CharEnd,
+                c.NewEp.CharStart, c.NewEp.CharEnd, c.Add.Part,
+                Math.Min(c.Del.ItemOrder, c.Add.ItemOrder), Math.Min(c.Del.HunkOrder, c.Add.HunkOrder));
+        }
+        if (replacements.Count == 0) return events;
+        var output = new List<NativeMarker>();
+        for (var i = 0; i < events.Count; i++)
+        {
+            if (replacements.TryGetValue(i, out var replacement)) output.Add(replacement);
+            else if (!usedA.Contains(i)) output.Add(events[i]);
+        }
+        return output;
+    }
+
+    private sealed record EventPiece(int Start, int End, string Text);
+
+    private static List<EventPiece> EventParts(string fullText, int start, int end)
+    {
+        // Python V3.4 _v34_event_parts: keep a logical phrase together, splitting only a
+        // detached leading sentence delimiter separated from lexical text by whitespace.
+        start = Math.Clamp(start, 0, fullText.Length); end = Math.Clamp(end, start, fullText.Length);
+        while (start < end && char.IsWhiteSpace(fullText[start])) start++;
+        while (end > start && char.IsWhiteSpace(fullText[end - 1])) end--;
+        if (end <= start) return new();
+        var raw = fullText[start..end];
+        if (!raw.Any(char.IsLetterOrDigit)) return new() { new EventPiece(start, end, raw) };
+        var m = Regex.Match(raw, @"^([.!?;:]+)(\s+)(.+)$", RegexOptions.Singleline);
+        if (!m.Success) return new() { new EventPiece(start, end, raw) };
+        var punctEnd = start + m.Groups[1].Length;
+        var lexicalStart = punctEnd + m.Groups[2].Length;
+        return new()
+        {
+            new EventPiece(start, punctEnd, fullText[start..punctEnd]),
+            new EventPiece(lexicalStart, end, fullText[lexicalStart..end])
+        };
     }
 
     private static List<NativeMarker> DiffText(
@@ -524,7 +1051,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         var korean = TryKoreanReviewDiff(oldText, newText, oldBase, newBase, oldDoc, newDoc, pair, pairOrder, part, itemOrder);
         if (korean is not null) return korean;
         var a = LexTokens(oldText); var b = LexTokens(newText);
-        var matches = LcsMatches(a.Select(x => TokenKey(x.Text)).ToArray(), b.Select(x => TokenKey(x.Text)).ToArray());
+        var matches = MatcherPairs(a.Select(x => TokenKey(x.Text)).ToArray(), b.Select(x => TokenKey(x.Text)).ToArray());
         // Common glue words must not split one logical rewrite into dozens of markers.
         // If the fine LCS would create a marker storm, keep only meaningful equal runs as
         // anchors (the/of/and/및/또는 etc. stay inside the surrounding replacement hunk).
@@ -559,15 +1086,25 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             }
             else if (ot.Length > 0)
             {
-                result.Add(NativeMarker.Delete(
-                    pair, pairOrder, oldDoc, newDoc, ot,
-                    oldBase + oldStart, oldBase + oldEnd, newBase + newStart, part, itemOrder, k));
+                foreach (var piece in EventParts(oldText, oldStart, oldEnd))
+                {
+                    if (!includePunctuation && IsPunctuationOnly(piece.Text)) continue;
+                    var anchor = MapBoundary(oldText, newText, piece.Start);
+                    result.Add(NativeMarker.Delete(
+                        pair, pairOrder, oldDoc, newDoc, piece.Text.Trim(),
+                        oldBase + piece.Start, oldBase + piece.End, newBase + anchor, part, itemOrder, k));
+                }
             }
             else if (nt.Length > 0)
             {
-                result.Add(NativeMarker.Insert(
-                    pair, pairOrder, oldDoc, newDoc, nt,
-                    oldBase + oldStart, newBase + newStart, newBase + newEnd, part, itemOrder, k));
+                foreach (var piece in EventParts(newText, newStart, newEnd))
+                {
+                    if (!includePunctuation && IsPunctuationOnly(piece.Text)) continue;
+                    var anchor = MapBoundary(newText, oldText, piece.Start);
+                    result.Add(NativeMarker.Insert(
+                        pair, pairOrder, oldDoc, newDoc, piece.Text.Trim(),
+                        oldBase + anchor, newBase + piece.Start, newBase + piece.End, part, itemOrder, k));
+                }
             }
         }
         return result;
@@ -594,13 +1131,16 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         string oldText, string newText, int oldBase, int newBase, int oldDoc, int newDoc,
         string pair, int pairOrder, string part, int itemOrder)
     {
-        if (Math.Max(oldText.Length, newText.Length) > 120 ||
+        // Exact V5.19.4.4k gate: only compact Korean edits are morph-refined.
+        if (Math.Max(oldText.Length, newText.Length) > 96 ||
             !Regex.IsMatch(oldText, "[가-힣]") || !Regex.IsMatch(newText, "[가-힣]"))
             return null;
 
-        var a = Regex.Matches(oldText, """\S+""").Select(m => new WordSpan(m.Index, m.Index + m.Length, m.Value)).ToList();
-        var b = Regex.Matches(newText, """\S+""").Select(m => new WordSpan(m.Index, m.Index + m.Length, m.Value)).ToList();
-        if (a.Count == 0 || b.Count == 0 || Math.Max(a.Count, b.Count) > 24) return null;
+        var a = Regex.Matches(oldText, @"[가-힣A-Za-z]+|\d+(?:,\d{3})*(?:\.\d+)?%?")
+            .Select(m => new WordSpan(m.Index, m.Index + m.Length, m.Value)).ToList();
+        var b = Regex.Matches(newText, @"[가-힣A-Za-z]+|\d+(?:,\d{3})*(?:\.\d+)?%?")
+            .Select(m => new WordSpan(m.Index, m.Index + m.Length, m.Value)).ToList();
+        if (a.Count == 0 || b.Count == 0) return null;
 
         const double gap = .68;
         var dp = new double[a.Count + 1, b.Count + 1];
@@ -619,7 +1159,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             else { dp[i, j] = ins; prev[i, j] = 'I'; }
         }
 
-        var reversed = new List<WordOp>();
+        var ops = new List<WordOp>();
         var x = a.Count; var y = b.Count;
         while (x > 0 || y > 0)
         {
@@ -627,57 +1167,76 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             if (op == 'M')
             {
                 var (kind, _) = KoreanWordRelation(a[x - 1].Text, b[y - 1].Text);
-                if (kind == "none") return null;
-                reversed.Add(new WordOp(kind, x - 1, y - 1)); x--; y--;
+                ops.Add(new WordOp(kind, x - 1, y - 1)); x--; y--;
             }
-            else if (op == 'D') { reversed.Add(new WordOp("delete", x - 1, null)); x--; }
-            else if (op == 'I') { reversed.Add(new WordOp("insert", null, y - 1)); y--; }
-            else return null;
+            else if (op == 'D') { ops.Add(new WordOp("delete", x - 1, null)); x--; }
+            else { ops.Add(new WordOp("insert", null, y - 1)); y--; }
         }
-        reversed.Reverse();
-        var exact = reversed.Count(o => o.Kind == "equal");
-        var fuzzy = reversed.Count(o => o.Kind == "fuzzy");
+        ops.Reverse();
+        var exact = ops.Count(o => o.Kind == "equal");
+        var fuzzy = ops.Count(o => o.Kind == "fuzzy");
         if (exact < 2 || fuzzy < 2) return null;
 
         var result = new List<NativeMarker>();
-        // Convert each contiguous run of non-equal word operations into ONE review hunk.
-        // This is the C# equivalent of the mature Python replacement coalescer: a local
-        // delete+insert sequence is a replacement, not a spray of independent markers.
-        for (var k = 0; k < reversed.Count;)
+        for (var k = 0; k < ops.Count; k++)
         {
-            if (reversed[k].Kind == "equal") { k++; continue; }
-            var begin = k;
-            while (k < reversed.Count && reversed[k].Kind != "equal") k++;
-            var end = k;
-            var oldIds = reversed.GetRange(begin, end - begin).Where(o => o.OldIndex.HasValue).Select(o => o.OldIndex!.Value).ToList();
-            var newIds = reversed.GetRange(begin, end - begin).Where(o => o.NewIndex.HasValue).Select(o => o.NewIndex!.Value).ToList();
-            if (oldIds.Count > 0 && newIds.Count > 0)
+            var op = ops[k];
+            if (op.Kind == "equal") continue;
+            if (op.Kind == "fuzzy")
             {
-                var os = a[oldIds.Min()].Start; var oe = a[oldIds.Max()].End;
-                var ns = b[newIds.Min()].Start; var ne = b[newIds.Max()].End;
-                var oldRaw = oldText[os..oe]; var newRaw = newText[ns..ne];
+                var ai = op.OldIndex!.Value; var bj = op.NewIndex!.Value;
+                var oldStart = a[ai].Start; var oldEnd = a[ai].End;
+                var newStart = b[bj].Start; var newEnd = b[bj].End;
+
+                if (k + 1 < ops.Count && ops[k + 1].Kind == "delete")
+                {
+                    var dai = ops[k + 1].OldIndex!.Value;
+                    if (dai == ai + 1 && !Regex.IsMatch(oldText[a[ai].End..a[dai].Start], "[가-힣A-Za-z0-9]"))
+                    {
+                        oldEnd = a[dai].End;
+                        k++;
+                    }
+                }
+                else if (k + 1 < ops.Count && ops[k + 1].Kind == "insert")
+                {
+                    var ibj = ops[k + 1].NewIndex!.Value;
+                    if (ibj == bj + 1 && !Regex.IsMatch(newText[b[bj].End..b[ibj].Start], "[가-힣A-Za-z0-9]"))
+                    {
+                        newEnd = b[ibj].End;
+                        k++;
+                    }
+                }
+
+                var oldRaw = oldText[oldStart..oldEnd];
+                var newRaw = newText[newStart..newEnd];
                 var (ot, nt, od, nd) = TrimSharedHangulPrefix(oldRaw, newRaw);
-                if (!SemanticEqual(ot, nt))
-                    result.Add(NativeMarker.Change(pair, pairOrder, oldDoc, newDoc, ot, nt,
-                        oldBase + os + od, oldBase + oe, newBase + ns + nd, newBase + ne,
-                        part, itemOrder, begin));
+                result.Add(NativeMarker.Change(pair, pairOrder, oldDoc, newDoc,
+                    ot.Trim(), nt.Trim(), oldBase + oldStart + od, oldBase + oldEnd,
+                    newBase + newStart + nd, newBase + newEnd, part, itemOrder, k));
             }
-            else if (oldIds.Count > 0)
+            else if (op.Kind == "delete")
             {
-                var os = a[oldIds.Min()].Start; var oe = a[oldIds.Max()].End;
-                var anchor = LocalNewAnchor(reversed, begin, a, b);
-                result.Add(NativeMarker.Delete(pair, pairOrder, oldDoc, newDoc, oldText[os..oe],
-                    oldBase + os, oldBase + oe, newBase + anchor, part, itemOrder, begin));
+                var ai = op.OldIndex!.Value;
+                var os = a[ai].Start; var oe = a[ai].End;
+                var anchor = MapBoundary(oldText, newText, os);
+                result.Add(NativeMarker.Delete(pair, pairOrder, oldDoc, newDoc,
+                    oldText[os..oe], oldBase + os, oldBase + oe, newBase + anchor, part, itemOrder, k));
             }
-            else if (newIds.Count > 0)
+            else if (op.Kind == "insert")
             {
-                var ns = b[newIds.Min()].Start; var ne = b[newIds.Max()].End;
-                var anchor = LocalOldAnchor(reversed, begin, a, b);
-                result.Add(NativeMarker.Insert(pair, pairOrder, oldDoc, newDoc, newText[ns..ne],
-                    oldBase + anchor, newBase + ns, newBase + ne, part, itemOrder, begin));
+                var bj = op.NewIndex!.Value;
+                var ns = b[bj].Start; var ne = b[bj].End;
+                var anchor = MapBoundary(newText, oldText, ns);
+                result.Add(NativeMarker.Insert(pair, pairOrder, oldDoc, newDoc,
+                    newText[ns..ne], oldBase + anchor, newBase + ns, newBase + ne, part, itemOrder, k));
+            }
+            else
+            {
+                // Python returns None if an unrelated substitution survived the DP alignment.
+                return null;
             }
         }
-        return result.Count is >= 1 and <= 8 ? result : null;
+        return result.Count is >= 2 and <= 8 ? result : null;
     }
 
     private static (string Kind, double Cost) KoreanWordRelation(string a, string b)
@@ -758,19 +1317,50 @@ public sealed class NativeComparisonEngine : IComparisonEngine
 
     private static List<PartMatch> MatchParts(IReadOnlyList<NativePart> a, IReadOnlyList<NativePart> b)
     {
-        var result = new List<PartMatch>(); var usedA = new HashSet<int>(); var usedB = new HashSet<int>();
-        void Take(int i, int j, double score) { if (usedA.Add(i) && usedB.Add(j)) result.Add(new PartMatch(i, j, score)); }
-
-        // Exact text first: this is what detects pure moves/renumbering such as 3. -> 4.
-        for (var i = 0; i < a.Count; i++)
+        // Python V5.19.4.4 one-sided numbered-list guard. If only one side introduces a real
+        // multi-item legal list, explicit items stay unmatched and therefore become clean
+        // additions/deletions; only unnumbered introductions may pair with each other.
+        var structuredA = Enumerable.Range(0, a.Count).Where(i => a[i].Label is not ("" or "본문")).ToList();
+        var structuredB = Enumerable.Range(0, b.Count).Where(i => b[i].Label is not ("" or "본문")).ToList();
+        var oneSided = (structuredA.Count >= 2 && structuredB.Count == 0) ||
+                       (structuredB.Count >= 2 && structuredA.Count == 0);
+        if (oneSided)
         {
-            var exact = Enumerable.Range(0, b.Count)
-                .Where(j => !usedB.Contains(j) && Normalize(a[i].Core) == Normalize(b[j].Core))
-                .OrderBy(j => Math.Abs(i - j)).ToList();
-            if (exact.Count > 0) Take(i, exact[0], 1.0);
+            var candidates = new List<(double Score, int Distance, int A, int B)>();
+            for (var i = 0; i < a.Count; i++)
+            {
+                if (a[i].Label != "본문") continue;
+                for (var j = 0; j < b.Count; j++)
+                {
+                    if (b[j].Label != "본문") continue;
+                    var score = PartSimilarity(a[i], b[j]);
+                    if (score >= .32 || LineageNormalize(a[i].Core) == LineageNormalize(b[j].Core))
+                        candidates.Add((score, -Math.Abs(i - j), i, j));
+                }
+            }
+            var usedA0 = new HashSet<int>(); var usedB0 = new HashSet<int>(); var guarded = new List<PartMatch>();
+            foreach (var c in candidates.OrderByDescending(x => x.Score).ThenByDescending(x => x.Distance))
+                if (usedA0.Add(c.A) && usedB0.Add(c.B)) guarded.Add(new PartMatch(c.A, c.B, Math.Max(c.Score, .50)));
+            return guarded;
         }
 
-        // Definition heads are stable identities even if the number changes.
+        var result = new List<PartMatch>(); var usedA = new HashSet<int>(); var usedB = new HashSet<int>();
+        void Take(int i, int j, double score)
+        {
+            if (usedA.Add(i) && usedB.Add(j)) result.Add(new PartMatch(i, j, score));
+        }
+
+        // Python V5.7 stage 1: exact normalized content is definitive regardless of number/location.
+        for (var i = 0; i < a.Count; i++)
+        {
+            var norm = LineageNormalize(a[i].Core); if (norm.Length == 0) continue;
+            var cand = Enumerable.Range(0, b.Count)
+                .Where(j => !usedB.Contains(j) && LineageNormalize(b[j].Core) == norm)
+                .OrderBy(j => Math.Abs(i - j)).ToList();
+            if (cand.Count > 0) Take(i, cand[0], 1.0);
+        }
+
+        // Stage 2: definition head is an identity key (Company stays Company, Member stays Member).
         for (var i = 0; i < a.Count; i++)
         {
             if (usedA.Contains(i)) continue;
@@ -779,39 +1369,10 @@ public sealed class NativeComparisonEngine : IComparisonEngine
                 .Where(j => !usedB.Contains(j) && DefinitionHead(b[j].Core) == head)
                 .Select(j => (J: j, S: PartSimilarity(a[i], b[j])))
                 .OrderByDescending(x => x.S).ThenBy(x => Math.Abs(i - x.J)).FirstOrDefault();
-            if (cand != default) Take(i, cand.J, Math.Max(.9, cand.S));
+            if (cand != default) Take(i, cand.J, Math.Max(.90, cand.S));
         }
 
-        // A single unnumbered paragraph on each side of the same aligned article is one
-        // structural slot even when it was substantially rewritten. Without this guard the
-        // C# port emitted a detached delete + insert and anchored many later badges at the
-        // beginning of the revised paragraph.
-        var plainA = Enumerable.Range(0, a.Count)
-            .Where(i => !usedA.Contains(i) && a[i].Label == "본문").ToList();
-        var plainB = Enumerable.Range(0, b.Count)
-            .Where(j => !usedB.Contains(j) && b[j].Label == "본문").ToList();
-        if (plainA.Count == 1 && plainB.Count == 1 && a.Count == 1 && b.Count == 1)
-        {
-            var i = plainA[0]; var j = plainB[0];
-            Take(i, j, Math.Max(.50, PartSimilarity(a[i], b[j])));
-        }
-
-        // A completely rewritten item can have almost no lexical overlap.  Treat it as one
-        // replacement only when it is an isolated same-number slot bounded by already matched
-        // neighbours on both sides.  This captures a true "item 3 rewritten" without turning
-        // a whole newly inserted 3./4./5./... block into bogus replacements.
-        for (var i = 1; i + 1 < a.Count; i++)
-        {
-            if (usedA.Contains(i) || a[i].Label == "본문") continue;
-            var j = Enumerable.Range(1, Math.Max(0, b.Count - 2))
-                .FirstOrDefault(x => !usedB.Contains(x) && b[x].Label == a[i].Label, -1);
-            if (j < 1 || j + 1 >= b.Count) continue;
-            var left = result.Any(m => m.Old == i - 1 && m.New == j - 1);
-            var right = result.Any(m => m.Old == i + 1 && m.New == j + 1);
-            if (left && right) Take(i, j, .55);
-        }
-
-        // Same item number is only a hint. Unrelated new items sharing 3./4./5. stay additions.
+        // Stage 3: same explicit enumerator is the normal legal anchor once some relationship remains.
         for (var i = 0; i < a.Count; i++)
         {
             if (usedA.Contains(i) || a[i].Label == "본문") continue;
@@ -819,27 +1380,28 @@ public sealed class NativeComparisonEngine : IComparisonEngine
                 .Where(j => !usedB.Contains(j) && b[j].Label == a[i].Label)
                 .Select(j => (J: j, S: PartSimilarity(a[i], b[j])))
                 .OrderByDescending(x => x.S).FirstOrDefault();
-            if (cand != default)
-            {
-                var stableEdge = HasStableEdgeContext(a[i].Core, b[cand.J].Core);
-                var isolatedPair = a.Count == 1 && b.Count == 1;
-                // Python V5.7 treated an explicit same enumerator as the normal legal anchor
-                // once some lexical relationship remained.  The C# port used .46 here, which
-                // was too strict and turned rewritten definitions into detached delete+insert.
-                if (cand.S >= .24 || stableEdge || isolatedPair)
-                    Take(i, cand.J, Math.Max(cand.S, stableEdge ? .60 : .55));
-            }
+            if (cand != default && cand.S >= .24) Take(i, cand.J, Math.Max(cand.S, .55));
         }
 
-        // Strong residual content match catches edited moved items.
-        var fuzzy = new List<(double Score, int A, int B)>();
-        for (var i = 0; i < a.Count; i++) if (!usedA.Contains(i))
-            for (var j = 0; j < b.Count; j++) if (!usedB.Contains(j))
+        // Stage 4: residual moves need strong evidence and conflicting definition heads never pair.
+        var residual = new List<(double Score, double Contain, int Distance, int A, int B)>();
+        for (var i = 0; i < a.Count; i++)
+        {
+            if (usedA.Contains(i)) continue;
+            var ha = DefinitionHead(a[i].Core); var wa = WordSet(a[i].Core);
+            for (var j = 0; j < b.Count; j++)
             {
-                var score = PartSimilarity(a[i], b[j]);
-                if (score >= .70) fuzzy.Add((score, i, j));
+                if (usedB.Contains(j)) continue;
+                var hb = DefinitionHead(b[j].Core);
+                if (ha.Length > 0 && hb.Length > 0 && ha != hb) continue;
+                var score = PartSimilarity(a[i], b[j]); var wb = WordSet(b[j].Core);
+                var shared = wa.Intersect(wb).Count();
+                var contain = shared / (double)Math.Max(1, Math.Min(wa.Count, wb.Count));
+                if (score >= .72 && (shared >= 2 || contain >= .58))
+                    residual.Add((score, contain, -Math.Abs(i - j), i, j));
             }
-        foreach (var x in fuzzy.OrderByDescending(x => x.Score))
+        }
+        foreach (var x in residual.OrderByDescending(x => x.Score).ThenByDescending(x => x.Contain).ThenByDescending(x => x.Distance))
             if (!usedA.Contains(x.A) && !usedB.Contains(x.B)) Take(x.A, x.B, x.Score);
         return result;
     }
@@ -880,8 +1442,8 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     {
         var ca = a.Core.Trim(); var cb = b.Core.Trim();
         if (ca.Length == 0 || cb.Length == 0) return 0;
-        if (Normalize(ca) == Normalize(cb)) return 1;
-        var seq = Similarity(ca, cb);
+        if (LineageNormalize(ca) == LineageNormalize(cb)) return 1;
+        var seq = SequenceRatio(LineageNormalize(ca), LineageNormalize(cb));
         var aw = WordSet(ca); var bw = WordSet(cb);
         var shared = aw.Intersect(bw).Count();
         var union = aw.Union(bw).Count();
@@ -960,17 +1522,155 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return result;
     }
 
+    private static List<(int A, int B, int Size)> MatcherBlocks(IReadOnlyList<string> a, IReadOnlyList<string> b)
+    {
+        var b2j = new Dictionary<string, List<int>>(StringComparer.Ordinal);
+        for (var j = 0; j < b.Count; j++)
+        {
+            if (!b2j.TryGetValue(b[j], out var list)) b2j[b[j]] = list = new List<int>();
+            list.Add(j);
+        }
+        var queue = new Stack<(int Alo, int Ahi, int Blo, int Bhi)>();
+        queue.Push((0, a.Count, 0, b.Count));
+        var found = new List<(int A, int B, int Size)>();
+        while (queue.Count > 0)
+        {
+            var (alo, ahi, blo, bhi) = queue.Pop();
+            var bestI = alo; var bestJ = blo; var bestSize = 0;
+            var j2len = new Dictionary<int, int>();
+            for (var i = alo; i < ahi; i++)
+            {
+                var next = new Dictionary<int, int>();
+                if (b2j.TryGetValue(a[i], out var js))
+                {
+                    foreach (var j in js)
+                    {
+                        if (j < blo) continue;
+                        if (j >= bhi) break;
+                        var k = (j2len.TryGetValue(j - 1, out var prev) ? prev : 0) + 1;
+                        next[j] = k;
+                        if (k > bestSize) { bestI = i - k + 1; bestJ = j - k + 1; bestSize = k; }
+                    }
+                }
+                j2len = next;
+            }
+            if (bestSize == 0) continue;
+            found.Add((bestI, bestJ, bestSize));
+            if (alo < bestI && blo < bestJ) queue.Push((alo, bestI, blo, bestJ));
+            if (bestI + bestSize < ahi && bestJ + bestSize < bhi)
+                queue.Push((bestI + bestSize, ahi, bestJ + bestSize, bhi));
+        }
+        found.Sort((x, y) => x.A != y.A ? x.A.CompareTo(y.A) : x.B.CompareTo(y.B));
+        var merged = new List<(int A, int B, int Size)>();
+        foreach (var block in found)
+        {
+            if (merged.Count > 0)
+            {
+                var last = merged[^1];
+                if (last.A + last.Size == block.A && last.B + last.Size == block.B)
+                {
+                    merged[^1] = (last.A, last.B, last.Size + block.Size);
+                    continue;
+                }
+            }
+            merged.Add(block);
+        }
+        merged.Add((a.Count, b.Count, 0));
+        return merged;
+    }
+
+    private static List<(int A, int B)> MatcherPairs(IReadOnlyList<string> a, IReadOnlyList<string> b)
+    {
+        var result = new List<(int A, int B)>();
+        foreach (var block in MatcherBlocks(a, b))
+            for (var k = 0; k < block.Size; k++) result.Add((block.A + k, block.B + k));
+        return result;
+    }
+
+    private static List<(string Tag, int A1, int A2, int B1, int B2)> MatcherOpcodes(IReadOnlyList<string> a, IReadOnlyList<string> b)
+    {
+        var result = new List<(string, int, int, int, int)>();
+        var i = 0; var j = 0;
+        foreach (var (ai, bj, size) in MatcherBlocks(a, b))
+        {
+            var tag = i < ai && j < bj ? "replace" : i < ai ? "delete" : j < bj ? "insert" : string.Empty;
+            if (tag.Length > 0) result.Add((tag, i, ai, j, bj));
+            if (size > 0) result.Add(("equal", ai, ai + size, bj, bj + size));
+            i = ai + size; j = bj + size;
+        }
+        return result;
+    }
+
+    private static List<TokenSpan> BoundaryLexSpans(string text) =>
+        Regex.Matches(text ?? string.Empty, @"[가-힣A-Za-z]+(?:['’][A-Za-z]+)?|\d+(?:,\d{3})*(?:\.\d+)?%?")
+            .Select(m => new TokenSpan(m.Index, m.Index + m.Length, m.Value)).ToList();
+
+    private static int BaseMapBoundary(string src, string dst, int pos)
+    {
+        src ??= string.Empty; dst ??= string.Empty;
+        pos = Math.Clamp(pos, 0, src.Length);
+        var insideWord = pos > 0 && pos < src.Length && BoundaryWordChar(src[pos - 1]) && BoundaryWordChar(src[pos]);
+        if (!insideWord)
+        {
+            var a = BoundaryLexSpans(src); var b = BoundaryLexSpans(dst);
+            if (a.Count > 0 && b.Count > 0)
+            {
+                var ak = a.Select(x => LineageNormalize(x.Text)).ToArray();
+                var bk = b.Select(x => LineageNormalize(x.Text)).ToArray();
+                var map = new Dictionary<int, int>();
+                foreach (var block in MatcherBlocks(ak, bk))
+                    for (var k = 0; k < block.Size; k++) map[block.A + k] = block.B + k;
+                var left = Enumerable.Range(0, a.Count).Where(i => a[i].End <= pos && map.ContainsKey(i)).ToList();
+                var right = Enumerable.Range(0, a.Count).Where(i => a[i].Start >= pos && map.ContainsKey(i)).ToList();
+                int? li = left.Count > 0 ? left.OrderByDescending(i => a[i].End).First() : null;
+                int? ri = right.Count > 0 ? right.OrderBy(i => a[i].Start).First() : null;
+                if (li is int l && ri is int r)
+                {
+                    var dl = map[l]; var dr = map[r];
+                    if (dl <= dr && b[dl].End <= b[dr].Start) return Math.Clamp(b[dl].End, 0, dst.Length);
+                }
+                if (li is int l2) return Math.Clamp(b[map[l2]].End, 0, dst.Length);
+                if (ri is int r2) return Math.Clamp(b[map[r2]].Start, 0, dst.Length);
+            }
+        }
+
+        var ac = src.Select(ch => ch.ToString()).ToArray();
+        var bc = dst.Select(ch => ch.ToString()).ToArray();
+        foreach (var (tag, i1, i2, j1, j2) in MatcherOpcodes(ac, bc))
+        {
+            if (tag == "equal" && i1 <= pos && pos <= i2)
+                return Math.Clamp(j1 + Math.Min(pos - i1, j2 - j1), 0, dst.Length);
+            if (i1 <= pos && pos <= i2)
+            {
+                if (i2 == i1) return Math.Clamp(j1, 0, dst.Length);
+                var frac = (pos - i1) / (double)Math.Max(1, i2 - i1);
+                return Math.Clamp((int)Math.Round(j1 + frac * (j2 - j1)), 0, dst.Length);
+            }
+            if (pos < i1) return Math.Clamp(j1, 0, dst.Length);
+        }
+        return dst.Length;
+    }
+
+    private static bool BoundaryWordChar(char ch) =>
+        char.IsLetterOrDigit(ch) || ch == '_' || ch is >= '가' and <= '힣';
+
     private static int MapBoundary(string src, string dst, int pos)
     {
+        src ??= string.Empty; dst ??= string.Empty;
         pos = Math.Clamp(pos, 0, src.Length);
-        var a = LexTokens(src); var b = LexTokens(dst);
-        var matches = LcsMatches(a.Select(x => TokenKey(x.Text)).ToArray(), b.Select(x => TokenKey(x.Text)).ToArray());
-        var left = matches.Where(x => a[x.A].End <= pos).LastOrDefault((-1, -1));
-        var right = matches.Where(x => a[x.A].Start >= pos).FirstOrDefault((-1, -1));
-        if (left.Item1 >= 0 && right.Item1 >= 0) return b[left.Item2].End;
-        if (left.Item1 >= 0) return b[left.Item2].End;
-        if (right.Item1 >= 0) return b[right.Item2].Start;
-        return Math.Clamp((int)Math.Round(dst.Length * (pos / (double)Math.Max(1, src.Length))), 0, dst.Length);
+        var mapped = BaseMapBoundary(src, dst, pos);
+
+        // Python V5.19.4.3 final wrapper: when the source boundary follows sentence
+        // punctuation, move the counterpart across only punctuation/whitespace in the
+        // destination. Never consume the next lexical word.
+        var left = pos;
+        while (left > 0 && !BoundaryWordChar(src[left - 1])) left--;
+        var separator = src[left..pos];
+        if (separator.Length == 0 || !Regex.IsMatch(separator, @"[.!?。！？;:]|\n"))
+            return mapped;
+        var q = Math.Clamp(mapped, 0, dst.Length);
+        while (q < dst.Length && !BoundaryWordChar(dst[q])) q++;
+        return q;
     }
 
     private static int StructuralGapAnchor(
@@ -1099,15 +1799,120 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return sb.ToString().Trim();
     }
 
-    internal static bool SemanticEqual(string a, string b) => Normalize(a) == Normalize(b);
+    private static string CanonicalVisibleText(string value)
+    {
+        // Python V5.18.9 semantic no-op guard is deliberately separate from matching
+        // normalization: preserve visible case/punctuation, ignore only invisible formatting
+        // controls, Unicode decomposition and whitespace-family differences. FE00-FE0F are
+        // also ignored because Word can surface variation selectors with no review value.
+        value = (value ?? string.Empty).Normalize(NormalizationForm.FormC);
+        var sb = new StringBuilder(value.Length);
+        var pendingSpace = false;
+        foreach (var ch in value)
+        {
+            var category = char.GetUnicodeCategory(ch);
+            if (ch is '\u200b' or '\u200c' or '\u200d' or '\u2060' or '\ufeff' ||
+                ch is >= '\ufe00' and <= '\ufe0f' || category == UnicodeCategory.Format)
+                continue;
+            if (char.IsWhiteSpace(ch))
+            {
+                pendingSpace = sb.Length > 0;
+                continue;
+            }
+            if (pendingSpace) sb.Append(' ');
+            pendingSpace = false;
+            sb.Append(ch);
+        }
+        return sb.ToString().Trim();
+    }
+
+    internal static bool SemanticEqual(string a, string b) =>
+        string.Equals(CanonicalVisibleText(a), CanonicalVisibleText(b), StringComparison.Ordinal);
     private static string TokenKey(string value) => Normalize(value);
     private static string DefinitionHead(string value)
     {
         var m = QuotedHead.Match(value ?? string.Empty); return m.Success ? Normalize(m.Groups[1].Value) : string.Empty;
     }
     private static HashSet<string> WordSet(string value) =>
-        Regex.Matches(Normalize(value), """[가-힣A-Za-z0-9_]+""", RegexOptions.CultureInvariant)
+        Regex.Matches((value ?? string.Empty).ToLowerInvariant(), @"[가-힣A-Za-z]+|\d+(?:,\d{3})*(?:\.\d+)?%?", RegexOptions.CultureInvariant)
             .Select(x => x.Value).Where(x => x.Length > 0).ToHashSet(StringComparer.Ordinal);
+
+    private static double IndelRatio(string a, string b)
+    {
+        a ??= string.Empty; b ??= string.Empty;
+        if (a == b) return 1.0;
+        if (a.Length == 0 || b.Length == 0) return 0.0;
+
+        // RapidFuzz Indel.normalized_similarity = 2 * LCS(a,b) / (|a|+|b|).
+        // Use the Hyyro bit-parallel LCS recurrence so article alignment keeps Python's
+        // scoring without the O(n*m) character matrix.
+        if (b.Length > a.Length) (a, b) = (b, a);
+        var masks = new Dictionary<char, BigInteger>();
+        for (var j = 0; j < b.Length; j++)
+        {
+            var bit = BigInteger.One << j;
+            masks[b[j]] = masks.TryGetValue(b[j], out var cur) ? cur | bit : bit;
+        }
+        var row = BigInteger.Zero;
+        var allMask = (BigInteger.One << b.Length) - BigInteger.One;
+        foreach (var ch in a)
+        {
+            var m = masks.TryGetValue(ch, out var mask) ? mask : BigInteger.Zero;
+            var x = row | m;
+            var y = (row << 1) | BigInteger.One;
+            row = x & (~(x - y) & allMask);
+        }
+        var bytes = row.ToByteArray(isUnsigned: true, isBigEndian: false);
+        long lcs = 0;
+        foreach (var by in bytes) lcs += BitOperations.PopCount((uint)by);
+        return 2.0 * lcs / Math.Max(1, a.Length + b.Length);
+    }
+
+    private static double SequenceRatio(string a, string b)
+    {
+        a ??= string.Empty; b ??= string.Empty;
+        if (a == b) return 1.0;
+        if (a.Length == 0 || b.Length == 0) return 0.0;
+
+        // Port of difflib.SequenceMatcher(..., autojunk=False).ratio() for character sequences.
+        var b2j = new Dictionary<char, List<int>>();
+        for (var j = 0; j < b.Length; j++)
+        {
+            if (!b2j.TryGetValue(b[j], out var list)) b2j[b[j]] = list = new List<int>();
+            list.Add(j);
+        }
+        var queue = new Stack<(int Alo, int Ahi, int Blo, int Bhi)>();
+        queue.Push((0, a.Length, 0, b.Length));
+        var matches = 0;
+        while (queue.Count > 0)
+        {
+            var (alo, ahi, blo, bhi) = queue.Pop();
+            var bestI = alo; var bestJ = blo; var bestSize = 0;
+            var j2len = new Dictionary<int, int>();
+            for (var i = alo; i < ahi; i++)
+            {
+                var next = new Dictionary<int, int>();
+                if (b2j.TryGetValue(a[i], out var js))
+                {
+                    foreach (var j in js)
+                    {
+                        if (j < blo) continue;
+                        if (j >= bhi) break;
+                        var k = (j2len.TryGetValue(j - 1, out var prev) ? prev : 0) + 1;
+                        next[j] = k;
+                        if (k > bestSize) { bestI = i - k + 1; bestJ = j - k + 1; bestSize = k; }
+                    }
+                }
+                j2len = next;
+            }
+            if (bestSize == 0) continue;
+            matches += bestSize;
+            if (alo < bestI && blo < bestJ) queue.Push((alo, bestI, blo, bestJ));
+            var ai2 = bestI + bestSize; var bj2 = bestJ + bestSize;
+            if (ai2 < ahi && bj2 < bhi) queue.Push((ai2, ahi, bj2, bhi));
+        }
+        return 2.0 * matches / (a.Length + b.Length);
+    }
 
     internal static double Similarity(string a, string b)
     {
@@ -1171,6 +1976,16 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             Num = Num, RelativeDoc = RelativeDoc, TargetDoc = TargetDoc, Action = Action, Text = Text,
             CharStart = CharStart, CharEnd = CharEnd, Part = Part, Message = Message, Label = Pair, Pair = Pair,
             StructuralNumber = StructuralNumber, Endpoints = Endpoints
+        };
+
+        public static NativeMarker ArticleNumberChange(string pair, int order, int oldDoc, int newDoc, string oldText, string newText,
+            int oldStart, int oldEnd, int newStart, int newEnd) => new()
+        {
+            Pair = pair, PairOrder = order, RelativeDoc = newDoc, TargetDoc = newDoc, Action = "변경", Text = newText,
+            CharStart = newStart, CharEnd = newEnd, Part = "header", ItemOrder = -1, HunkOrder = -2,
+            StructuralNumber = true,
+            Message = $"조 번호 변경: “{oldText}” → “{newText}”",
+            Endpoints = new() { new() { TargetDoc = oldDoc, CharStart = oldStart, CharEnd = oldEnd }, new() { TargetDoc = newDoc, CharStart = newStart, CharEnd = newEnd } }
         };
 
         public static NativeMarker StructuralChange(string pair, int order, int oldDoc, int newDoc, string oldText, string newText,
