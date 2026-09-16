@@ -7,18 +7,27 @@ namespace DocumentCompare.Avalonia.Engine;
 
 public sealed class NativeComparisonEngine : IComparisonEngine
 {
-    private static readonly Regex KoreanArticle = new(@"^\s*제\s*(\d+)\s*조(?:\s*의\s*(\d+))?\s*(?:\(([^\n\)]{1,120})\))?\s*(.*)$", RegexOptions.Compiled);
-    private static readonly Regex EnglishArticle = new(@"^\s*(?:Article|Section)\s+(\d+(?:[-.]\d+)*)\s*(?:[.:-])?\s*(.*)$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
-    private static readonly Regex SectionHeading = new(
-        @"^\s*(?:제\s*\d+\s*(?:장|절|관)\b.*|(?:Chapter|Part)\s+\d+(?:[-.]\d+)*\b.*)$",
+    private static readonly Regex KoreanArticle = new(
+        """^\s*제\s*(\d+)\s*조(?:\s*의\s*(\d+))?\s*(?:\(([^\n)]{1,120})\))?\s*(.*)$""",
+        RegexOptions.Compiled);
+    private static readonly Regex EnglishArticle = new(
+        """^\s*(?:Article|Section)\s+(\d+(?:[-.]\d+)*)\s*(?:[.:-])?\s*(.*)$""",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-    private static readonly Regex ExplicitItem = new(@"^\s*(?<label>(?:[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|\(\d+\)|\d+[.)]|[가-하A-Za-z][.)]))(?<ws>\s+)(?<core>.*)$", RegexOptions.Compiled);
+    private static readonly Regex SectionHeading = new(
+        """^\s*(?:제\s*\d+\s*(?:장|절|관)\b.*|(?:Chapter|Part)\s+\d+(?:[-.]\d+)*\b.*)$""",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex ExplicitItem = new(
+        """^[ \t]*(?<label>(?:[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|\(\d+\)|\d+[.)]|[가-하A-Za-z][.)]))(?<ws>[ \t]+)""",
+        RegexOptions.Compiled | RegexOptions.Multiline | RegexOptions.CultureInvariant);
     private static readonly Regex StrongInlineEnglishArticle = new(
-        @"(?<![A-Za-z0-9])(?:Article|Section)\s+\d+(?:[-.]\d+)*\s*(?:[.:-])?\s*\([^\n)]{1,180}[)}]",
+        """(?<![A-Za-z0-9])(?:Article|Section)\s+\d+(?:[-.]\d+)*\s*(?:[.:-])?\s*\([^\n)]{1,180}[)}]""",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex StrongInlineKoreanArticle = new(
-        @"제\s*\d+\s*조(?:\s*의\s*\d+)?\s*\([^\n)]{1,180}[)}]", RegexOptions.Compiled);
-    private static readonly Regex QuotedHead = new("^\\s*[\\\"“‘]([^\\\"”’]{1,96})[\\\"”’]", RegexOptions.Compiled);
+        """제\s*\d+\s*조(?:\s*의\s*\d+)?\s*\([^\n)]{1,180}[)}]""",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex QuotedHead = new(
+        "^\\s*[\\x22“‘]([^\\x22”’]{1,96})[\\x22”’]",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private readonly object _cancelLock = new();
     private CancellationTokenSource? _activeOperation;
 
@@ -137,7 +146,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     private static string CleanArticleTitle(string value)
     {
         var s = (value ?? string.Empty).Trim();
-        s = Regex.Replace(s, @"^[\s.:\-–—]+", string.Empty);
+        s = Regex.Replace(s, """^[\s.:\-–—]+""", string.Empty);
         s = s.Trim();
         // Word revisions sometimes change only the title wrapper, e.g. (Purpose) -> : Purpose
         // or even leave a mismatched brace. Identity is the lexical title, not its wrapper.
@@ -149,7 +158,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     {
         var raw = (value ?? string.Empty).Trim();
         if (raw.Length == 0) return (string.Empty, string.Empty);
-        var titled = Regex.Match(raw, @"^[\(\{\[](?<title>[^\)\}\]\n]{1,180})[\)\}\]]\s*(?<tail>.*)$");
+        var titled = Regex.Match(raw, """^[\(\{\[](?<title>[^\)\}\]\n]{1,180})[\)\}\]]\s*(?<tail>.*)$""");
         if (titled.Success)
             return (CleanArticleTitle(titled.Groups["title"].Value), titled.Groups["tail"].Value.Trim());
         return (CleanArticleTitle(raw), string.Empty);
@@ -589,8 +598,8 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             !Regex.IsMatch(oldText, "[가-힣]") || !Regex.IsMatch(newText, "[가-힣]"))
             return null;
 
-        var a = Regex.Matches(oldText, @"\S+").Select(m => new WordSpan(m.Index, m.Index + m.Length, m.Value)).ToList();
-        var b = Regex.Matches(newText, @"\S+").Select(m => new WordSpan(m.Index, m.Index + m.Length, m.Value)).ToList();
+        var a = Regex.Matches(oldText, """\S+""").Select(m => new WordSpan(m.Index, m.Index + m.Length, m.Value)).ToList();
+        var b = Regex.Matches(newText, """\S+""").Select(m => new WordSpan(m.Index, m.Index + m.Length, m.Value)).ToList();
         if (a.Count == 0 || b.Count == 0 || Math.Max(a.Count, b.Count) > 24) return null;
 
         const double gap = .68;
@@ -705,53 +714,44 @@ public sealed class NativeComparisonEngine : IComparisonEngine
 
     private static List<NativePart> ParseParts(string text)
     {
-        text = NativeDocumentReader.NormalizeNewlines(text);
+        text = NativeDocumentReader.NormalizeNewlines(text ?? string.Empty);
+        var matches = ExplicitItem.Matches(text).Cast<Match>().ToList();
+        if (matches.Count == 0)
+        {
+            var st = 0; var en = text.Length;
+            while (st < en && char.IsWhiteSpace(text[st])) st++;
+            while (en > st && char.IsWhiteSpace(text[en - 1])) en--;
+            return en <= st
+                ? new List<NativePart>()
+                : new List<NativePart> { new("본문", st, en, st, en, text[st..en]) };
+        }
+
         var parts = new List<NativePart>();
-        var lines = text.Split('\n');
-        var cursor = 0;
-        int? plainStart = null;
-        int plainEnd = 0;
-
-        void FlushPlain()
+        var first = matches[0];
+        if (first.Index > 0 && !string.IsNullOrWhiteSpace(text[..first.Index]))
         {
-            if (plainStart is not int st) return;
-            var raw = text[st..plainEnd];
-            var leading = raw.Length - raw.TrimStart().Length;
-            var trailing = raw.Length - raw.TrimEnd().Length;
-            var coreStart = st + leading;
-            var coreEnd = Math.Max(coreStart, plainEnd - trailing);
-            if (coreEnd > coreStart)
-                parts.Add(new NativePart("본문", coreStart, coreEnd, coreStart, coreEnd, text[coreStart..coreEnd]));
-            plainStart = null; plainEnd = 0;
+            var st = 0; var en = first.Index;
+            while (st < en && char.IsWhiteSpace(text[st])) st++;
+            while (en > st && char.IsWhiteSpace(text[en - 1])) en--;
+            if (en > st) parts.Add(new NativePart("본문", st, en, st, en, text[st..en]));
         }
 
-        foreach (var line in lines)
+        for (var i = 0; i < matches.Count; i++)
         {
-            var m = ExplicitItem.Match(line);
-            if (m.Success)
-            {
-                FlushPlain();
-                var core = m.Groups["core"].Value.TrimEnd();
-                var coreStart = cursor + m.Groups["core"].Index;
-                var itemStart = cursor + Math.Max(0, line.Length - line.TrimStart().Length);
-                parts.Add(new NativePart(m.Groups["label"].Value, itemStart, cursor + line.Length,
-                    coreStart, coreStart + core.Length, core));
-            }
-            else if (!string.IsNullOrWhiteSpace(line))
-            {
-                var trim = line.Trim();
-                var delta = line.IndexOf(trim, StringComparison.Ordinal);
-                var st = cursor + Math.Max(0, delta);
-                if (plainStart is null) plainStart = st;
-                plainEnd = cursor + line.Length;
-            }
-            cursor += line.Length + 1;
-        }
-        FlushPlain();
-        if (parts.Count == 0 && !string.IsNullOrWhiteSpace(text))
-        {
-            var trim = text.Trim(); var st = text.IndexOf(trim, StringComparison.Ordinal);
-            parts.Add(new NativePart("본문", st, st + trim.Length, st, st + trim.Length, trim));
+            var m = matches[i];
+            var segStart = m.Index;
+            var segEnd = i + 1 < matches.Count ? matches[i + 1].Index : text.Length;
+            var coreStart = m.Index + m.Length;
+            var coreEnd = segEnd;
+            while (coreStart < coreEnd && char.IsWhiteSpace(text[coreStart])) coreStart++;
+            while (coreEnd > coreStart && char.IsWhiteSpace(text[coreEnd - 1])) coreEnd--;
+            parts.Add(new NativePart(
+                m.Groups["label"].Value,
+                segStart,
+                segEnd,
+                coreStart,
+                coreEnd,
+                text[coreStart..coreEnd]));
         }
         return parts;
     }
@@ -827,7 +827,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
                 // once some lexical relationship remained.  The C# port used .46 here, which
                 // was too strict and turned rewritten definitions into detached delete+insert.
                 if (cand.S >= .24 || stableEdge || isolatedPair)
-                    Take(i, cand.J, Math.Max(cand.S, stableEdge ? .60 : (isolatedPair ? .55 : .24)));
+                    Take(i, cand.J, Math.Max(cand.S, stableEdge ? .60 : .55));
             }
         }
 
@@ -846,9 +846,9 @@ public sealed class NativeComparisonEngine : IComparisonEngine
 
     private static bool HasReviewAnchors(string a, string b)
     {
-        var aw = Regex.Matches(a ?? string.Empty, @"[가-힣A-Za-z0-9_]+")
+        var aw = Regex.Matches(a ?? string.Empty, """[가-힣A-Za-z0-9_]+""")
             .Select(m => TokenKey(m.Value)).Where(x => x.Length > 0).ToList();
-        var bw = Regex.Matches(b ?? string.Empty, @"[가-힣A-Za-z0-9_]+")
+        var bw = Regex.Matches(b ?? string.Empty, """[가-힣A-Za-z0-9_]+""")
             .Select(m => TokenKey(m.Value)).Where(x => x.Length > 0).ToList();
         var shared = aw.Intersect(bw).Count(x => !ReviewStopWords.Contains(x));
         if (shared >= 2) return true;
@@ -878,17 +878,24 @@ public sealed class NativeComparisonEngine : IComparisonEngine
 
     private static double PartSimilarity(NativePart a, NativePart b)
     {
-        var seq = Similarity(a.Core, b.Core);
-        var aw = WordSet(a.Core); var bw = WordSet(b.Core);
+        var ca = a.Core.Trim(); var cb = b.Core.Trim();
+        if (ca.Length == 0 || cb.Length == 0) return 0;
+        if (Normalize(ca) == Normalize(cb)) return 1;
+        var seq = Similarity(ca, cb);
+        var aw = WordSet(ca); var bw = WordSet(cb);
         var shared = aw.Intersect(bw).Count();
+        var union = aw.Union(bw).Count();
+        var jac = shared / (double)Math.Max(1, union);
         var contain = shared / (double)Math.Max(1, Math.Min(aw.Count, bw.Count));
-        return Math.Max(seq, .9 * contain);
+        var score = Math.Max(.68 * seq + .32 * jac, .90 * contain);
+        if (a.Label == b.Label && a.Label != "본문") score = Math.Min(1, score + .08);
+        return score;
     }
 
     private static List<TokenSpan> LexTokens(string text)
     {
         var result = new List<TokenSpan>();
-        foreach (Match m in Regex.Matches(text ?? "", @"[가-힣A-Za-z0-9_]+|[^\s가-힣A-Za-z0-9_]"))
+        foreach (Match m in Regex.Matches(text ?? "", """[가-힣A-Za-z0-9_]+|[^\s가-힣A-Za-z0-9_]"""))
             result.Add(new TokenSpan(m.Index, m.Index + m.Length, m.Value));
         return result;
     }
@@ -1099,15 +1106,15 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         var m = QuotedHead.Match(value ?? string.Empty); return m.Success ? Normalize(m.Groups[1].Value) : string.Empty;
     }
     private static HashSet<string> WordSet(string value) =>
-        Regex.Matches(Normalize(value), @"[가-힣A-Za-z0-9_]+", RegexOptions.CultureInvariant)
+        Regex.Matches(Normalize(value), """[가-힣A-Za-z0-9_]+""", RegexOptions.CultureInvariant)
             .Select(x => x.Value).Where(x => x.Length > 0).ToHashSet(StringComparer.Ordinal);
 
     internal static double Similarity(string a, string b)
     {
         var x = Normalize(a); var y = Normalize(b);
         if (x == y) return 1; if (x.Length == 0 || y.Length == 0) return 0;
-        var aa = Regex.Matches(x, @"[가-힣A-Za-z0-9_]+|[^\s]").Select(m => m.Value).ToArray();
-        var bb = Regex.Matches(y, @"[가-힣A-Za-z0-9_]+|[^\s]").Select(m => m.Value).ToArray();
+        var aa = Regex.Matches(x, """[가-힣A-Za-z0-9_]+|[^\s]""").Select(m => m.Value).ToArray();
+        var bb = Regex.Matches(y, """[가-힣A-Za-z0-9_]+|[^\s]""").Select(m => m.Value).ToArray();
         var lcs = LcsMatches(aa, bb).Count;
         return 2.0 * lcs / Math.Max(1, aa.Length + bb.Length);
     }
