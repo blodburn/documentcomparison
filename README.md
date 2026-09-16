@@ -9,7 +9,7 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.19.4.4 (Hotfix 4)**
+**V5.20.0**
 
 - Improved comparison engine accuracy and change grouping.
 

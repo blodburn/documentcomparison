@@ -3,7 +3,7 @@
         x:Class="DocumentCompare.Avalonia.Views.MainWindow"
         Width="1700" Height="980" MinWidth="1050" MinHeight="680"
         Icon="/Assets/DocumentCompare.ico"
-        Title="문서 비교기 V5.19.4.4">
+        Title="문서 비교기 V5.20.0">
   <Grid RowDefinitions="Auto,Auto,Auto,Auto,*" Margin="10">
     <Menu Grid.Row="0" Margin="-4,-4,-4,6">
       <MenuItem x:Name="HelpMenuItem" Header="도움말">
