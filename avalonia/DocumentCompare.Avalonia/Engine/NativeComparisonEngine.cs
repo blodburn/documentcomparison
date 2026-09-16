@@ -1119,7 +1119,8 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         {
             if (ReferenceEquals(x, y)) return 0; if (x is null) return -1; if (y is null) return 1;
             var c = x.PairOrder.CompareTo(y.PairOrder); if (c != 0) return c;
-            c = string.CompareOrdinal(x.Part, y.Part); if (c != 0) return c;
+            static int PartRank(string part) => string.Equals(part, "header", StringComparison.OrdinalIgnoreCase) ? 0 : 1;
+            c = PartRank(x.Part).CompareTo(PartRank(y.Part)); if (c != 0) return c;
             c = x.ItemOrder.CompareTo(y.ItemOrder); if (c != 0) return c;
             c = x.HunkOrder.CompareTo(y.HunkOrder); if (c != 0) return c;
             return x.CharStart.CompareTo(y.CharStart);

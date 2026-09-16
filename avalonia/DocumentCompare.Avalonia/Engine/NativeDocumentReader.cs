@@ -70,9 +70,12 @@ internal static class NativeDocumentReader
             {
                 foreach (var row in block.Elements(w + "tr"))
                 {
+                    // Preserve paragraph boundaries inside table cells. Legal templates often
+                    // place the entire agreement in a one-cell table; flattening those paragraphs
+                    // with spaces made "Article 2" and later headings part of Article 1's body.
                     var cells = row.Elements(w + "tc")
-                        .Select(tc => string.Join(" ", tc.Descendants(w + "p")
-                            .Select(p => CollapseSpaces(ParagraphText(p, w).Trim()))
+                        .Select(tc => string.Join("\n", tc.Descendants(w + "p")
+                            .Select(p => ParagraphText(p, w).Trim())
                             .Where(x => x.Length > 0)))
                         .ToList();
                     if (cells.Any(x => x.Length > 0))
