@@ -304,6 +304,18 @@ public sealed class ChangeRowControl : UserControl
 
         var targetCenterInPanel = targetTop.Value + Math.Max(1, target.Bounds.Height) / 2;
         var currentScrollOffset = _scroll.Offset.Y;
+
+        // [1] is the natural start of this article's review list. Clicking the first marker
+        // must never translate the list above the article just to match the document marker's
+        // eye-line. Reset to the normal first-item position instead.
+        if (_items.Count > 0 && num == _items.Keys.Min())
+        {
+            var maxY = Math.Max(0, _scroll.Extent.Height - viewport);
+            _scroll.Offset = new Vector(_scroll.Offset.X, Math.Clamp(targetTop.Value, 0, maxY));
+            _navigationTransform.Y = 0;
+            return true;
+        }
+
         double anchorY;
 
         if (preferredLocalY is double requestedLocalY)

@@ -9,7 +9,9 @@ public sealed class NativeComparisonEngine : IComparisonEngine
 {
     private static readonly Regex KoreanArticle = new(@"^\s*제\s*(\d+)\s*조(?:\s*의\s*(\d+))?\s*(?:\(([^\n\)]{1,120})\))?\s*(.*)$", RegexOptions.Compiled);
     private static readonly Regex EnglishArticle = new(@"^\s*(?:Article|Section)\s+(\d+(?:[-.]\d+)*)\s*(?:[.:-])?\s*(.*)$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
-    private static readonly Regex SectionHeading = new(@"^\s*제\s*(\d+)\s*(장|절|관)\s*(.*)$", RegexOptions.Compiled);
+    private static readonly Regex SectionHeading = new(
+        @"^\s*(?:제\s*\d+\s*(?:장|절|관)\b.*|(?:Chapter|Part)\s+\d+(?:[-.]\d+)*\b.*)$",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex ExplicitItem = new(@"^\s*(?<label>(?:[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|\(\d+\)|\d+[.)]|[가-하A-Za-z][.)]))(?<ws>\s+)(?<core>.*)$", RegexOptions.Compiled);
     private static readonly Regex QuotedHead = new("^\\s*[\\\"“‘]([^\\\"”’]{1,96})[\\\"”’]", RegexOptions.Compiled);
     private readonly object _cancelLock = new();
@@ -384,11 +386,13 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             }
             if (!SemanticEqual(a.Core, b.Core))
             {
-                if (match.Score <= .56 && a.Label == b.Label && a.Label != "본문" &&
-                    !HasReviewAnchors(a.Core, b.Core))
+                var wholePlainRewrite = a.Label == "본문" && b.Label == "본문" &&
+                    oldParts.Count == 1 && newParts.Count == 1 && match.Score < .72;
+                if (wholePlainRewrite || (match.Score <= .56 && a.Label == b.Label && a.Label != "본문" &&
+                    !HasReviewAnchors(a.Core, b.Core)))
                 {
-                    // Truly isolated rewrite: one replacement. If stable words/stems survive,
-                    // refine inside the item instead of swallowing several meaningful edits.
+                    // One substantially rewritten paragraph/item is one logical replacement.
+                    // Higher-similarity edits still use fine-grained review hunks below.
                     result.Add(NativeMarker.Change(pair, pairOrder, oldDoc, newDoc,
                         a.Core.Trim(), b.Core.Trim(), oldOffset + a.CoreStart, oldOffset + a.CoreEnd,
                         newOffset + b.CoreStart, newOffset + b.CoreEnd, "body", match.Old, 0));
@@ -687,6 +691,20 @@ public sealed class NativeComparisonEngine : IComparisonEngine
                 .Select(j => (J: j, S: PartSimilarity(a[i], b[j])))
                 .OrderByDescending(x => x.S).ThenBy(x => Math.Abs(i - x.J)).FirstOrDefault();
             if (cand != default) Take(i, cand.J, Math.Max(.9, cand.S));
+        }
+
+        // A single unnumbered paragraph on each side of the same aligned article is one
+        // structural slot even when it was substantially rewritten. Without this guard the
+        // C# port emitted a detached delete + insert and anchored many later badges at the
+        // beginning of the revised paragraph.
+        var plainA = Enumerable.Range(0, a.Count)
+            .Where(i => !usedA.Contains(i) && a[i].Label == "본문").ToList();
+        var plainB = Enumerable.Range(0, b.Count)
+            .Where(j => !usedB.Contains(j) && b[j].Label == "본문").ToList();
+        if (plainA.Count == 1 && plainB.Count == 1 && a.Count == 1 && b.Count == 1)
+        {
+            var i = plainA[0]; var j = plainB[0];
+            Take(i, j, Math.Max(.50, PartSimilarity(a[i], b[j])));
         }
 
         // A completely rewritten item can have almost no lexical overlap.  Treat it as one
