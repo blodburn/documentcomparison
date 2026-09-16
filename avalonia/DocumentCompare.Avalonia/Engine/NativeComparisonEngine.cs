@@ -13,6 +13,11 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         @"^\s*(?:제\s*\d+\s*(?:장|절|관)\b.*|(?:Chapter|Part)\s+\d+(?:[-.]\d+)*\b.*)$",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex ExplicitItem = new(@"^\s*(?<label>(?:[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|\(\d+\)|\d+[.)]|[가-하A-Za-z][.)]))(?<ws>\s+)(?<core>.*)$", RegexOptions.Compiled);
+    private static readonly Regex StrongInlineEnglishArticle = new(
+        @"(?<![A-Za-z0-9])(?:Article|Section)\s+\d+(?:[-.]\d+)*\s*(?:[.:-])?\s*\([^\n)]{1,180}[)}]",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex StrongInlineKoreanArticle = new(
+        @"제\s*\d+\s*조(?:\s*의\s*\d+)?\s*\([^\n)]{1,180}[)}]", RegexOptions.Compiled);
     private static readonly Regex QuotedHead = new("^\\s*[\\\"“‘]([^\\\"”’]{1,96})[\\\"”’]", RegexOptions.Compiled);
     private readonly object _cancelLock = new();
     private CancellationTokenSource? _activeOperation;
@@ -96,10 +101,66 @@ public sealed class NativeComparisonEngine : IComparisonEngine
 
     private static List<NativeUnit> ParseUnits(string text, string mode)
     {
-        text = NativeDocumentReader.NormalizeNewlines(text);
+        text = NormalizeLegalBoundaries(NativeDocumentReader.NormalizeNewlines(text));
         var legal = mode.Equals("legal", StringComparison.OrdinalIgnoreCase) ||
                     (!mode.Equals("general", StringComparison.OrdinalIgnoreCase) && LooksLegal(text));
         return legal ? ParseLegalUnits(text) : ParseGeneralUnits(text);
+    }
+
+    private static string NormalizeLegalBoundaries(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return string.Empty;
+        var starts = new SortedSet<int>();
+        void Collect(Regex regex)
+        {
+            foreach (Match m in regex.Matches(text))
+            {
+                var at = m.Index;
+                if (at <= 0 || text[at - 1] == '\n') continue;
+                var q = at - 1;
+                while (q >= 0 && char.IsWhiteSpace(text[q]) && text[q] != '\n') q--;
+                if (q < 0 || text[q] == '\n') continue;
+                // Strong titled headings flattened after a sentence/table delimiter are structural.
+                // Ordinary references such as "under Article 5 (Fees)" are deliberately left alone.
+                if (text[q] is '.' or '!' or '?' or ';' or '|' or '}' or ')' or '。' or '！' or '？')
+                    starts.Add(at);
+            }
+        }
+        Collect(StrongInlineEnglishArticle);
+        Collect(StrongInlineKoreanArticle);
+        if (starts.Count == 0) return text;
+        var sb = new StringBuilder(text);
+        foreach (var at in starts.Reverse()) sb.Insert(at, '\n');
+        return sb.ToString();
+    }
+
+    private static string CleanArticleTitle(string value)
+    {
+        var s = (value ?? string.Empty).Trim();
+        s = Regex.Replace(s, @"^[\s.:\-–—]+", string.Empty);
+        s = s.Trim();
+        // Word revisions sometimes change only the title wrapper, e.g. (Purpose) -> : Purpose
+        // or even leave a mismatched brace. Identity is the lexical title, not its wrapper.
+        s = s.Trim('(', ')', '[', ']', '{', '}', ' ', '\t', '.', ':', '-', '–', '—');
+        return s.Trim();
+    }
+
+    private static (string Title, string BodyTail) ParseEnglishArticleRest(string value)
+    {
+        var raw = (value ?? string.Empty).Trim();
+        if (raw.Length == 0) return (string.Empty, string.Empty);
+        var titled = Regex.Match(raw, @"^[\(\{\[](?<title>[^\)\}\]\n]{1,180})[\)\}\]]\s*(?<tail>.*)$");
+        if (titled.Success)
+            return (CleanArticleTitle(titled.Groups["title"].Value), titled.Groups["tail"].Value.Trim());
+        return (CleanArticleTitle(raw), string.Empty);
+    }
+
+    private static bool HeaderEquivalent(NativeUnit a, NativeUnit b)
+    {
+        if (!string.Equals(a.Number, b.Number, StringComparison.OrdinalIgnoreCase)) return false;
+        var at = Normalize(CleanArticleTitle(a.Title));
+        var bt = Normalize(CleanArticleTitle(b.Title));
+        return (at.Length > 0 || bt.Length > 0) && at == bt;
     }
 
     private static bool LooksLegal(string text)
@@ -152,7 +213,13 @@ public sealed class NativeComparisonEngine : IComparisonEngine
                     title = km.Groups[3].Value.Trim();
                     var tail = km.Groups[4].Value.Trim(); if (tail.Length > 0) body.Add(tail);
                 }
-                else { number = em.Groups[1].Value; title = em.Groups[2].Value.Trim(); }
+                else
+                {
+                    number = em.Groups[1].Value;
+                    var parsed = ParseEnglishArticleRest(em.Groups[2].Value);
+                    title = parsed.Title;
+                    if (parsed.BodyTail.Length > 0) body.Add(parsed.BodyTail);
+                }
                 continue;
             }
             if (header is null) preamble.Add(line); else body.Add(line);
@@ -218,10 +285,10 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         for (var i = 0; i < a.Count; i++)
         {
             if (usedA.Contains(i) || string.IsNullOrWhiteSpace(a[i].Number)) continue;
-            var nt = Normalize(a[i].Title);
+            var nt = Normalize(CleanArticleTitle(a[i].Title));
             if (nt.Length == 0) continue;
             var cand = Enumerable.Range(0, b.Count)
-                .Where(j => !usedB.Contains(j) && a[i].Number == b[j].Number && nt == Normalize(b[j].Title))
+                .Where(j => !usedB.Contains(j) && a[i].Number == b[j].Number && nt == Normalize(CleanArticleTitle(b[j].Title)))
                 .ToList();
             if (cand.Count == 1) Take(i, cand[0]);
         }
@@ -240,9 +307,9 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         for (var i = 0; i < a.Count; i++)
         {
             if (usedA.Contains(i)) continue;
-            var nt = Normalize(a[i].Title); if (nt.Length == 0) continue;
+            var nt = Normalize(CleanArticleTitle(a[i].Title)); if (nt.Length == 0) continue;
             var cand = Enumerable.Range(0, b.Count)
-                .Where(j => !usedB.Contains(j) && nt == Normalize(b[j].Title))
+                .Where(j => !usedB.Contains(j) && nt == Normalize(CleanArticleTitle(b[j].Title)))
                 .OrderBy(j => Math.Abs(i - j)).ToList();
             if (cand.Count == 1) Take(i, cand[0]);
         }
@@ -360,7 +427,8 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         IReadOnlyList<Dictionary<string, List<PartLocation>>> globalParts)
     {
         var result = new List<NativeMarker>();
-        if (!SemanticEqual(old.Header, revised.Header) && (old.Header.Length > 0 || revised.Header.Length > 0))
+        if (!HeaderEquivalent(old, revised) && !SemanticEqual(old.Header, revised.Header) &&
+            (old.Header.Length > 0 || revised.Header.Length > 0))
             result.AddRange(DiffText(old.Header, revised.Header, 0, 0, oldDoc, newDoc, pair, pairOrder, "header", includePunctuation, 0));
 
         var oldParts = ParseParts(old.Body);
@@ -641,24 +709,45 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         var parts = new List<NativePart>();
         var lines = text.Split('\n');
         var cursor = 0;
+        int? plainStart = null;
+        int plainEnd = 0;
+
+        void FlushPlain()
+        {
+            if (plainStart is not int st) return;
+            var raw = text[st..plainEnd];
+            var leading = raw.Length - raw.TrimStart().Length;
+            var trailing = raw.Length - raw.TrimEnd().Length;
+            var coreStart = st + leading;
+            var coreEnd = Math.Max(coreStart, plainEnd - trailing);
+            if (coreEnd > coreStart)
+                parts.Add(new NativePart("본문", coreStart, coreEnd, coreStart, coreEnd, text[coreStart..coreEnd]));
+            plainStart = null; plainEnd = 0;
+        }
+
         foreach (var line in lines)
         {
             var m = ExplicitItem.Match(line);
             if (m.Success)
             {
+                FlushPlain();
                 var core = m.Groups["core"].Value.TrimEnd();
                 var coreStart = cursor + m.Groups["core"].Index;
                 var itemStart = cursor + Math.Max(0, line.Length - line.TrimStart().Length);
-                parts.Add(new NativePart(m.Groups["label"].Value, itemStart, cursor + line.Length, coreStart, coreStart + core.Length, core));
+                parts.Add(new NativePart(m.Groups["label"].Value, itemStart, cursor + line.Length,
+                    coreStart, coreStart + core.Length, core));
             }
             else if (!string.IsNullOrWhiteSpace(line))
             {
-                var trim = line.Trim(); var delta = line.IndexOf(trim, StringComparison.Ordinal);
-                var start = cursor + Math.Max(0, delta);
-                parts.Add(new NativePart("본문", start, start + trim.Length, start, start + trim.Length, trim));
+                var trim = line.Trim();
+                var delta = line.IndexOf(trim, StringComparison.Ordinal);
+                var st = cursor + Math.Max(0, delta);
+                if (plainStart is null) plainStart = st;
+                plainEnd = cursor + line.Length;
             }
             cursor += line.Length + 1;
         }
+        FlushPlain();
         if (parts.Count == 0 && !string.IsNullOrWhiteSpace(text))
         {
             var trim = text.Trim(); var st = text.IndexOf(trim, StringComparison.Ordinal);
@@ -734,8 +823,11 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             {
                 var stableEdge = HasStableEdgeContext(a[i].Core, b[cand.J].Core);
                 var isolatedPair = a.Count == 1 && b.Count == 1;
-                if (cand.S >= .46 || stableEdge || isolatedPair)
-                    Take(i, cand.J, Math.Max(cand.S, stableEdge ? .60 : (isolatedPair ? .55 : .46)));
+                // Python V5.7 treated an explicit same enumerator as the normal legal anchor
+                // once some lexical relationship remained.  The C# port used .46 here, which
+                // was too strict and turned rewritten definitions into detached delete+insert.
+                if (cand.S >= .24 || stableEdge || isolatedPair)
+                    Take(i, cand.J, Math.Max(cand.S, stableEdge ? .60 : (isolatedPair ? .55 : .24)));
             }
         }
 
