@@ -812,11 +812,34 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         {
             var old = members[oldDoc]; var revised = members[newDoc];
             if (old is null && revised is null) continue;
-            if (old is null) { structural.Add($"{pair} · 조/블록 추가: {revised!.HeaderOrBody}"); continue; }
-            if (revised is null) { structural.Add($"{pair} · 조/블록 삭제: {old.HeaderOrBody}"); continue; }
+            if (old is null)
+            {
+                structural.Add($"{pair} · 상태: 조 신규");
+                structural.Add($"{pair} · 조 추가: {revised!.HeaderOrBody}");
+                if (revised.Header.Length > 0)
+                    nativeMarkers.Add(NativeMarker.Insert(pair, order, oldDoc, newDoc, revised.Header, 0, 0, revised.Header.Length, "header", -2, -2));
+                if (revised.Body.Length > 0)
+                {
+                    var offset = revised.Header.Length + 1;
+                    nativeMarkers.Add(NativeMarker.Insert(pair, order, oldDoc, newDoc, revised.Body, 0, offset, offset + revised.Body.Length, "body", 0, 0));
+                }
+                continue;
+            }
+            if (revised is null)
+            {
+                structural.Add($"{pair} · 상태: 조 삭제");
+                structural.Add($"{pair} · 조 삭제: {old.HeaderOrBody}");
+                if (old.Header.Length > 0)
+                    nativeMarkers.Add(NativeMarker.Delete(pair, order, oldDoc, newDoc, old.Header, 0, old.Header.Length, 0, "header", -2, -2));
+                if (old.Body.Length > 0)
+                {
+                    var offset = old.Header.Length + 1;
+                    nativeMarkers.Add(NativeMarker.Delete(pair, order, oldDoc, newDoc, old.Body, offset, offset + old.Body.Length, 0, "body", 0, 0));
+                }
+                continue;
+            }
             nativeMarkers.AddRange(ComparePair(old, revised, oldDoc, newDoc, pair, order, includePunctuation, structural, globalParts));
         }
-
         nativeMarkers.Sort(NativeMarkerComparer.Instance);
         for (var i = 0; i < nativeMarkers.Count; i++) nativeMarkers[i].Num = i + 1;
         var markers = nativeMarkers.Select(x => x.ToViewModel()).ToList();
@@ -828,18 +851,14 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             headers.Add(BuildSegments(member?.Header ?? "", markers, d, "header", 0));
             bodies.Add(BuildSegments(member?.Body ?? "", markers, d, "body", (member?.Header.Length ?? 0) + 1));
         }
-
-        var messages = markers.Select(m => $"[{m.Num}] {m.Pair} · {m.Message}")
-            .Concat(structural.Distinct().Select(x => "• " + x)).ToList();
+        var messages = structural.Distinct().Select(x => "• " + x)
+            .Concat(markers.Select(m => $"[{m.Num}] {m.Pair} · {m.Message}"))
+            .ToList();
         if (messages.Count == 0) messages.Add("변경 없음");
         return new ComparisonRowVm
         {
-            Id = id,
-            Members = members.Select(x => x?.ToViewModel()).ToList(),
-            HeaderSegments = headers,
-            BodySegments = bodies,
-            Markers = markers,
-            DisplayMessages = messages,
+            Id = id, Members = members.Select(x => x?.ToViewModel()).ToList(), HeaderSegments = headers,
+            BodySegments = bodies, Markers = markers, DisplayMessages = messages,
             Changed = messages.Count != 1 || messages[0] != "변경 없음"
         };
     }
@@ -850,105 +869,94 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         IReadOnlyList<Dictionary<string, List<PartLocation>>> globalParts)
     {
         var result = new List<NativeMarker>();
-        // Python lineage treats article number and article title as separate structural facts.
-        // Wrapper punctuation such as `(Purpose)` -> `: Purpose` is not a substantive change.
+        var articleMoved = false; var titleChanged = false; var bodyChanged = false; var structureChanged = false;
         if (IsLegalArticle(old) && IsLegalArticle(revised))
         {
             if (!string.Equals(old.Number, revised.Number, StringComparison.OrdinalIgnoreCase))
             {
+                articleMoved = true;
                 var os = HeaderNumberSpan(old); var ns = HeaderNumberSpan(revised);
                 if (os is not null && ns is not null)
                     result.Add(NativeMarker.ArticleNumberChange(pair, pairOrder, oldDoc, newDoc,
                         old.Number, revised.Number, os.Value.Start, os.Value.End, ns.Value.Start, ns.Value.End));
-                structural.Add($"{pair} · 조 번호 변경: {old.Header} → {revised.Header}");
+                structural.Add($"{pair} · 조 이동/재번호화: {old.Header} → {revised.Header}");
             }
             if (!SemanticEqual(CleanArticleTitle(old.Title), CleanArticleTitle(revised.Title)))
             {
+                titleChanged = true;
                 var ot = HeaderTitleSpan(old); var nt = HeaderTitleSpan(revised);
                 result.AddRange(DiffText(old.Title, revised.Title, ot.Start, nt.Start,
-                    oldDoc, newDoc, pair, pairOrder, "header", includePunctuation, 0));
+                    oldDoc, newDoc, pair, pairOrder, "header", includePunctuation, -1));
+                structural.Add($"{pair} · 조 제목 변경: {old.Title} → {revised.Title}");
             }
         }
-        else if (!HeaderEquivalent(old, revised) && !SemanticEqual(old.Header, revised.Header) &&
-                 (old.Header.Length > 0 || revised.Header.Length > 0))
+        else if (!HeaderEquivalent(old, revised) && !SemanticEqual(old.Header, revised.Header) && (old.Header.Length > 0 || revised.Header.Length > 0))
         {
-            result.AddRange(DiffText(old.Header, revised.Header, 0, 0, oldDoc, newDoc, pair, pairOrder, "header", includePunctuation, 0));
+            titleChanged = true;
+            result.AddRange(DiffText(old.Header, revised.Header, 0, 0, oldDoc, newDoc, pair, pairOrder, "header", includePunctuation, -1));
         }
 
-        var oldParts = ParseParts(old.Body);
-        var newParts = ParseParts(revised.Body);
-        var matches = MatchParts(oldParts, newParts);
-        var usedOld = matches.Select(x => x.Old).ToHashSet();
-        var usedNew = matches.Select(x => x.New).ToHashSet();
-        var oldOffset = old.Header.Length + 1;
-        var newOffset = revised.Header.Length + 1;
+        var oldParts = ParseParts(old.Body); var newParts = ParseParts(revised.Body);
+        var matched = MatchParts(oldParts, newParts);
+        var usedOld = matched.Select(x => x.Old).ToHashSet(); var usedNew = matched.Select(x => x.New).ToHashSet();
+        var oldNodes = BuildPartHierarchy(oldParts); var newNodes = BuildPartHierarchy(newParts);
+        var bodyOffsetOld = old.Header.Length + 1; var bodyOffsetNew = revised.Header.Length + 1;
+        foreach (var msg in DescribePartStructure(oldParts, newParts, oldNodes, newNodes))
+        { structureChanged = true; structural.Add($"{pair} · {msg}"); }
 
-        foreach (var match in matches.OrderBy(x => x.Old))
+        foreach (var m in matched.OrderBy(x => x.Old))
         {
-            var a = oldParts[match.Old]; var b = newParts[match.New];
-            if (a.Label != b.Label && IsStructuralLabel(a.Label) && IsStructuralLabel(b.Label))
-            {
-                // A number/location change is a real visible revision.  Put the marker and
-                // decoration on the enumerator itself: old number = red strike, new = blue underline.
-                result.Add(NativeMarker.StructuralChange(pair, pairOrder, oldDoc, newDoc,
-                    a.Label, b.Label,
-                    oldOffset + a.Start, oldOffset + a.Start + a.Label.Length,
-                    newOffset + b.Start, newOffset + b.Start + b.Label.Length,
-                    "body", match.Old, -1));
-            }
-            if (!SemanticEqual(a.Core, b.Core))
-            {
-                var wholePlainRewrite = a.Label == "본문" && b.Label == "본문" &&
-                    oldParts.Count == 1 && newParts.Count == 1 && match.Score < .72;
-                if (wholePlainRewrite || (match.Score <= .56 && a.Label == b.Label && a.Label != "본문" &&
-                    !HasReviewAnchors(a.Core, b.Core)))
-                {
-                    // One substantially rewritten paragraph/item is one logical replacement.
-                    // Higher-similarity edits still use fine-grained review hunks below.
-                    result.Add(NativeMarker.Change(pair, pairOrder, oldDoc, newDoc,
-                        a.Core.Trim(), b.Core.Trim(), oldOffset + a.CoreStart, oldOffset + a.CoreEnd,
-                        newOffset + b.CoreStart, newOffset + b.CoreEnd, "body", match.Old, 0));
-                }
-                else
-                {
-                    result.AddRange(DiffText(
-                        a.Core, b.Core, oldOffset + a.CoreStart, newOffset + b.CoreStart,
-                        oldDoc, newDoc, pair, pairOrder, "body", includePunctuation, match.Old));
-                }
-            }
+            var ap = oldParts[m.Old]; var bp = newParts[m.New];
+            var parentMoved = !ParentsEquivalent(m.Old, m.New, oldNodes, newNodes, matched);
+            var labelMoved = IsStructuralLabel(ap.Label) && IsStructuralLabel(bp.Label) && ap.Label != bp.Label;
+            var itemMoved = parentMoved || labelMoved;
+            var contentChanged = !SemanticEqual(ap.Core, bp.Core);
+            if (labelMoved)
+                result.Add(NativeMarker.StructuralChange(pair, pairOrder, oldDoc, newDoc, ap.Label, bp.Label,
+                    bodyOffsetOld + ap.Start, bodyOffsetOld + ap.Start + ap.Label.Length,
+                    bodyOffsetNew + bp.Start, bodyOffsetNew + bp.Start + bp.Label.Length, "body", m.Old, -2));
+            if (itemMoved) structural.Add($"{pair} · {(contentChanged ? "항/호 이동+변경" : "항/호 이동")}: {ap.Label} → {bp.Label}");
+            if (!contentChanged) continue;
+            bodyChanged = true;
+            var wholePlainRewrite = ap.Label == "본문" && bp.Label == "본문" && oldParts.Count == 1 && newParts.Count == 1 && m.Score < .72;
+            var wholeItemRewrite = IsStructuralLabel(ap.Label) && IsStructuralLabel(bp.Label) && m.Score <= .56 && !HasReviewAnchors(ap.Core, bp.Core) && !HasStableEdgeContext(ap.Core, bp.Core);
+            if (wholePlainRewrite || wholeItemRewrite)
+                result.Add(NativeMarker.Change(pair, pairOrder, oldDoc, newDoc, ap.Core.Trim(), bp.Core.Trim(),
+                    bodyOffsetOld + ap.CoreStart, bodyOffsetOld + ap.CoreEnd,
+                    bodyOffsetNew + bp.CoreStart, bodyOffsetNew + bp.CoreEnd, "body", m.Old, 0));
+            else
+                result.AddRange(DiffText(ap.Core, bp.Core, bodyOffsetOld + ap.CoreStart, bodyOffsetNew + bp.CoreStart,
+                    oldDoc, newDoc, pair, pairOrder, "body", includePunctuation, m.Old));
         }
 
         foreach (var i in Enumerable.Range(0, oldParts.Count).Where(i => !usedOld.Contains(i)))
         {
-            var p = oldParts[i]; if (string.IsNullOrWhiteSpace(p.Core)) continue;
-            var key = LineageNormalize(p.Core);
-            if (TryUniqueMovedPart(globalParts[newDoc], key, revised.Index, out var movedTo))
-            {
-                structural.Add($"{pair} · 항/호 번호·위치 변경: {p.Label} → {movedTo.Label} ({movedTo.Header})");
-                continue;
-            }
-            var start = oldOffset + p.CoreStart; var end = oldOffset + p.CoreEnd;
-            // Whole-item deletion: counterpart belongs at the structural gap between the
-            // nearest matched items, not at a repeated lexical token elsewhere in the article.
-            var newAnchor = newOffset + StructuralGapAnchor(oldParts, newParts, matches, i, sourceIsNew: false);
-            result.Add(NativeMarker.Delete(pair, pairOrder, oldDoc, newDoc, p.Core.Trim(), start, end, newAnchor, "body", i));
+            var part = oldParts[i]; if (string.IsNullOrWhiteSpace(part.Core)) continue;
+            var key = LineageNormalize(part.Core);
+            if (TryUniqueMovedPart(globalParts[newDoc], key, revised.Index, out var to))
+            { structural.Add($"{pair} · 항/호 이동: {old.HeaderOrBody} {part.Label} → {to.Header} {to.Label}"); continue; }
+            bodyChanged = true;
+            var newAnchor = bodyOffsetNew + StructuralGapAnchor(oldParts, newParts, matched, i, sourceIsNew: false);
+            result.Add(NativeMarker.Delete(pair, pairOrder, oldDoc, newDoc, part.Core.Trim(),
+                bodyOffsetOld + part.Start, bodyOffsetOld + part.CoreEnd, newAnchor, "body", i));
         }
         foreach (var j in Enumerable.Range(0, newParts.Count).Where(j => !usedNew.Contains(j)))
         {
-            var p = newParts[j]; if (string.IsNullOrWhiteSpace(p.Core)) continue;
-            var key = LineageNormalize(p.Core);
-            // The source-side row reports the move. Suppress a duplicate insertion when the
-            // exact item exists uniquely elsewhere in the old document.
-            if (TryUniqueMovedPart(globalParts[oldDoc], key, old.Index, out _))
-                continue;
-            var start = newOffset + p.CoreStart; var end = newOffset + p.CoreEnd;
-            // Whole-item insertion: use the same structural gap on the old side. This keeps
-            // appended clauses after the previous item and inserted clauses before the next
-            // matched item instead of anchoring on generic words such as 회사/회원/서비스.
-            var oldAnchor = oldOffset + StructuralGapAnchor(newParts, oldParts, matches, j, sourceIsNew: true);
-            result.Add(NativeMarker.Insert(pair, pairOrder, oldDoc, newDoc, p.Core.Trim(), oldAnchor, start, end, "body", j));
+            var part = newParts[j]; if (string.IsNullOrWhiteSpace(part.Core)) continue;
+            var key = LineageNormalize(part.Core);
+            if (TryUniqueMovedPart(globalParts[oldDoc], key, old.Index, out var from))
+            { structural.Add($"{pair} · 항/호 이동: {from.Header} {from.Label} → {revised.HeaderOrBody} {part.Label}"); continue; }
+            bodyChanged = true;
+            var oldAnchor = bodyOffsetOld + StructuralGapAnchor(newParts, oldParts, matched, j, sourceIsNew: true);
+            result.Add(NativeMarker.Insert(pair, pairOrder, oldDoc, newDoc, part.Core.Trim(), oldAnchor,
+                bodyOffsetNew + part.Start, bodyOffsetNew + part.CoreEnd, "body", j));
         }
-        return CoalesceLocationReplacements(result, oldDoc, newDoc);
+        result = CoalesceLocationReplacements(result, oldDoc, newDoc);
+        var substantive = titleChanged || bodyChanged || structureChanged;
+        if (articleMoved) structural.Insert(0, $"{pair} · 상태: {(substantive ? "조 이동+변경" : "조 이동")}");
+        else if (structureChanged) structural.Insert(0, $"{pair} · 상태: 조 구조변경");
+        else if (titleChanged || bodyChanged) structural.Insert(0, $"{pair} · 상태: 조 변경");
+        return result;
     }
 
     private static List<NativeMarker> CoalesceLocationReplacements(List<NativeMarker> events, int oldDoc, int newDoc)
@@ -1404,93 +1412,124 @@ public sealed class NativeComparisonEngine : IComparisonEngine
 
     private static List<PartMatch> MatchParts(IReadOnlyList<NativePart> a, IReadOnlyList<NativePart> b)
     {
-        // Python V5.19.4.4 one-sided numbered-list guard. If only one side introduces a real
-        // multi-item legal list, explicit items stay unmatched and therefore become clean
-        // additions/deletions; only unnumbered introductions may pair with each other.
-        var structuredA = Enumerable.Range(0, a.Count).Where(i => a[i].Label is not ("" or "본문")).ToList();
-        var structuredB = Enumerable.Range(0, b.Count).Where(i => b[i].Label is not ("" or "본문")).ToList();
-        var oneSided = (structuredA.Count >= 2 && structuredB.Count == 0) ||
-                       (structuredB.Count >= 2 && structuredA.Count == 0);
+        var nodesA = BuildPartHierarchy(a); var nodesB = BuildPartHierarchy(b);
+        var structuredA = Enumerable.Range(0, a.Count).Where(i => IsStructuralLabel(a[i].Label)).ToList();
+        var structuredB = Enumerable.Range(0, b.Count).Where(i => IsStructuralLabel(b[i].Label)).ToList();
+        var oneSided = (structuredA.Count >= 2 && structuredB.Count == 0) || (structuredB.Count >= 2 && structuredA.Count == 0);
         if (oneSided)
         {
-            var candidates = new List<(double Score, int Distance, int A, int B)>();
-            for (var i = 0; i < a.Count; i++)
+            var result0 = new List<PartMatch>();
+            var oldBody = Enumerable.Range(0, a.Count).FirstOrDefault(i => a[i].Label == "본문", -1);
+            var newBody = Enumerable.Range(0, b.Count).FirstOrDefault(i => b[i].Label == "본문", -1);
+            if (oldBody >= 0 && newBody >= 0)
             {
-                if (a[i].Label != "본문") continue;
-                for (var j = 0; j < b.Count; j++)
-                {
-                    if (b[j].Label != "본문") continue;
-                    var score = PartSimilarity(a[i], b[j]);
-                    if (score >= .32 || LineageNormalize(a[i].Core) == LineageNormalize(b[j].Core))
-                        candidates.Add((score, -Math.Abs(i - j), i, j));
-                }
+                var score = PartSimilarity(a[oldBody], b[newBody]);
+                if (score >= .24 || LineageNormalize(a[oldBody].Core) == LineageNormalize(b[newBody].Core))
+                    result0.Add(new PartMatch(oldBody, newBody, Math.Max(score, .50)));
             }
-            var usedA0 = new HashSet<int>(); var usedB0 = new HashSet<int>(); var guarded = new List<PartMatch>();
-            foreach (var c in candidates.OrderByDescending(x => x.Score).ThenByDescending(x => x.Distance))
-                if (usedA0.Add(c.A) && usedB0.Add(c.B)) guarded.Add(new PartMatch(c.A, c.B, Math.Max(c.Score, .50)));
-            return guarded;
+            return result0;
         }
-
         var result = new List<PartMatch>(); var usedA = new HashSet<int>(); var usedB = new HashSet<int>();
-        void Take(int i, int j, double score)
+        void Take(int i,int j,double score){ if(usedA.Add(i)&&usedB.Add(j)) result.Add(new PartMatch(i,j,score)); }
+        for (var i=0;i<a.Count;i++)
         {
-            if (usedA.Add(i) && usedB.Add(j)) result.Add(new PartMatch(i, j, score));
+            var norm=LineageNormalize(a[i].Core); if(norm.Length==0) continue;
+            var cand=Enumerable.Range(0,b.Count).Where(j=>!usedB.Contains(j)&&LineageNormalize(b[j].Core)==norm).OrderBy(j=>Math.Abs(i-j)).FirstOrDefault(-1);
+            if(cand>=0) Take(i,cand,1.0);
         }
-
-        // Python V5.7 stage 1: exact normalized content is definitive regardless of number/location.
-        for (var i = 0; i < a.Count; i++)
+        for (var i=0;i<a.Count;i++)
         {
-            var norm = LineageNormalize(a[i].Core); if (norm.Length == 0) continue;
-            var cand = Enumerable.Range(0, b.Count)
-                .Where(j => !usedB.Contains(j) && LineageNormalize(b[j].Core) == norm)
-                .OrderBy(j => Math.Abs(i - j)).ToList();
-            if (cand.Count > 0) Take(i, cand[0], 1.0);
+            if(usedA.Contains(i)) continue; var head=DefinitionHead(a[i].Core); if(head.Length==0) continue;
+            var cand=Enumerable.Range(0,b.Count).Where(j=>!usedB.Contains(j)&&DefinitionHead(b[j].Core)==head)
+                .Select(j=>(J:j,S:PartSimilarity(a[i],b[j]))).OrderByDescending(x=>x.S).ThenBy(x=>Math.Abs(i-x.J)).FirstOrDefault();
+            if(cand!=default) Take(i,cand.J,Math.Max(.90,cand.S));
         }
-
-        // Stage 2: definition head is an identity key (Company stays Company, Member stays Member).
-        for (var i = 0; i < a.Count; i++)
+        for (var level=1;level<=4;level++)
+        foreach(var i in Enumerable.Range(0,a.Count).Where(i=>!usedA.Contains(i)&&nodesA[i].Level==level))
         {
-            if (usedA.Contains(i)) continue;
-            var head = DefinitionHead(a[i].Core); if (head.Length == 0) continue;
-            var cand = Enumerable.Range(0, b.Count)
-                .Where(j => !usedB.Contains(j) && DefinitionHead(b[j].Core) == head)
-                .Select(j => (J: j, S: PartSimilarity(a[i], b[j])))
-                .OrderByDescending(x => x.S).ThenBy(x => Math.Abs(i - x.J)).FirstOrDefault();
-            if (cand != default) Take(i, cand.J, Math.Max(.90, cand.S));
+            if(!IsStructuralLabel(a[i].Label)) continue;
+            var candidates=Enumerable.Range(0,b.Count)
+                .Where(j=>!usedB.Contains(j)&&nodesB[j].Level==level&&b[j].Label==a[i].Label&&ParentsEquivalent(i,j,nodesA,nodesB,result))
+                .Select(j=>(J:j,S:PartSimilarity(a[i],b[j]),Shape:SiblingShapeEquivalent(i,j,a,b,nodesA,nodesB)))
+                .OrderByDescending(x=>x.Shape).ThenByDescending(x=>x.S).ToList();
+            if(candidates.Count==0) continue; var cand=candidates[0];
+            if(cand.Shape || cand.S>=.18 || HasStableEdgeContext(a[i].Core,b[cand.J].Core)) Take(i,cand.J,Math.Max(cand.S,.52));
         }
-
-        // Stage 3: same explicit enumerator is the normal legal anchor once some relationship remains.
-        for (var i = 0; i < a.Count; i++)
+        foreach(var i in Enumerable.Range(0,a.Count).Where(i=>!usedA.Contains(i)&&a[i].Label=="본문"))
         {
-            if (usedA.Contains(i) || a[i].Label == "본문") continue;
-            var cand = Enumerable.Range(0, b.Count)
-                .Where(j => !usedB.Contains(j) && b[j].Label == a[i].Label)
-                .Select(j => (J: j, S: PartSimilarity(a[i], b[j])))
-                .OrderByDescending(x => x.S).FirstOrDefault();
-            if (cand != default && cand.S >= .24) Take(i, cand.J, Math.Max(cand.S, .55));
+            var cand=Enumerable.Range(0,b.Count).Where(j=>!usedB.Contains(j)&&b[j].Label=="본문")
+                .Select(j=>(J:j,S:PartSimilarity(a[i],b[j]))).OrderByDescending(x=>x.S).FirstOrDefault();
+            if(cand!=default&&cand.S>=.20) Take(i,cand.J,Math.Max(cand.S,.50));
         }
-
-        // Stage 4: residual moves need strong evidence and conflicting definition heads never pair.
-        var residual = new List<(double Score, double Contain, int Distance, int A, int B)>();
-        for (var i = 0; i < a.Count; i++)
+        var residual=new List<(double Rank,int A,int B,double Score)>();
+        for(var i=0;i<a.Count;i++)
         {
-            if (usedA.Contains(i)) continue;
-            var ha = DefinitionHead(a[i].Core); var wa = WordSet(a[i].Core);
-            for (var j = 0; j < b.Count; j++)
+            if(usedA.Contains(i)) continue;
+            for(var j=0;j<b.Count;j++)
             {
-                if (usedB.Contains(j)) continue;
-                var hb = DefinitionHead(b[j].Core);
-                if (ha.Length > 0 && hb.Length > 0 && ha != hb) continue;
-                var score = PartSimilarity(a[i], b[j]); var wb = WordSet(b[j].Core);
-                var shared = wa.Intersect(wb).Count();
-                var contain = shared / (double)Math.Max(1, Math.Min(wa.Count, wb.Count));
-                if (score >= .72 && (shared >= 2 || contain >= .58))
-                    residual.Add((score, contain, -Math.Abs(i - j), i, j));
+                if(usedB.Contains(j)) continue;
+                var ha=DefinitionHead(a[i].Core); var hb=DefinitionHead(b[j].Core); if(ha.Length>0&&hb.Length>0&&ha!=hb) continue;
+                var score=PartSimilarity(a[i],b[j]); var parentOk=ParentsEquivalent(i,j,nodesA,nodesB,result); var contain=Containment(a[i].Core,b[j].Core);
+                var threshold=parentOk?.68:.82; if(score>=threshold||(!parentOk&&contain>=.88)) residual.Add((Math.Max(score,.94*contain),i,j,score));
             }
         }
-        foreach (var x in residual.OrderByDescending(x => x.Score).ThenByDescending(x => x.Contain).ThenByDescending(x => x.Distance))
-            if (!usedA.Contains(x.A) && !usedB.Contains(x.B)) Take(x.A, x.B, x.Score);
-        return result;
+        foreach(var x in residual.OrderByDescending(x=>x.Rank).ThenBy(x=>Math.Abs(x.A-x.B)))
+            if(!usedA.Contains(x.A)&&!usedB.Contains(x.B)) Take(x.A,x.B,Math.Max(x.Score,x.Rank));
+        return result.OrderBy(x=>x.Old).ToList();
+    }
+
+    private static string PartFamily(string label)
+    {
+        if(label=="본문"||label.Length==0) return "body";
+        if(label.Length==1&&"①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳".Contains(label[0])) return "circled";
+        if(Regex.IsMatch(label,@"^\(\d+\)$")) return "paren-number";
+        if(Regex.IsMatch(label,@"^\d+[.)]$")) return "number";
+        if(Regex.IsMatch(label,@"^[A-Za-z][.)]$")) return "alpha";
+        if(Regex.IsMatch(label,@"^[가-하][.)]$")) return "korean";
+        return "other";
+    }
+    private static List<PartNode> BuildPartHierarchy(IReadOnlyList<NativePart> parts)
+    {
+        var nodes=new List<PartNode>(parts.Count); var currentL1=-1; var currentL2=-1;
+        for(var i=0;i<parts.Count;i++)
+        {
+            var family=PartFamily(parts[i].Label); if(family=="body"){nodes.Add(new PartNode(i,0,-1,family));continue;}
+            var level=1; var parent=-1;
+            if(family=="circled"){currentL1=i;currentL2=-1;}
+            else if(family=="number")
+            { if(currentL1>=0&&nodes[currentL1].Family=="circled"){level=2;parent=currentL1;currentL2=i;} else {currentL1=i;currentL2=-1;} }
+            else if(family=="paren-number")
+            { if(currentL1>=0&&nodes[currentL1].Family is "number" or "circled"){level=2;parent=currentL1;currentL2=i;} else {currentL1=i;currentL2=-1;} }
+            else if(family is "alpha" or "korean")
+            { if(currentL2>=0&&nodes[currentL2].Family is "number" or "paren-number"){level=3;parent=currentL2;} else if(currentL1>=0&&nodes[currentL1].Family!=family){level=2;parent=currentL1;} else {currentL1=i;currentL2=-1;} }
+            else if(currentL1>=0){level=2;parent=currentL1;} else currentL1=i;
+            nodes.Add(new PartNode(i,level,parent,family));
+        }
+        return nodes;
+    }
+    private static bool ParentsEquivalent(int ai,int bj,IReadOnlyList<PartNode>a,IReadOnlyList<PartNode>b,IReadOnlyList<PartMatch>matches)
+    { var pa=a[ai].Parent;var pb=b[bj].Parent;if(pa<0||pb<0)return pa==pb;return matches.Any(m=>m.Old==pa&&m.New==pb); }
+    private static bool SiblingShapeEquivalent(int ai,int bj,IReadOnlyList<NativePart>a,IReadOnlyList<NativePart>b,IReadOnlyList<PartNode>na,IReadOnlyList<PartNode>nb)
+    {
+        var xa=na[ai];var xb=nb[bj];
+        var la=na.Where(x=>x.Level==xa.Level&&x.Parent==xa.Parent&&x.Family==xa.Family).Select(x=>a[x.Index].Label).ToList();
+        var lb=nb.Where(x=>x.Level==xb.Level&&x.Parent==xb.Parent&&x.Family==xb.Family).Select(x=>b[x.Index].Label).ToList();
+        return la.Count==lb.Count&&la.SequenceEqual(lb,StringComparer.Ordinal);
+    }
+    private static string LabelSummary(IEnumerable<NativePart> parts)
+    { var labels=parts.Where(p=>IsStructuralLabel(p.Label)).Select(p=>p.Label).ToList(); if(labels.Count==0)return "본문"; if(labels.Count<=5)return string.Join(", ",labels); return $"{labels[0]}~{labels[^1]} ({labels.Count}개)"; }
+    private static List<string> DescribePartStructure(IReadOnlyList<NativePart> oldParts,IReadOnlyList<NativePart> newParts,IReadOnlyList<PartNode> oldNodes,IReadOnlyList<PartNode> newNodes)
+    {
+        var messages=new List<string>();var oa=oldParts.Where(p=>IsStructuralLabel(p.Label)).ToList();var nb=newParts.Where(p=>IsStructuralLabel(p.Label)).ToList();
+        if(oa.Count>=2&&nb.Count==0)messages.Add($"항/호 구조 변경: {LabelSummary(oa)} 열거 구조가 본문으로 통합");
+        else if(nb.Count>=2&&oa.Count==0)messages.Add($"항/호 구조 변경: 본문이 {LabelSummary(nb)} 열거 구조로 분할");
+        else if(oa.Count>0&&nb.Count>0)
+        {
+            var od=oldNodes.Count==0?0:oldNodes.Max(x=>x.Level);var nd=newNodes.Count==0?0:newNodes.Max(x=>x.Level);
+            var of=oldNodes.Where(x=>x.Level>0).Select(x=>x.Family).ToHashSet();var nf=newNodes.Where(x=>x.Level>0).Select(x=>x.Family).ToHashSet();
+            if(od!=nd||!of.SetEquals(nf))messages.Add($"항/호 구조 변경: {LabelSummary(oa)} → {LabelSummary(nb)}");
+        }
+        return messages;
     }
 
     private static bool HasReviewAnchors(string a, string b)
@@ -2011,11 +2050,15 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return 2.0 * lcs / Math.Max(1, aa.Length + bb.Length);
     }
 
+    private static double Containment(string a,string b)
+    { var x=WordSet(a);var y=WordSet(b);if(x.Count==0||y.Count==0)return 0.0;return x.Intersect(y).Count()/(double)Math.Max(1,Math.Min(x.Count,y.Count)); }
+
     private static bool IsPunctuationOnly(string value) =>
         !string.IsNullOrWhiteSpace(value) && value.Where(x => !char.IsWhiteSpace(x)).All(x => !char.IsLetterOrDigit(x));
     private static bool IsStructuralLabel(string label) => label != "본문" && label.Length > 0;
 
     private sealed record NativePart(string Label, int Start, int End, int CoreStart, int CoreEnd, string Core);
+    private sealed record PartNode(int Index, int Level, int Parent, string Family);
     private sealed record PartMatch(int Old, int New, double Score);
     private sealed record TokenSpan(int Start, int End, string Text);
 
