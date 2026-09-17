@@ -1418,16 +1418,18 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         var oneSided = (structuredA.Count >= 2 && structuredB.Count == 0) || (structuredB.Count >= 2 && structuredA.Count == 0);
         if (oneSided)
         {
-            var result0 = new List<PartMatch>();
-            var oldBody = Enumerable.Range(0, a.Count).FirstOrDefault(i => a[i].Label == "본문", -1);
-            var newBody = Enumerable.Range(0, b.Count).FirstOrDefault(i => b[i].Label == "본문", -1);
-            if (oldBody >= 0 && newBody >= 0)
+            // The article lineage has already been established. If only one side changes from
+            // prose to an explicit list (or the reverse), keep the unique prose body paired even
+            // when it was heavily rewritten. Explicit items stay unmatched and are reported as
+            // structural additions/deletions instead of being folded into the body replacement.
+            var oldBodies = Enumerable.Range(0, a.Count).Where(i => a[i].Label == "본문").ToList();
+            var newBodies = Enumerable.Range(0, b.Count).Where(i => b[i].Label == "본문").ToList();
+            if (oldBodies.Count == 1 && newBodies.Count == 1)
             {
-                var score = PartSimilarity(a[oldBody], b[newBody]);
-                if (score >= .24 || LineageNormalize(a[oldBody].Core) == LineageNormalize(b[newBody].Core))
-                    result0.Add(new PartMatch(oldBody, newBody, Math.Max(score, .50)));
+                var score = PartSimilarity(a[oldBodies[0]], b[newBodies[0]]);
+                return new List<PartMatch> { new(oldBodies[0], newBodies[0], Math.Max(score, .50)) };
             }
-            return result0;
+            return new List<PartMatch>();
         }
         var result = new List<PartMatch>(); var usedA = new HashSet<int>(); var usedB = new HashSet<int>();
         void Take(int i,int j,double score){ if(usedA.Add(i)&&usedB.Add(j)) result.Add(new PartMatch(i,j,score)); }
@@ -1444,16 +1446,45 @@ public sealed class NativeComparisonEngine : IComparisonEngine
                 .Select(j=>(J:j,S:PartSimilarity(a[i],b[j]))).OrderByDescending(x=>x.S).ThenBy(x=>Math.Abs(i-x.J)).FirstOrDefault();
             if(cand!=default) Take(i,cand.J,Math.Max(.90,cand.S));
         }
-        for (var level=1;level<=4;level++)
-        foreach(var i in Enumerable.Range(0,a.Count).Where(i=>!usedA.Contains(i)&&nodesA[i].Level==level))
+        // Parent-first hierarchy matching. At every level, a strong content move is resolved
+        // BEFORE same-enumerator fallback. This prevents an inserted new 3. from stealing the old
+        // 3. whose real descendant is new 4.; after moves are consumed, unchanged sibling shapes
+        // still guarantee 1->1 ... 5->5 even for a complete wording rewrite.
+        for (var level = 1; level <= 4; level++)
         {
-            if(!IsStructuralLabel(a[i].Label)) continue;
-            var candidates=Enumerable.Range(0,b.Count)
-                .Where(j=>!usedB.Contains(j)&&nodesB[j].Level==level&&b[j].Label==a[i].Label&&ParentsEquivalent(i,j,nodesA,nodesB,result))
-                .Select(j=>(J:j,S:PartSimilarity(a[i],b[j]),Shape:SiblingShapeEquivalent(i,j,a,b,nodesA,nodesB)))
-                .OrderByDescending(x=>x.Shape).ThenByDescending(x=>x.S).ToList();
-            if(candidates.Count==0) continue; var cand=candidates[0];
-            if(cand.Shape || cand.S>=.18 || HasStableEdgeContext(a[i].Core,b[cand.J].Core)) Take(i,cand.J,Math.Max(cand.S,.52));
+            var moveCandidates = new List<(double Rank, int A, int B, double Score)>();
+            foreach (var i in Enumerable.Range(0, a.Count).Where(i => !usedA.Contains(i) && nodesA[i].Level == level && IsStructuralLabel(a[i].Label)))
+            foreach (var j in Enumerable.Range(0, b.Count).Where(j => !usedB.Contains(j) && nodesB[j].Level == level && IsStructuralLabel(b[j].Label)))
+            {
+                if (a[i].Label == b[j].Label) continue;
+                if (!ParentsEquivalent(i, j, nodesA, nodesB, result)) continue;
+                var score = PartSimilarity(a[i], b[j]);
+                var contain = Containment(a[i].Core, b[j].Core);
+                var childSupport = MatchedChildSupport(i, j, nodesA, nodesB, result);
+                if (score >= .74 || contain >= .88 ||
+                    childSupport >= 2 ||
+                    (childSupport >= 1 && score >= .55))
+                {
+                    var rank = Math.Max(score, .94 * contain) + Math.Min(.12, childSupport * .06);
+                    moveCandidates.Add((rank, i, j, score));
+                }
+            }
+            foreach (var x in moveCandidates.OrderByDescending(x => x.Rank).ThenBy(x => Math.Abs(x.A - x.B)))
+                if (!usedA.Contains(x.A) && !usedB.Contains(x.B)) Take(x.A, x.B, Math.Max(x.Score, x.Rank));
+
+            foreach (var i in Enumerable.Range(0, a.Count).Where(i => !usedA.Contains(i) && nodesA[i].Level == level))
+            {
+                if (!IsStructuralLabel(a[i].Label)) continue;
+                var candidates = Enumerable.Range(0, b.Count)
+                    .Where(j => !usedB.Contains(j) && nodesB[j].Level == level && b[j].Label == a[i].Label &&
+                                ParentsEquivalent(i, j, nodesA, nodesB, result))
+                    .Select(j => (J: j, S: PartSimilarity(a[i], b[j]), Shape: SiblingShapeEquivalent(i, j, a, b, nodesA, nodesB)))
+                    .OrderByDescending(x => x.Shape).ThenByDescending(x => x.S).ToList();
+                if (candidates.Count == 0) continue;
+                var cand = candidates[0];
+                if (cand.Shape || cand.S >= .18 || HasStableEdgeContext(a[i].Core, b[cand.J].Core))
+                    Take(i, cand.J, Math.Max(cand.S, .52));
+            }
         }
         foreach(var i in Enumerable.Range(0,a.Count).Where(i=>!usedA.Contains(i)&&a[i].Label=="본문"))
         {
@@ -1509,6 +1540,10 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     }
     private static bool ParentsEquivalent(int ai,int bj,IReadOnlyList<PartNode>a,IReadOnlyList<PartNode>b,IReadOnlyList<PartMatch>matches)
     { var pa=a[ai].Parent;var pb=b[bj].Parent;if(pa<0||pb<0)return pa==pb;return matches.Any(m=>m.Old==pa&&m.New==pb); }
+    private static int MatchedChildSupport(int ai, int bj, IReadOnlyList<PartNode> a, IReadOnlyList<PartNode> b,
+        IReadOnlyList<PartMatch> matches) =>
+        matches.Count(m => m.Old >= 0 && m.Old < a.Count && m.New >= 0 && m.New < b.Count &&
+                           a[m.Old].Parent == ai && b[m.New].Parent == bj);
     private static bool SiblingShapeEquivalent(int ai,int bj,IReadOnlyList<NativePart>a,IReadOnlyList<NativePart>b,IReadOnlyList<PartNode>na,IReadOnlyList<PartNode>nb)
     {
         var xa=na[ai];var xb=nb[bj];
