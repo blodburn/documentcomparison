@@ -9,8 +9,10 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.20.2**
+**V5.20.3**
 
+- Recover single-space flattened legal enumerator sequences such as `(1) ... (2) ... (3) ...`.
+- Keep isolated in-sentence enumerator references intact and support A./B. item sequences.
 - Fixed numbered legal clauses flattened by Word so 1./2./3./4. are compared item-by-item.
 - Restored Python article-sequence filtering and same-number lineage bias to prevent downstream Article drift.
 - Matched the native C# comparison engine more closely to Python 5.19.4.4 behavior.

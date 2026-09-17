@@ -1265,11 +1265,96 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     private static string RecoverEmbeddedExplicitItemBoundaries(string text)
     {
         if (string.IsNullOrEmpty(text)) return text ?? string.Empty;
-        return Regex.Replace(
-            text,
-            @"(?<=\S)[ \t](?=[ \t]+(?:[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|\(\d+\)|\d+[.)]|[가-하][.)])[ \t]+)",
-            "\n",
+
+        // Word can flatten an explicit list into one paragraph.  Python's historical recovery
+        // only recognized 2+ spaces, but real DOCX text commonly has exactly one space:
+        //   ... follows. (1) Company ... (2) Member ... (3) ...
+        // Do not split on one isolated "(1)" reference.  A single-space recovery is accepted
+        // only for a consecutive enumerator sequence (normally 1,2,3...) and therefore keeps
+        // prose references such as "Article 5 (1)" intact.
+        var candidateRegex = new Regex(
+            @"(?m)(?<gap>^[ \t]*|[ \t]+)(?<label>(?:[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|\(\d+\)|\d+[.)]|[가-하A-Za-z][.)]))(?=[ \t]+)",
             RegexOptions.CultureInvariant);
+        var chars = text.ToCharArray();
+        var candidates = new List<(int Boundary, int GapLength, int LineStart, bool AtLineStart, string Family, int Ordinal)>();
+
+        static (string Family, int Ordinal)? EnumeratorKey(string label)
+        {
+            if (label.Length == 1)
+            {
+                const string circled = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳";
+                var ci = circled.IndexOf(label[0]);
+                if (ci >= 0) return ("circled", ci + 1);
+            }
+            if (label.Length >= 3 && label[0] == '(' && label[^1] == ')' &&
+                int.TryParse(label[1..^1], NumberStyles.None, CultureInfo.InvariantCulture, out var pn))
+                return ("paren-number", pn);
+            if (char.IsDigit(label[0]))
+            {
+                var digits = new string(label.TakeWhile(char.IsDigit).ToArray());
+                if (int.TryParse(digits, NumberStyles.None, CultureInfo.InvariantCulture, out var n))
+                    return ($"number-{label[^1]}", n);
+            }
+            if (label.Length == 2 && char.IsAsciiLetter(label[0]) && label[1] is '.' or ')')
+                return ($"alpha-{label[1]}", char.ToUpperInvariant(label[0]) - 'A' + 1);
+            if (label.Length == 2 && label[1] is '.' or ')')
+            {
+                const string korean = "가나다라마바사아자차카타파하";
+                var ki = korean.IndexOf(label[0]);
+                if (ki >= 0) return ($"korean-{label[1]}", ki + 1);
+            }
+            return null;
+        }
+
+        foreach (Match m in candidateRegex.Matches(text))
+        {
+            var label = m.Groups["label"].Value;
+            var key = EnumeratorKey(label);
+            if (key is null) continue;
+            var gap = m.Groups["gap"];
+            var lineStart = text.LastIndexOf('\n', Math.Max(0, m.Index - 1)) + 1;
+            var atLineStart = gap.Index == lineStart;
+            var boundary = atLineStart || gap.Length == 0 ? -1 : gap.Index + gap.Length - 1;
+            candidates.Add((boundary, gap.Length, lineStart, atLineStart, key.Value.Family, key.Value.Ordinal));
+
+            // Preserve the mature Python behavior: 2+ spaces are already a strong structural boundary.
+            if (!atLineStart && gap.Length >= 2 && boundary >= 0)
+                chars[boundary] = '\n';
+        }
+
+        foreach (var lineGroup in candidates.GroupBy(x => x.LineStart))
+        {
+            var items = lineGroup.OrderBy(x => x.Boundary < 0 ? x.LineStart : x.Boundary).ToList();
+            for (var i = 0; i < items.Count;)
+            {
+                var j = i + 1;
+                while (j < items.Count && items[j].Family == items[j - 1].Family &&
+                       items[j].Ordinal == items[j - 1].Ordinal + 1)
+                    j++;
+
+                var count = j - i;
+                var first = items[i];
+                var firstHasStrongLead = first.AtLineStart;
+                if (!firstHasStrongLead && first.Boundary >= 0)
+                {
+                    var q = first.Boundary - 1;
+                    while (q >= first.LineStart && char.IsWhiteSpace(text[q])) q--;
+                    firstHasStrongLead = q < first.LineStart || text[q] is '.' or ':' or ';' or '!' or '?' or ')' or ']' or '}';
+                }
+
+                // For one-space inline recovery require a real sequence.  Three inline markers
+                // are strong evidence by themselves; two are accepted when the sequence begins
+                // at the physical line start.  This avoids splitting ordinary single references.
+                var qualifies = (count >= 3 && firstHasStrongLead) || (count >= 2 && first.AtLineStart);
+                if (qualifies)
+                {
+                    for (var k = i; k < j; k++)
+                        if (items[k].Boundary >= 0) chars[items[k].Boundary] = '\n';
+                }
+                i = j;
+            }
+        }
+        return new string(chars);
     }
 
     private static List<NativePart> ParseParts(string text)
