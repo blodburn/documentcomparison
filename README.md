@@ -9,8 +9,10 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.20.1**
+**V5.20.2**
 
+- Fixed numbered legal clauses flattened by Word so 1./2./3./4. are compared item-by-item.
+- Restored Python article-sequence filtering and same-number lineage bias to prevent downstream Article drift.
 - Matched the native C# comparison engine more closely to Python 5.19.4.4 behavior.
 - Fixed article renumbering/lineage, numbered-list matching, sentence-boundary anchors, and Korean morphology grouping.
 - Improved DOCX visible-text parsing and automatic numbering reconstruction.

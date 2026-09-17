@@ -261,47 +261,36 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             var m = EnglishArticle.Match(lines[i].Trim());
             if (m.Success) markers.Add((i, m.Groups[1].Value));
         }
-        if (markers.Count < 3) return new();
-        var falseLines = new HashSet<int>();
-        var byNumber = markers.GroupBy(x => x.Number, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => g.Select(x => x.Line).ToList(), StringComparer.OrdinalIgnoreCase);
+        if (markers.Count <= 2) return new();
 
-        for (var i = 1; i + 1 < markers.Count; i++)
-        {
-            var p = ArticleNumberValue(markers[i - 1].Number);
-            var c = ArticleNumberValue(markers[i].Number);
-            var n = ArticleNumberValue(markers[i + 1].Number);
-            if (p is null || c is null || n is null) continue;
-            var neighboursConsecutive = n.Value - p.Value >= .5 && n.Value - p.Value <= 1.5;
-            var outside = !(Math.Min(p.Value, n.Value) <= c.Value && c.Value <= Math.Max(p.Value, n.Value));
-            var jump = Math.Min(Math.Abs(c.Value - p.Value), Math.Abs(c.Value - n.Value));
-            if (!neighboursConsecutive || !outside || jump < 3) continue;
-            var duplicateLater = byNumber.TryGetValue(markers[i].Number, out var dup) && dup.Any(x => x > markers[i].Line);
-            if (duplicateLater || jump >= 5) falseLines.Add(markers[i].Line);
-        }
-
-        // Python V2.0 second pass: after removing one citation, another large spike between the
-        // same monotonic neighbours may become visible.
+        var keep = Enumerable.Repeat(true, markers.Count).ToArray();
         var changed = true;
         while (changed)
         {
             changed = false;
-            var kept = markers.Where(x => !falseLines.Contains(x.Line)).ToList();
-            for (var i = 1; i + 1 < kept.Count; i++)
+            var active = Enumerable.Range(0, markers.Count).Where(i => keep[i]).ToList();
+            if (active.Count <= 2) break;
+            for (var pos = 1; pos + 1 < active.Count; pos++)
             {
-                var p = ArticleNumberValue(kept[i - 1].Number);
-                var c = ArticleNumberValue(kept[i].Number);
-                var n = ArticleNumberValue(kept[i + 1].Number);
+                var i = active[pos]; var pi = active[pos - 1]; var ni = active[pos + 1];
+                var p = ArticleNumberValue(markers[pi].Number);
+                var c = ArticleNumberValue(markers[i].Number);
+                var n = ArticleNumberValue(markers[ni].Number);
                 if (p is null || c is null || n is null) continue;
+                if (Math.Abs((n.Value - p.Value) - 1.0) > 1e-9) continue;
+                if (!(c.Value < p.Value || c.Value > n.Value)) continue;
                 var jump = Math.Min(Math.Abs(c.Value - p.Value), Math.Abs(c.Value - n.Value));
-                if (n.Value - p.Value >= .5 && n.Value - p.Value <= 1.5 &&
-                    !(Math.Min(p.Value, n.Value) <= c.Value && c.Value <= Math.Max(p.Value, n.Value)) && jump >= 4)
+                var duplicateLater = active.Skip(pos + 1)
+                    .Any(j => keep[j] && string.Equals(markers[j].Number, markers[i].Number, StringComparison.OrdinalIgnoreCase));
+                if (jump >= 3 && (duplicateLater || jump >= 6))
                 {
-                    falseLines.Add(kept[i].Line); changed = true; break;
+                    keep[i] = false;
+                    changed = true;
+                    break;
                 }
             }
         }
-        return falseLines;
+        return Enumerable.Range(0, markers.Count).Where(i => !keep[i]).Select(i => markers[i].Line).ToHashSet();
     }
 
     private static List<NativeUnit> ParseLegalUnits(string text)
@@ -576,6 +565,8 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             {
                 var sim = Sim(i - 1, j - 1);
                 var matchCost = sim >= .43 ? .94 * (1.0 - sim) : 1.08;
+                if (string.Equals(a[articleA[i - 1]].Number, b[articleB[j - 1]].Number, StringComparison.OrdinalIgnoreCase))
+                    matchCost -= .015;
                 var mc = dp[i - 1, j - 1] + matchCost;
                 var dc = dp[i - 1, j] + gap;
                 var ic = dp[i, j - 1] + gap;
@@ -1271,9 +1262,20 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return 0;
     }
 
+    private static string RecoverEmbeddedExplicitItemBoundaries(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return text ?? string.Empty;
+        return Regex.Replace(
+            text,
+            @"(?<=\S)[ \t](?=[ \t]+(?:[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|\(\d+\)|\d+[.)]|[가-하][.)])[ \t]+)",
+            "\n",
+            RegexOptions.CultureInvariant);
+    }
+
     private static List<NativePart> ParseParts(string text)
     {
         text = NativeDocumentReader.NormalizeNewlines(text ?? string.Empty);
+        text = RecoverEmbeddedExplicitItemBoundaries(text);
         var matches = ExplicitItem.Matches(text).Cast<Match>().ToList();
         if (matches.Count == 0)
         {
