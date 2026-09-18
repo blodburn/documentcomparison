@@ -60,7 +60,7 @@ public sealed class HelpDialog : Window
 
     private static string BuildGuide(UiLanguage language) => language == UiLanguage.Korean
         ? """
-문서 비교기 V5.20.9 · 간단 사용설명서
+문서 비교기 V5.20.10 · 간단 사용설명서
 
 1. 문서 불러오기
 A/B/C 제목 영역을 클릭하거나 DOCX/TXT 파일을 해당 영역에 드롭합니다. A와 B는 필수이고 C는 선택입니다.
@@ -81,7 +81,7 @@ A/B/C 중 어느 열이든 [n]을 클릭하면 누른 열이 기준열이 됩니
 검색창에서 본문과 변경사항을 찾을 수 있습니다. ‘특수문자 포함’을 끄면 독립적인 문장부호 변경은 비교 결과에서 제외됩니다.
 
 7. 내보내기
-‘Excel 내보내기’는 비교 결과를 XLSX로 저장합니다. ‘Word 변경추적’은 변경 전 → 변경 후 조합을 선택해 Word 변경추적 문서를 만듭니다. 표·콘텐츠 컨트롤·도형 등 복합 본문 구조를 안전하게 보존할 수 없는 경우에는 원본 데이터 유실 방지를 위해 내보내기를 중단합니다.
+‘Excel 내보내기’는 비교 결과를 XLSX로 저장합니다. ‘Word 변경추적’은 변경 전 → 변경 후 조합을 선택해 Word 변경추적 문서를 만듭니다. DOCX를 변경 후 문서(B)로 선택하면 B의 표·이미지·스타일·번호·콘텐츠 컨트롤 등 양식을 유지하고 텍스트 변경만 Word 변경추적으로 기록합니다.
 
 8. 언어
 프로그램은 Windows 표시 언어를 읽어 한국어 Windows에서는 KR, 그 외 환경에서는 EN으로 시작합니다. 상단 ‘언어/Language’ 메뉴에서 언제든 KR/EN을 바꿀 수 있습니다. 문서 원문은 언어 전환으로 변경되지 않습니다.
@@ -90,7 +90,7 @@ Copyright © 2026 blodburn. All rights reserved.
 This software is proprietary and is not open source.
 """
         : """
-Document Compare V5.20.9 · Quick Guide
+Document Compare V5.20.10 · Quick Guide
 
 1. Load documents
 Click the A/B/C header area or drop DOCX/TXT files onto it. A and B are required; C is optional.
@@ -111,7 +111,7 @@ Click [n] in any A/B/C column. The clicked column becomes the reference. If the 
 Use Search to find text in the document body or the Changes column. Turning off ‘Include punctuation’ excludes standalone punctuation-only edits.
 
 7. Export
-‘Export Excel’ saves the comparison as XLSX. ‘Word Track Changes’ lets you choose an original → revised pair and creates a Word document with tracked changes. If a document contains complex body structures such as tables, content controls, or drawings that cannot yet be preserved safely, export is stopped to prevent data loss.
+‘Export Excel’ saves the comparison as XLSX. ‘Word Track Changes’ lets you choose an original → revised pair and creates a Word document with tracked changes. When a DOCX is selected as the revised document (B), its tables, images, styles, numbering, and content controls are preserved while only text changes are recorded as Word Track Changes.
 
 8. Language
 The app reads the Windows display language. Korean Windows starts in KR; other environments start in EN. You can switch KR/EN at any time from the Language menu. Switching the UI language never modifies document content.

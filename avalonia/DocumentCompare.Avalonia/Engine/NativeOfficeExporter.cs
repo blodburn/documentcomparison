@@ -22,7 +22,7 @@ internal static class NativeOfficeExporter
     {
         var oldText = await NativeDocumentReader.ReadAsync(originalPath, cancellationToken);
         var newText = await NativeDocumentReader.ReadAsync(revisedPath, cancellationToken);
-        await Task.Run(() => WriteTrackedDocx(oldText, newText, revisedPath, outputPath, author, includePunctuation, cancellationToken), cancellationToken);
+        await Task.Run(() => WriteTrackedDocx(oldText, newText, originalPath, revisedPath, outputPath, author, includePunctuation, cancellationToken), cancellationToken);
     }
 
     private static void WriteXlsx(ComparisonResultVm result, string outputPath, CancellationToken token)
@@ -150,10 +150,11 @@ internal static class NativeOfficeExporter
         return s;
     }
 
-    private static void WriteTrackedDocx(string oldText, string newText, string revisedPath, string outputPath, string author, bool includePunctuation, CancellationToken token)
+    private static void WriteTrackedDocx(string oldText, string newText, string originalPath, string revisedPath, string outputPath, string author, bool includePunctuation, CancellationToken token)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath))!);
-        if (Path.GetExtension(revisedPath).Equals(".docx", StringComparison.OrdinalIgnoreCase))
+        var revisedIsDocx = Path.GetExtension(revisedPath).Equals(".docx", StringComparison.OrdinalIgnoreCase);
+        if (revisedIsDocx)
             File.Copy(revisedPath, outputPath, overwrite: true);
         else
             CreateMinimalDocx(outputPath);
@@ -165,14 +166,77 @@ internal static class NativeOfficeExporter
         using (var input = documentEntry.Open()) document = XDocument.Load(input, LoadOptions.PreserveWhitespace);
         XNamespace w = W;
         var body = document.Root?.Element(w + "body") ?? throw new InvalidDataException("Word body not found.");
-        EnsureSafeTrackedBody(body, w);
-        var section = body.Elements(w + "sectPr").LastOrDefault();
-        var revisedParagraphs = body.Elements(w + "p")
-            .Select(p => new RevisedParagraph(ParagraphText(p, w), p.Element(w + "pPr") is { } pPr ? new XElement(pPr) : null))
-            .Where(x => !string.IsNullOrWhiteSpace(x.Text))
-            .ToList();
-        body.RemoveNodes();
 
+        if (!revisedIsDocx)
+        {
+            WriteFlatTrackedBody(body, oldText, newText, author, includePunctuation, token);
+            ReplaceEntry(zip, "word/document.xml", document.ToString(SaveOptions.DisableFormatting));
+            EnsureTrackRevisions(zip);
+            return;
+        }
+
+        var revisedParagraphs = BodyParagraphs(body, w);
+        var revisedTexts = revisedParagraphs.Select(p => ParagraphVisibleText(p, w)).ToList();
+        List<string> originalTexts;
+        if (Path.GetExtension(originalPath).Equals(".docx", StringComparison.OrdinalIgnoreCase))
+            originalTexts = ReadDocxParagraphTextsFromPath(originalPath, w) ??
+                            oldText.Split('\n').Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
+        else
+            originalTexts = oldText.Split('\n').Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
+
+        var oldKeys = originalTexts.Select(NativeComparisonEngine.Normalize).ToArray();
+        var newKeys = revisedTexts.Select(NativeComparisonEngine.Normalize).ToArray();
+        var paragraphMatches = Lcs(oldKeys, newKeys);
+        var anchors = new List<(int A, int B)> { (-1, -1) };
+        anchors.AddRange(paragraphMatches);
+        anchors.Add((originalTexts.Count, revisedTexts.Count));
+
+        var revisionId = NextRevisionId(document, w);
+        for (var k = 0; k < anchors.Count - 1; k++)
+        {
+            token.ThrowIfCancellationRequested();
+            var left = anchors[k]; var right = anchors[k + 1];
+            var ai = left.A + 1; var aj = right.A; var bi = left.B + 1; var bj = right.B;
+            var paired = Math.Min(aj - ai, bj - bi);
+
+            for (var p = 0; p < paired; p++)
+            {
+                var oldIndex = ai + p; var newIndex = bi + p;
+                ApplyTrackedTextDiff(revisedParagraphs[newIndex], originalTexts[oldIndex], revisedTexts[newIndex],
+                    author, ref revisionId, includePunctuation, w);
+            }
+
+            // A-only paragraphs: insert deleted text at the corresponding B position.  B's
+            // surrounding paragraph style is used intentionally; A contributes text+position only.
+            for (var p = ai + paired; p < aj; p++)
+            {
+                var anchorIndex = Math.Min(bi + paired, revisedParagraphs.Count - 1);
+                InsertDeletedParagraphAt(revisedParagraphs, anchorIndex, originalTexts[p], author, ref revisionId, w);
+            }
+
+            // B-only paragraphs already exist with their full B formatting.  Mark their existing
+            // text runs as inserted without rebuilding the paragraph/table/SDT structure.
+            for (var p = bi + paired; p < bj; p++)
+                MarkWholeParagraphInserted(revisedParagraphs[p], author, ref revisionId, w);
+
+            if (right.A < originalTexts.Count && right.B < revisedTexts.Count &&
+                !NativeComparisonEngine.SemanticEqual(originalTexts[right.A], revisedTexts[right.B]))
+            {
+                ApplyTrackedTextDiff(revisedParagraphs[right.B], originalTexts[right.A], revisedTexts[right.B],
+                    author, ref revisionId, includePunctuation, w);
+            }
+        }
+
+        ReplaceEntry(zip, "word/document.xml", document.ToString(SaveOptions.DisableFormatting));
+        EnsureTrackRevisions(zip);
+    }
+
+    private static void WriteFlatTrackedBody(XElement body, string oldText, string newText, string author,
+        bool includePunctuation, CancellationToken token)
+    {
+        XNamespace w = W;
+        var section = body.Elements(w + "sectPr").LastOrDefault();
+        body.RemoveNodes();
         var oldLines = oldText.Split('\n').Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
         var newLines = newText.Split('\n').Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
         var lineMatches = Lcs(oldLines.Select(NativeComparisonEngine.Normalize).ToArray(), newLines.Select(NativeComparisonEngine.Normalize).ToArray());
@@ -184,52 +248,220 @@ internal static class NativeOfficeExporter
             var left = anchors[k]; var right = anchors[k + 1];
             var ai = left.A + 1; var aj = right.A; var bi = left.B + 1; var bj = right.B;
             var paired = Math.Min(aj - ai, bj - bi);
-            for (var p = 0; p < paired; p++) body.Add(TrackedParagraph(oldLines[ai + p], newLines[bi + p], author, ref revisionId, includePunctuation, PickParagraphProperties(newLines[bi + p], revisedParagraphs, bi + p)));
+            for (var p = 0; p < paired; p++) body.Add(TrackedParagraph(oldLines[ai + p], newLines[bi + p], author, ref revisionId, includePunctuation, null));
             for (var p = ai + paired; p < aj; p++) body.Add(DeletedParagraph(oldLines[p], author, ref revisionId, null));
-            for (var p = bi + paired; p < bj; p++) body.Add(InsertedParagraph(newLines[p], author, ref revisionId, PickParagraphProperties(newLines[p], revisedParagraphs, p)));
-            if (right.A < oldLines.Count && right.B < newLines.Count) body.Add(PlainParagraph(newLines[right.B], PickParagraphProperties(newLines[right.B], revisedParagraphs, right.B)));
+            for (var p = bi + paired; p < bj; p++) body.Add(InsertedParagraph(newLines[p], author, ref revisionId, null));
+            if (right.A < oldLines.Count && right.B < newLines.Count) body.Add(PlainParagraph(newLines[right.B], null));
         }
         if (section is not null) body.Add(section);
-        ReplaceEntry(zip, "word/document.xml", document.ToString(SaveOptions.DisableFormatting));
-        EnsureTrackRevisions(zip);
     }
 
-    private sealed record RevisedParagraph(string Text, XElement? Properties);
+    private sealed record RunMap(XElement Run, int Start, int End, string Text, bool Simple);
 
-    private static void EnsureSafeTrackedBody(XElement body, XNamespace w)
+    private static List<XElement> BodyParagraphs(XElement body, XNamespace w) =>
+        body.Descendants(w + "p")
+            .Where(p => !p.Ancestors(w + "del").Any() && !p.Ancestors(w + "moveFrom").Any())
+            .ToList();
+
+    private static List<string>? ReadDocxParagraphTextsFromPath(string path, XNamespace w)
     {
-        var unsupportedBlock = body.Elements().FirstOrDefault(x => x.Name != w + "p" && x.Name != w + "sectPr");
-        if (unsupportedBlock is not null)
-            throw new InvalidOperationException($"Word 변경추적 내보내기는 현재 표/콘텐츠 컨트롤 등 복합 본문 구조를 안전하게 보존할 수 없습니다 ({unsupportedBlock.Name.LocalName}). 원본 데이터 유실을 막기 위해 저장을 중단했습니다.");
+        if (!Path.GetExtension(path).Equals(".docx", StringComparison.OrdinalIgnoreCase) || !File.Exists(path)) return null;
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var zip = new ZipArchive(fs, ZipArchiveMode.Read);
+        var entry = zip.GetEntry("word/document.xml"); if (entry is null) return null;
+        using var input = entry.Open(); var doc = XDocument.Load(input, LoadOptions.PreserveWhitespace);
+        var body = doc.Root?.Element(w + "body"); if (body is null) return null;
+        return BodyParagraphs(body, w).Select(p => ParagraphVisibleText(p, w)).ToList();
+    }
 
-        foreach (var p in body.Elements(w + "p"))
+    private static string ParagraphVisibleText(XElement paragraph, XNamespace w)
+    {
+        var sb = new StringBuilder();
+        foreach (var run in paragraph.Descendants(w + "r"))
         {
-            var unsafeNode = p.Descendants().FirstOrDefault(x =>
-                x.Name == w + "drawing" || x.Name == w + "object" || x.Name == w + "pict" ||
-                x.Name == w + "fldChar" || x.Name == w + "instrText" || x.Name == w + "hyperlink" ||
-                x.Name == w + "sdt" || x.Name == w + "bookmarkStart" || x.Name == w + "bookmarkEnd" ||
-                x.Name == w + "commentReference" || x.Name == w + "footnoteReference" || x.Name == w + "endnoteReference");
-            if (unsafeNode is not null)
-                throw new InvalidOperationException($"Word 변경추적 내보내기는 현재 {unsafeNode.Name.LocalName} 요소를 포함한 문단을 안전하게 재작성할 수 없습니다. 원본 데이터 유실을 막기 위해 저장을 중단했습니다.");
+            if (run.Ancestors().Any(a => a.Name == w + "del" || a.Name == w + "moveFrom")) continue;
+            foreach (var node in run.Descendants())
+            {
+                if (node.Name == w + "t") sb.Append(node.Value);
+                else if (node.Name == w + "tab") sb.Append('\t');
+                else if (node.Name == w + "br" || node.Name == w + "cr") sb.Append('\n');
+            }
+        }
+        return sb.ToString();
+    }
+
+    private static List<RunMap> BuildRunMap(XElement paragraph, XNamespace w)
+    {
+        var result = new List<RunMap>(); var pos = 0;
+        foreach (var run in paragraph.Descendants(w + "r").ToList())
+        {
+            if (run.Ancestors().Any(a => a.Name == w + "del" || a.Name == w + "moveFrom")) continue;
+            var text = RunVisibleText(run, w);
+            if (text.Length == 0) continue;
+            var simple = run.Elements().All(x => x.Name == w + "rPr" || x.Name == w + "t");
+            result.Add(new RunMap(run, pos, pos + text.Length, text, simple));
+            pos += text.Length;
+        }
+        return result;
+    }
+
+    private static string RunVisibleText(XElement run, XNamespace w)
+    {
+        var sb = new StringBuilder();
+        foreach (var node in run.Descendants())
+        {
+            if (node.Name == w + "t") sb.Append(node.Value);
+            else if (node.Name == w + "tab") sb.Append('\t');
+            else if (node.Name == w + "br" || node.Name == w + "cr") sb.Append('\n');
+        }
+        return sb.ToString();
+    }
+
+    private static XElement RunFragment(XElement sourceRun, string text, XNamespace w, bool deleted = false)
+    {
+        var run = new XElement(w + "r");
+        var rPr = sourceRun.Element(w + "rPr"); if (rPr is not null) run.Add(new XElement(rPr));
+        run.Add(TextNode(deleted ? w + "delText" : w + "t", text));
+        return run;
+    }
+
+    private static List<(int Start, int End)> MergeRanges(IEnumerable<(int Start, int End)> ranges)
+    {
+        var sorted = ranges.Where(x => x.End > x.Start).OrderBy(x => x.Start).ThenBy(x => x.End).ToList();
+        var result = new List<(int, int)>();
+        foreach (var r in sorted)
+        {
+            if (result.Count == 0 || r.Start > result[^1].Item2) result.Add(r);
+            else result[^1] = (result[^1].Item1, Math.Max(result[^1].Item2, r.End));
+        }
+        return result;
+    }
+
+    private static void MarkInsertionRanges(XElement paragraph, IEnumerable<(int Start, int End)> ranges,
+        string author, ref int id, XNamespace w)
+    {
+        var merged = MergeRanges(ranges);
+        if (merged.Count == 0) return;
+        foreach (var map in BuildRunMap(paragraph, w))
+        {
+            if (map.Run.Ancestors(w + "ins").Any()) continue;
+            var local = merged.Select(r => (Start: Math.Max(r.Start, map.Start) - map.Start, End: Math.Min(r.End, map.End) - map.Start))
+                .Where(r => r.End > r.Start).ToList();
+            if (local.Count == 0) continue;
+
+            if (!map.Simple)
+            {
+                // Complex runs (drawings/fields/tabs) stay byte-for-byte intact; if their visible
+                // text changed, mark the whole run rather than reconstructing and losing content.
+                var parent = map.Run.Parent; if (parent is null) continue;
+                map.Run.ReplaceWith(new XElement(w + "ins", RevisionAttrs(w, id++, author), map.Run));
+                continue;
+            }
+
+            var pieces = new List<object>(); var cursor = 0;
+            foreach (var r in local)
+            {
+                if (cursor < r.Start) pieces.Add(RunFragment(map.Run, map.Text[cursor..r.Start], w));
+                pieces.Add(new XElement(w + "ins", RevisionAttrs(w, id++, author), RunFragment(map.Run, map.Text[r.Start..r.End], w)));
+                cursor = r.End;
+            }
+            if (cursor < map.Text.Length) pieces.Add(RunFragment(map.Run, map.Text[cursor..], w));
+            map.Run.ReplaceWith(pieces);
         }
     }
 
-    private static XElement? PickParagraphProperties(string text, IReadOnlyList<RevisedParagraph> revised, int preferredIndex)
+    private static void InsertDeletionAt(XElement paragraph, int offset, string deletedText, string author,
+        ref int id, XNamespace w)
     {
-        var key = NativeComparisonEngine.Normalize(text);
-        var exact = revised
-            .Select((x, i) => (Item: x, Index: i))
-            .Where(x => NativeComparisonEngine.Normalize(x.Item.Text) == key && x.Item.Properties is not null)
-            .OrderBy(x => Math.Abs(x.Index - preferredIndex))
-            .FirstOrDefault();
-        if (exact.Item?.Properties is not null) return new XElement(exact.Item.Properties);
-        if (preferredIndex >= 0 && preferredIndex < revised.Count && revised[preferredIndex].Properties is not null)
-            return new XElement(revised[preferredIndex].Properties!);
-        return null;
+        if (string.IsNullOrEmpty(deletedText)) return;
+        var maps = BuildRunMap(paragraph, w);
+        if (maps.Count == 0)
+        {
+            var pPr = paragraph.Element(w + "pPr");
+            var del = new XElement(w + "del", RevisionAttrs(w, id++, author), new XElement(w + "r", TextNode(w + "delText", deletedText)));
+            if (pPr is null) paragraph.AddFirst(del); else pPr.AddAfterSelf(del);
+            return;
+        }
+
+        offset = Math.Clamp(offset, 0, maps[^1].End);
+        var target = maps.FirstOrDefault(x => offset <= x.End) ?? maps[^1];
+        var local = Math.Clamp(offset - target.Start, 0, target.Text.Length);
+        var delNode = new XElement(w + "del", RevisionAttrs(w, id++, author), RunFragment(target.Run, deletedText, w, deleted: true));
+        if (target.Simple && local > 0 && local < target.Text.Length)
+        {
+            var parts = new List<object>
+            {
+                RunFragment(target.Run, target.Text[..local], w),
+                delNode,
+                RunFragment(target.Run, target.Text[local..], w)
+            };
+            target.Run.ReplaceWith(parts);
+        }
+        else if (local <= 0) target.Run.AddBeforeSelf(delNode);
+        else target.Run.AddAfterSelf(delNode);
     }
 
-    private static string ParagraphText(XElement paragraph, XNamespace w) =>
-        string.Concat(paragraph.Descendants().Where(x => x.Name == w + "t" || x.Name == w + "delText").Select(x => x.Value)).Trim();
+    private static void ApplyTrackedTextDiff(XElement paragraph, string oldText, string newText, string author,
+        ref int id, bool includePunctuation, XNamespace w)
+    {
+        if (NativeComparisonEngine.SemanticEqual(oldText, newText)) return;
+        var a = Tokens(oldText); var b = Tokens(newText);
+        var matches = Lcs(a.Select(x => Key(x.Text)).ToArray(), b.Select(x => Key(x.Text)).ToArray());
+        var anchors = new List<(int A, int B)> { (-1, -1) }; anchors.AddRange(matches); anchors.Add((a.Count, b.Count));
+        var inserts = new List<(int Start, int End)>();
+        var deletes = new List<(int Anchor, string Text)>();
+        for (var k = 0; k < anchors.Count - 1; k++)
+        {
+            var left = anchors[k]; var right = anchors[k + 1];
+            var ai = left.A + 1; var aj = right.A; var bi = left.B + 1; var bj = right.B;
+            var oldChunk = JoinTokenRange(oldText, a, ai, aj); var newChunk = JoinTokenRange(newText, b, bi, bj);
+            var punctuationOnly = (oldChunk.Length == 0 || PunctuationOnly(oldChunk)) &&
+                                  (newChunk.Length == 0 || PunctuationOnly(newChunk));
+            if (!includePunctuation && punctuationOnly) continue;
+            if (newChunk.Length > 0)
+            {
+                var ns = b[bi].Start; var ne = b[bj - 1].End;
+                inserts.Add((ns, ne));
+            }
+            if (oldChunk.Length > 0)
+            {
+                var anchor = bi < b.Count ? b[bi].Start : newText.Length;
+                deletes.Add((anchor, oldChunk));
+            }
+        }
+
+        // Deletions first: inserting w:del does not change the visible B text offsets.
+        foreach (var d in deletes.OrderByDescending(x => x.Anchor))
+            InsertDeletionAt(paragraph, d.Anchor, d.Text, author, ref id, w);
+        MarkInsertionRanges(paragraph, inserts, author, ref id, w);
+    }
+
+    private static void MarkWholeParagraphInserted(XElement paragraph, string author, ref int id, XNamespace w)
+    {
+        var text = ParagraphVisibleText(paragraph, w);
+        if (text.Length > 0) MarkInsertionRanges(paragraph, new[] { (0, text.Length) }, author, ref id, w);
+    }
+
+    private static void InsertDeletedParagraphAt(IReadOnlyList<XElement> revisedParagraphs, int anchorIndex, string text,
+        string author, ref int id, XNamespace w)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return;
+        XElement? anchor = revisedParagraphs.Count == 0 ? null : revisedParagraphs[Math.Clamp(anchorIndex, 0, revisedParagraphs.Count - 1)];
+        var styleSource = anchor?.Element(w + "pPr");
+        var deleted = DeletedParagraph(text, author, ref id, styleSource is null ? null : new XElement(styleSource));
+        if (anchor is not null) anchor.AddBeforeSelf(deleted);
+        else throw new InvalidOperationException("B 문서에 삭제 텍스트를 배치할 문단 위치가 없습니다.");
+    }
+
+    private static int NextRevisionId(XDocument document, XNamespace w)
+    {
+        var max = 0;
+        foreach (var e in document.Descendants().Where(x => x.Name == w + "ins" || x.Name == w + "del" || x.Name == w + "moveFrom" || x.Name == w + "moveTo"))
+            if (int.TryParse(e.Attribute(w + "id")?.Value, out var id)) max = Math.Max(max, id);
+        return max + 1;
+    }
+
+    private static string ParagraphText(XElement paragraph, XNamespace w) => ParagraphVisibleText(paragraph, w).Trim();
 
     private static XElement PlainParagraph(string text, XElement? properties)
     {
@@ -295,6 +527,34 @@ internal static class NativeOfficeExporter
         if (settings.Root is null) settings.Add(root);
         if (root.Element(w + "trackRevisions") is null) root.AddFirst(new XElement(w + "trackRevisions"));
         ReplaceEntry(zip, "word/settings.xml", settings.ToString(SaveOptions.DisableFormatting));
+
+        XNamespace rel = "http://schemas.openxmlformats.org/package/2006/relationships";
+        var relPath = "word/_rels/document.xml.rels";
+        var relEntry = zip.GetEntry(relPath);
+        XDocument rels;
+        if (relEntry is null) rels = new XDocument(new XElement(rel + "Relationships"));
+        else { using var rs = relEntry.Open(); rels = XDocument.Load(rs, LoadOptions.PreserveWhitespace); }
+        var relRoot = rels.Root ?? new XElement(rel + "Relationships");
+        if (rels.Root is null) rels.Add(relRoot);
+        const string settingsType = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings";
+        if (!relRoot.Elements(rel + "Relationship").Any(x => (string?)x.Attribute("Type") == settingsType))
+        {
+            var used = relRoot.Elements(rel + "Relationship").Select(x => (string?)x.Attribute("Id")).Where(x => x is not null).ToHashSet(StringComparer.Ordinal);
+            var n = 1; while (used.Contains("rIdSettings" + n)) n++;
+            relRoot.Add(new XElement(rel + "Relationship", new XAttribute("Id", "rIdSettings" + n), new XAttribute("Type", settingsType), new XAttribute("Target", "settings.xml")));
+        }
+        ReplaceEntry(zip, relPath, rels.ToString(SaveOptions.DisableFormatting));
+
+        XNamespace ct = "http://schemas.openxmlformats.org/package/2006/content-types";
+        var ctEntry = zip.GetEntry("[Content_Types].xml");
+        if (ctEntry is not null)
+        {
+            XDocument types; using (var cs = ctEntry.Open()) types = XDocument.Load(cs, LoadOptions.PreserveWhitespace);
+            var typesRoot = types.Root;
+            if (typesRoot is not null && !typesRoot.Elements(ct + "Override").Any(x => (string?)x.Attribute("PartName") == "/word/settings.xml"))
+                typesRoot.Add(new XElement(ct + "Override", new XAttribute("PartName", "/word/settings.xml"), new XAttribute("ContentType", "application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml")));
+            ReplaceEntry(zip, "[Content_Types].xml", types.ToString(SaveOptions.DisableFormatting));
+        }
     }
 
     private static void CreateMinimalDocx(string outputPath)
