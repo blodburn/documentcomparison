@@ -1365,11 +1365,26 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return new string(chars);
     }
 
+    private static string StructuralParseView(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return text ?? string.Empty;
+        var chars = text.ToCharArray();
+        for (var i = 0; i < chars.Length; i++)
+        {
+            // Word documents frequently contain invisible formatting characters such as
+            // ZWSP/ZWNJ/ZWJ/WORD JOINER/BOM before legal enumerators.  Replacing them rather
+            // than removing them preserves every source offset used by review markers.
+            if (CharUnicodeInfo.GetUnicodeCategory(chars[i]) == UnicodeCategory.Format)
+                chars[i] = ' ';
+        }
+        return new string(chars);
+    }
+
     private static List<NativePart> ParseParts(string text)
     {
         text = NativeDocumentReader.NormalizeNewlines(text ?? string.Empty);
-        text = RecoverEmbeddedExplicitItemBoundaries(text);
-        var matches = ExplicitItem.Matches(text).Cast<Match>().ToList();
+        var scanText = RecoverEmbeddedExplicitItemBoundaries(StructuralParseView(text));
+        var matches = ExplicitItem.Matches(scanText).Cast<Match>().ToList();
         if (matches.Count == 0)
         {
             var st = 0; var en = text.Length;
@@ -1393,7 +1408,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         for (var i = 0; i < matches.Count; i++)
         {
             var m = matches[i];
-            var segStart = m.Index;
+            var segStart = m.Groups["label"].Index;
             var segEnd = i + 1 < matches.Count ? matches[i + 1].Index : text.Length;
             var coreStart = m.Index + m.Length;
             var coreEnd = segEnd;
