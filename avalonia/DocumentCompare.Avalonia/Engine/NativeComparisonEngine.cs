@@ -9,22 +9,22 @@ namespace DocumentCompare.Avalonia.Engine;
 public sealed class NativeComparisonEngine : IComparisonEngine
 {
     private static readonly Regex KoreanArticle = new(
-        """^\s*제\s*(\d+)\s*조(?:\s*의\s*(\d+))?\s*(?:\(([^\n)]{1,120})\))?\s*(.*)$""",
+        """^[\s\p{Cf}]*제\s*(\d+)\s*조(?:\s*의\s*(\d+))?\s*(?:\(([^\n)]{1,120})\))?\s*(.*)$""",
         RegexOptions.Compiled);
     private static readonly Regex EnglishArticle = new(
-        """^\s*(?:Article|Section)\s+(\d+(?:[-.]\d+)*)\s*(?:[.:-])?\s*(.*)$""",
+        """^[\s\p{Cf}]*(?:Article|Section)\s+(\d+(?:[-.]\d+)*)\s*(?:[.:-])?\s*(.*)$""",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex SectionHeading = new(
-        """^\s*(?:제\s*\d+\s*(?:장|절|관)\b.*|(?:Chapter|Part)\s+\d+(?:[-.]\d+)*\b.*)$""",
+        """^[\s\p{Cf}]*(?:제\s*\d+\s*(?:장|절|관)\b.*|(?:Chapter|Part)\s+\d+(?:[-.]\d+)*\b.*)$""",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex EnglishHierarchy = new(
-        """^\s*(?:[•●▪◦·*]+\s*)?(?<level>Chapter|Part)\s+(?<num>(?:\d+(?:[-.]\d+)*)|(?:[IVXLCDM]+))\s*[.\-:–—]?\s*(?<title>.*?)\s*$""",
+        """^[\s\p{Cf}]*(?:[•●▪◦·*]+\s*)?(?<level>Chapter|Part)\s+(?<num>(?:\d+(?:[-.]\d+)*)|(?:[IVXLCDM]+))\s*[.\-:–—]?\s*(?<title>.*?)\s*$""",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex KoreanHierarchy = new(
-        """^\s*(?:[•●▪◦·*]+\s*)?제\s*(?<num>\d+)\s*(?<level>장|절|관)\s*(?:\((?<p>[^)\n]*)\)|\[(?<b>[^]\n]*)\]|(?<title>.*?))\s*$""",
+        """^[\s\p{Cf}]*(?:[•●▪◦·*]+\s*)?제\s*(?<num>\d+)\s*(?<level>장|절|관)\s*(?:\((?<p>[^)\n]*)\)|\[(?<b>[^]\n]*)\]|(?<title>.*?))\s*$""",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex ExplicitItem = new(
-        """^[ \t]*(?<label>(?:[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|\(\d+\)|\d+[.)]|[가-하A-Za-z][.)]))(?<ws>[ \t]+)""",
+        """^[ \t\p{Cf}]*(?<label>(?:[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|\(\d+\)|\d+[.)]|[가-하A-Za-z][.)]))(?<ws>[ \t]+)""",
         RegexOptions.Compiled | RegexOptions.Multiline | RegexOptions.CultureInvariant);
     private static readonly Regex StrongInlineEnglishArticle = new(
         """(?<![A-Za-z0-9])(?:Article|Section)\s+\d+(?:[-.]\d+)*\s*(?:[.:-])?\s*\([^\n)]{1,180}[)}]""",

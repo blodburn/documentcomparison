@@ -60,7 +60,7 @@ public sealed class HelpDialog : Window
 
     private static string BuildGuide(UiLanguage language) => language == UiLanguage.Korean
         ? """
-문서 비교기 V5.20.6 · 간단 사용설명서
+문서 비교기 V5.20.7 · 간단 사용설명서
 
 1. 문서 불러오기
 A/B/C 제목 영역을 클릭하거나 DOCX/TXT 파일을 해당 영역에 드롭합니다. A와 B는 필수이고 C는 선택입니다.
@@ -90,7 +90,7 @@ Copyright © 2026 blodburn. All rights reserved.
 This software is proprietary and is not open source.
 """
         : """
-Document Compare V5.20.6 · Quick Guide
+Document Compare V5.20.7 · Quick Guide
 
 1. Load documents
 Click the A/B/C header area or drop DOCX/TXT files onto it. A and B are required; C is optional.

@@ -1,5 +1,6 @@
 using System.IO.Compression;
 using System.Text;
+using System.Globalization;
 using System.Xml.Linq;
 
 namespace DocumentCompare.Avalonia.Engine;
@@ -70,7 +71,7 @@ internal static class NativeDocumentReader
 
         string VisibleParagraph(XElement paragraph)
         {
-            var text = ParagraphText(paragraph, w).Trim();
+            var text = TrimStructuralEdges(ParagraphText(paragraph, w));
             if (text.Length == 0) return string.Empty;
             var label = NumberLabel(paragraph, numbering, w);
             if (label.Length > 0 && !Compact(text).StartsWith(Compact(label), StringComparison.OrdinalIgnoreCase))
@@ -247,6 +248,16 @@ internal static class NativeDocumentReader
     private static int IntVal(XElement? e, XNamespace w, int fallback) => int.TryParse(Val(e, w), out var v) ? v : fallback;
     private static string? Val(XElement? e, XNamespace w) => e?.Attribute(w + "val")?.Value;
     private static string Compact(string value) => string.Concat((value ?? string.Empty).Where(c => !char.IsWhiteSpace(c))).ToLowerInvariant();
+
+    private static string TrimStructuralEdges(string value)
+    {
+        value ??= string.Empty;
+        var start = 0; var end = value.Length;
+        static bool Noise(char c) => char.IsWhiteSpace(c) || CharUnicodeInfo.GetUnicodeCategory(c) == UnicodeCategory.Format;
+        while (start < end && Noise(value[start])) start++;
+        while (end > start && Noise(value[end - 1])) end--;
+        return start == 0 && end == value.Length ? value : value[start..end];
+    }
 
     private static string ParagraphText(XElement paragraph, XNamespace w)
     {
