@@ -175,21 +175,27 @@ internal static class NativeOfficeExporter
             return;
         }
 
-        var revisedParagraphs = BodyParagraphs(body, w);
-        var revisedTexts = revisedParagraphs.Select(p => ParagraphVisibleText(p, w)).ToList();
-        List<string> originalTexts;
+        // Empty Word paragraphs are formatting/layout, not comparison anchors.  Keep them in B's
+        // XML untouched, but exclude them from paragraph LCS so repeated "" keys cannot pull
+        // unrelated legal clauses together.
+        var revisedParagraphs = BodyParagraphEntries(body, w)
+            .Where(x => !string.IsNullOrWhiteSpace(x.Text))
+            .ToList();
+        List<ParagraphSource> originalParagraphs;
         if (Path.GetExtension(originalPath).Equals(".docx", StringComparison.OrdinalIgnoreCase))
-            originalTexts = ReadDocxParagraphTextsFromPath(originalPath, w) ??
-                            oldText.Split('\n').Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
+            originalParagraphs = ReadDocxParagraphSourcesFromPath(originalPath, w) ??
+                                 oldText.Split('\n').Select(x => x.Trim()).Where(x => x.Length > 0)
+                                     .Select(x => new ParagraphSource(x, "body")).ToList();
         else
-            originalTexts = oldText.Split('\n').Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
+            originalParagraphs = oldText.Split('\n').Select(x => x.Trim()).Where(x => x.Length > 0)
+                .Select(x => new ParagraphSource(x, "body")).ToList();
 
-        var oldKeys = originalTexts.Select(NativeComparisonEngine.Normalize).ToArray();
-        var newKeys = revisedTexts.Select(NativeComparisonEngine.Normalize).ToArray();
+        var oldKeys = originalParagraphs.Select(x => NativeComparisonEngine.Normalize(x.Text)).ToArray();
+        var newKeys = revisedParagraphs.Select(x => NativeComparisonEngine.Normalize(x.Text)).ToArray();
         var paragraphMatches = Lcs(oldKeys, newKeys);
         var anchors = new List<(int A, int B)> { (-1, -1) };
         anchors.AddRange(paragraphMatches);
-        anchors.Add((originalTexts.Count, revisedTexts.Count));
+        anchors.Add((originalParagraphs.Count, revisedParagraphs.Count));
 
         var revisionId = NextRevisionId(document, w);
         for (var k = 0; k < anchors.Count - 1; k++)
@@ -202,27 +208,27 @@ internal static class NativeOfficeExporter
             for (var p = 0; p < paired; p++)
             {
                 var oldIndex = ai + p; var newIndex = bi + p;
-                ApplyTrackedTextDiff(revisedParagraphs[newIndex], originalTexts[oldIndex], revisedTexts[newIndex],
+                ApplyTrackedTextDiff(revisedParagraphs[newIndex].Paragraph, originalParagraphs[oldIndex].Text, revisedParagraphs[newIndex].Text,
                     author, ref revisionId, includePunctuation, w);
             }
 
-            // A-only paragraphs: insert deleted text at the corresponding B position.  B's
-            // surrounding paragraph style is used intentionally; A contributes text+position only.
-            for (var p = ai + paired; p < aj; p++)
+            // A-only paragraphs: A contributes text+logical position only. Insert the whole range
+            // in source order. At end-of-document a moving cursor prevents AddAfterSelf() from
+            // reversing multiple deleted paragraphs.
+            if (ai + paired < aj)
             {
-                var anchorIndex = Math.Min(bi + paired, revisedParagraphs.Count - 1);
-                InsertDeletedParagraphAt(revisedParagraphs, anchorIndex, originalTexts[p], author, ref revisionId, w);
+                var deletedRange = originalParagraphs.GetRange(ai + paired, aj - (ai + paired));
+                InsertDeletedParagraphRange(body, revisedParagraphs, bi + paired, deletedRange, author, ref revisionId, w);
             }
 
-            // B-only paragraphs already exist with their full B formatting.  Mark their existing
-            // text runs as inserted without rebuilding the paragraph/table/SDT structure.
+            // B-only paragraphs already exist with their complete B formatting.
             for (var p = bi + paired; p < bj; p++)
-                MarkWholeParagraphInserted(revisedParagraphs[p], author, ref revisionId, w);
+                MarkWholeParagraphInserted(revisedParagraphs[p].Paragraph, author, ref revisionId, w);
 
-            if (right.A < originalTexts.Count && right.B < revisedTexts.Count &&
-                !NativeComparisonEngine.SemanticEqual(originalTexts[right.A], revisedTexts[right.B]))
+            if (right.A < originalParagraphs.Count && right.B < revisedParagraphs.Count &&
+                !NativeComparisonEngine.SemanticEqual(originalParagraphs[right.A].Text, revisedParagraphs[right.B].Text))
             {
-                ApplyTrackedTextDiff(revisedParagraphs[right.B], originalTexts[right.A], revisedTexts[right.B],
+                ApplyTrackedTextDiff(revisedParagraphs[right.B].Paragraph, originalParagraphs[right.A].Text, revisedParagraphs[right.B].Text,
                     author, ref revisionId, includePunctuation, w);
             }
         }
@@ -257,13 +263,35 @@ internal static class NativeOfficeExporter
     }
 
     private sealed record RunMap(XElement Run, int Start, int End, string Text, bool Simple);
+    private sealed record ParagraphSource(string Text, string ContainerKind);
+    private sealed record ParagraphEntry(XElement Paragraph, string Text, string ContainerKind, XElement TopLevelBlock);
 
     private static List<XElement> BodyParagraphs(XElement body, XNamespace w) =>
         body.Descendants(w + "p")
             .Where(p => !p.Ancestors(w + "del").Any() && !p.Ancestors(w + "moveFrom").Any())
             .ToList();
 
-    private static List<string>? ReadDocxParagraphTextsFromPath(string path, XNamespace w)
+    private static string ParagraphContainerKind(XElement paragraph, XElement body, XNamespace w)
+    {
+        if (paragraph.Ancestors(w + "tc").Any()) return "table";
+        if (paragraph.Ancestors(w + "sdt").Any()) return "sdt";
+        if (paragraph.Parent == body) return "body";
+        return "other";
+    }
+
+    private static XElement TopLevelBodyBlock(XElement paragraph, XElement body)
+    {
+        var current = paragraph;
+        while (current.Parent is XElement parent && parent != body) current = parent;
+        return current.Parent == body ? current : paragraph;
+    }
+
+    private static List<ParagraphEntry> BodyParagraphEntries(XElement body, XNamespace w) =>
+        BodyParagraphs(body, w)
+            .Select(p => new ParagraphEntry(p, ParagraphVisibleText(p, w), ParagraphContainerKind(p, body, w), TopLevelBodyBlock(p, body)))
+            .ToList();
+
+    private static List<ParagraphSource>? ReadDocxParagraphSourcesFromPath(string path, XNamespace w)
     {
         if (!Path.GetExtension(path).Equals(".docx", StringComparison.OrdinalIgnoreCase) || !File.Exists(path)) return null;
         using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
@@ -271,7 +299,10 @@ internal static class NativeOfficeExporter
         var entry = zip.GetEntry("word/document.xml"); if (entry is null) return null;
         using var input = entry.Open(); var doc = XDocument.Load(input, LoadOptions.PreserveWhitespace);
         var body = doc.Root?.Element(w + "body"); if (body is null) return null;
-        return BodyParagraphs(body, w).Select(p => ParagraphVisibleText(p, w)).ToList();
+        return BodyParagraphs(body, w)
+            .Select(p => new ParagraphSource(ParagraphVisibleText(p, w), ParagraphContainerKind(p, body, w)))
+            .Where(x => !string.IsNullOrWhiteSpace(x.Text))
+            .ToList();
     }
 
     private static string ParagraphVisibleText(XElement paragraph, XNamespace w)
@@ -442,15 +473,63 @@ internal static class NativeOfficeExporter
         if (text.Length > 0) MarkInsertionRanges(paragraph, new[] { (0, text.Length) }, author, ref id, w);
     }
 
-    private static void InsertDeletedParagraphAt(IReadOnlyList<XElement> revisedParagraphs, int anchorIndex, string text,
-        string author, ref int id, XNamespace w)
+    private static void InsertDeletedParagraphRange(XElement body, IReadOnlyList<ParagraphEntry> revisedParagraphs,
+        int nextBIndex, IReadOnlyList<ParagraphSource> deletedSources, string author, ref int id, XNamespace w)
     {
-        if (string.IsNullOrWhiteSpace(text)) return;
-        XElement? anchor = revisedParagraphs.Count == 0 ? null : revisedParagraphs[Math.Clamp(anchorIndex, 0, revisedParagraphs.Count - 1)];
-        var styleSource = anchor?.Element(w + "pPr");
-        var deleted = DeletedParagraph(text, author, ref id, styleSource is null ? null : new XElement(styleSource));
-        if (anchor is not null) anchor.AddBeforeSelf(deleted);
-        else throw new InvalidOperationException("B 문서에 삭제 텍스트를 배치할 문단 위치가 없습니다.");
+        if (deletedSources.Count == 0) return;
+
+        // No visible B paragraph: retain B's blank/layout paragraphs and place tracked deletions at
+        // the end of body, immediately before sectPr.
+        if (revisedParagraphs.Count == 0)
+        {
+            var sectPr = body.Elements(w + "sectPr").LastOrDefault();
+            XElement? cursor = null;
+            foreach (var source in deletedSources)
+            {
+                var deleted = DeletedParagraph(source.Text, author, ref id, null);
+                if (cursor is not null) { cursor.AddAfterSelf(deleted); cursor = deleted; }
+                else if (sectPr is not null) { sectPr.AddBeforeSelf(deleted); cursor = deleted; }
+                else { body.Add(deleted); cursor = deleted; }
+            }
+            return;
+        }
+
+        var pastEnd = nextBIndex >= revisedParagraphs.Count;
+        var anchor = revisedParagraphs[pastEnd ? revisedParagraphs.Count - 1 : nextBIndex];
+        XElement? afterCursor = null;
+        XElement? afterBoundary = null;
+
+        foreach (var source in deletedSources)
+        {
+            var styleSource = anchor.Paragraph.Element(w + "pPr");
+            var deleted = DeletedParagraph(source.Text, author, ref id, styleSource is null ? null : new XElement(styleSource));
+
+            // Only insert inside table/SDT when both source and B anchor are the same structural
+            // family. Otherwise use the top-level B block boundary so a deleted body paragraph can
+            // never be accidentally injected into a table cell or content control.
+            var sameNestedFamily = source.ContainerKind == anchor.ContainerKind &&
+                                   source.ContainerKind is "table" or "sdt" &&
+                                   anchor.Paragraph.Parent is not null;
+            var boundary = sameNestedFamily ? anchor.Paragraph : anchor.TopLevelBlock;
+
+            if (!pastEnd)
+            {
+                boundary.AddBeforeSelf(deleted); // repeated AddBeforeSelf preserves forward order
+            }
+            else if (afterCursor is not null && ReferenceEquals(afterBoundary, boundary))
+            {
+                afterCursor.AddAfterSelf(deleted);
+                afterCursor = deleted;
+            }
+            else
+            {
+                // Structural boundary changed (for example table -> body). Start a new cursor at
+                // that boundary rather than carrying an in-table cursor into the body.
+                boundary.AddAfterSelf(deleted);
+                afterBoundary = boundary;
+                afterCursor = deleted;
+            }
+        }
     }
 
     private static int NextRevisionId(XDocument document, XNamespace w)

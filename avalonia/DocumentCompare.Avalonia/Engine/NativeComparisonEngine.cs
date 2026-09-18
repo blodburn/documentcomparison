@@ -1281,20 +1281,6 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return i;
     }
 
-    private static int LocalNewAnchor(IReadOnlyList<WordOp> ops, int at, IReadOnlyList<WordSpan> oldWords, IReadOnlyList<WordSpan> newWords)
-    {
-        for (var i = at + 1; i < ops.Count; i++) if (ops[i].NewIndex is int n) return newWords[n].Start;
-        for (var i = at - 1; i >= 0; i--) if (ops[i].NewIndex is int n) return newWords[n].End;
-        return 0;
-    }
-
-    private static int LocalOldAnchor(IReadOnlyList<WordOp> ops, int at, IReadOnlyList<WordSpan> oldWords, IReadOnlyList<WordSpan> newWords)
-    {
-        for (var i = at + 1; i < ops.Count; i++) if (ops[i].OldIndex is int n) return oldWords[n].Start;
-        for (var i = at - 1; i >= 0; i--) if (ops[i].OldIndex is int n) return oldWords[n].End;
-        return 0;
-    }
-
     private static string RecoverEmbeddedExplicitItemBoundaries(string text)
     {
         if (string.IsNullOrEmpty(text)) return text ?? string.Empty;

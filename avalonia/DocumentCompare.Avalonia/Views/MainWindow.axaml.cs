@@ -166,7 +166,7 @@ public partial class MainWindow : Window
 
     private void ApplyLanguage()
     {
-        Title = L("문서 비교기 V5.20.10", "Document Compare V5.20.10");
+        Title = L("문서 비교기 V5.20.11", "Document Compare V5.20.11");
         AppTitleText.Text = L("문서 비교기", "Document Compare");
         CompareButton.Content = L("비교 시작", "Compare");
         CancelButton.Content = L("취소", "Cancel");
