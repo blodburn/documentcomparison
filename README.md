@@ -9,7 +9,7 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.20.7**
+**V5.20.8**
 
 - Recover single-space flattened legal enumerator sequences such as `(1) ... (2) ... (3) ...`.
 - Keep isolated in-sentence enumerator references intact and support A./B. item sequences.

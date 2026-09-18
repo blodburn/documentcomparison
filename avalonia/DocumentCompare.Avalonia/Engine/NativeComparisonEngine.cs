@@ -908,14 +908,21 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         {
             var ap = oldParts[m.Old]; var bp = newParts[m.New];
             var parentMoved = !ParentsEquivalent(m.Old, m.New, oldNodes, newNodes, matched);
-            var labelMoved = IsStructuralLabel(ap.Label) && IsStructuralLabel(bp.Label) && ap.Label != bp.Label;
+            var labelsDiffer = IsStructuralLabel(ap.Label) && IsStructuralLabel(bp.Label) && ap.Label != bp.Label;
+            var sameOrdinal = labelsDiffer && PartOrdinal(ap.Label) is int ao && PartOrdinal(bp.Label) is int bo && ao == bo;
+            var levelChanged = oldNodes[m.Old].Level != newNodes[m.New].Level;
+            var notationChanged = labelsDiffer && sameOrdinal;
+            var labelMoved = labelsDiffer && !sameOrdinal;
             var itemMoved = parentMoved || labelMoved;
             var contentChanged = !SemanticEqual(ap.Core, bp.Core);
-            if (labelMoved)
+            if (labelsDiffer)
                 result.Add(NativeMarker.StructuralChange(pair, pairOrder, oldDoc, newDoc, ap.Label, bp.Label,
                     bodyOffsetOld + ap.Start, bodyOffsetOld + ap.Start + ap.Label.Length,
                     bodyOffsetNew + bp.Start, bodyOffsetNew + bp.Start + bp.Label.Length, "body", m.Old, -2));
-            if (itemMoved) structural.Add($"{pair} · {(contentChanged ? "항/호 이동+변경" : "항/호 이동")}: {ap.Label} → {bp.Label}");
+            if (notationChanged || levelChanged)
+                structural.Add($"{pair} · 항/호 표기{(levelChanged ? "/레벨" : string.Empty)} 변경: {ap.Label} → {bp.Label}");
+            else if (itemMoved)
+                structural.Add($"{pair} · {(contentChanged ? "항/호 이동+변경" : "항/호 이동")}: {ap.Label} → {bp.Label}");
             if (!contentChanged) continue;
             bodyChanged = true;
             var wholePlainRewrite = ap.Label == "본문" && bp.Label == "본문" && oldParts.Count == 1 && newParts.Count == 1 && m.Score < .72;
@@ -1487,6 +1494,25 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             foreach (var x in moveCandidates.OrderByDescending(x => x.Rank).ThenBy(x => Math.Abs(x.A - x.B)))
                 if (!usedA.Contains(x.A) && !usedB.Contains(x.B)) Take(x.A, x.B, Math.Max(x.Score, x.Rank));
 
+            // Same logical ordinal with a different drafting convention (① ↔ 1., (1) ↔ 1., etc.).
+            // Treat the sibling sequence as stronger structure evidence than the glyph family.
+            foreach (var i in Enumerable.Range(0, a.Count).Where(i => !usedA.Contains(i) && nodesA[i].Level == level && IsStructuralLabel(a[i].Label)))
+            {
+                var ordinal = PartOrdinal(a[i].Label); if (ordinal is null) continue;
+                var candidates = Enumerable.Range(0, b.Count)
+                    .Where(j => !usedB.Contains(j) && nodesB[j].Level == level && IsStructuralLabel(b[j].Label) &&
+                                PartOrdinal(b[j].Label) == ordinal && a[i].Label != b[j].Label &&
+                                ParentsEquivalent(i, j, nodesA, nodesB, result))
+                    .Select(j => (J: j, S: PartSimilarity(a[i], b[j]), C: Containment(a[i].Core, b[j].Core),
+                                  Shape: OrdinalSiblingShapeEquivalent(i, j, a, b, nodesA, nodesB),
+                                  Edge: HasStableEdgeContext(a[i].Core, b[j].Core)))
+                    .OrderByDescending(x => x.Shape).ThenByDescending(x => Math.Max(x.S, .94 * x.C)).ToList();
+                if (candidates.Count == 0) continue;
+                var cand = candidates[0];
+                if ((cand.Shape && (cand.S >= .20 || cand.C >= .35 || cand.Edge)) || cand.S >= .62 || cand.C >= .76)
+                    Take(i, cand.J, Math.Max(cand.S, cand.Shape ? .58 : .52));
+            }
+
             foreach (var i in Enumerable.Range(0, a.Count).Where(i => !usedA.Contains(i) && nodesA[i].Level == level))
             {
                 if (!IsStructuralLabel(a[i].Label)) continue;
@@ -1501,6 +1527,28 @@ public sealed class NativeComparisonEngine : IComparisonEngine
                     Take(i, cand.J, Math.Max(cand.S, .52));
             }
         }
+        // If one document omits an intermediate 항/호 layer, compare adjacent hierarchy levels
+        // only after normal same-level matching has been exhausted.  The skipped parent must be
+        // unmatched, which prevents a healthy nested hierarchy from being flattened accidentally.
+        var crossLevel = new List<(double Rank, int A, int B, double Score)>();
+        foreach (var i in Enumerable.Range(0, a.Count).Where(i => !usedA.Contains(i) && IsStructuralLabel(a[i].Label)))
+        foreach (var j in Enumerable.Range(0, b.Count).Where(j => !usedB.Contains(j) && IsStructuralLabel(b[j].Label)))
+        {
+            if (Math.Abs(nodesA[i].Level - nodesB[j].Level) != 1) continue;
+            if (!CollapsedLevelParentsEquivalent(i, j, nodesA, nodesB, result)) continue;
+            var oa = PartOrdinal(a[i].Label); var ob = PartOrdinal(b[j].Label);
+            var score = PartSimilarity(a[i], b[j]); var contain = Containment(a[i].Core, b[j].Core);
+            var sameOrdinal = oa.HasValue && ob.HasValue && oa.Value == ob.Value;
+            var edge = HasStableEdgeContext(a[i].Core, b[j].Core);
+            if ((sameOrdinal && (score >= .34 || contain >= .50 || edge)) || score >= .74 || contain >= .86)
+            {
+                var rank = Math.Max(score, .94 * contain) + (sameOrdinal ? .08 : 0.0);
+                crossLevel.Add((rank, i, j, score));
+            }
+        }
+        foreach (var x in crossLevel.OrderByDescending(x => x.Rank).ThenBy(x => Math.Abs(x.A - x.B)))
+            if (!usedA.Contains(x.A) && !usedB.Contains(x.B)) Take(x.A, x.B, Math.Max(x.Score, .56));
+
         foreach(var i in Enumerable.Range(0,a.Count).Where(i=>!usedA.Contains(i)&&a[i].Label=="본문"))
         {
             var cand=Enumerable.Range(0,b.Count).Where(j=>!usedB.Contains(j)&&b[j].Label=="본문")
@@ -1534,6 +1582,29 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         if(Regex.IsMatch(label,@"^[가-하][.)]$")) return "korean";
         return "other";
     }
+    private static int? PartOrdinal(string label)
+    {
+        if (string.IsNullOrEmpty(label) || label == "본문") return null;
+        const string circled = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳";
+        if (label.Length == 1)
+        {
+            var ci = circled.IndexOf(label[0]);
+            if (ci >= 0) return ci + 1;
+        }
+        var m = Regex.Match(label, @"^\((\d+)\)$");
+        if (m.Success && int.TryParse(m.Groups[1].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var pn)) return pn;
+        m = Regex.Match(label, @"^(\d+)[.)]$");
+        if (m.Success && int.TryParse(m.Groups[1].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var n)) return n;
+        if (Regex.IsMatch(label, @"^[A-Za-z][.)]$")) return char.ToUpperInvariant(label[0]) - 'A' + 1;
+        if (Regex.IsMatch(label, @"^[가-하][.)]$"))
+        {
+            const string korean = "가나다라마바사아자차카타파하";
+            var ki = korean.IndexOf(label[0]);
+            if (ki >= 0) return ki + 1;
+        }
+        return null;
+    }
+
     private static List<PartNode> BuildPartHierarchy(IReadOnlyList<NativePart> parts)
     {
         var nodes=new List<PartNode>(parts.Count); var currentL1=-1; var currentL2=-1;
@@ -1555,6 +1626,40 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     }
     private static bool ParentsEquivalent(int ai,int bj,IReadOnlyList<PartNode>a,IReadOnlyList<PartNode>b,IReadOnlyList<PartMatch>matches)
     { var pa=a[ai].Parent;var pb=b[bj].Parent;if(pa<0||pb<0)return pa==pb;return matches.Any(m=>m.Old==pa&&m.New==pb); }
+    private static bool ParentPairEquivalent(int pa, int pb, IReadOnlyList<PartMatch> matches)
+    {
+        if (pa < 0 || pb < 0) return pa == pb;
+        return matches.Any(m => m.Old == pa && m.New == pb);
+    }
+
+    private static bool CollapsedLevelParentsEquivalent(int ai, int bj, IReadOnlyList<PartNode> a, IReadOnlyList<PartNode> b, IReadOnlyList<PartMatch> matches)
+    {
+        var la = a[ai].Level; var lb = b[bj].Level;
+        if (Math.Abs(la - lb) != 1) return false;
+        if (la > lb)
+        {
+            var extraParent = a[ai].Parent;
+            if (extraParent < 0 || matches.Any(m => m.Old == extraParent)) return false;
+            return ParentPairEquivalent(a[extraParent].Parent, b[bj].Parent, matches);
+        }
+        else
+        {
+            var extraParent = b[bj].Parent;
+            if (extraParent < 0 || matches.Any(m => m.New == extraParent)) return false;
+            return ParentPairEquivalent(a[ai].Parent, b[extraParent].Parent, matches);
+        }
+    }
+
+    private static bool OrdinalSiblingShapeEquivalent(int ai, int bj, IReadOnlyList<NativePart> a, IReadOnlyList<NativePart> b, IReadOnlyList<PartNode> na, IReadOnlyList<PartNode> nb)
+    {
+        var xa = na[ai]; var xb = nb[bj];
+        var la = na.Where(x => x.Level == xa.Level && x.Parent == xa.Parent && IsStructuralLabel(a[x.Index].Label))
+            .Select(x => PartOrdinal(a[x.Index].Label)).ToList();
+        var lb = nb.Where(x => x.Level == xb.Level && x.Parent == xb.Parent && IsStructuralLabel(b[x.Index].Label))
+            .Select(x => PartOrdinal(b[x.Index].Label)).ToList();
+        return la.Count >= 2 && la.Count == lb.Count && la.All(x => x.HasValue) && lb.All(x => x.HasValue) &&
+               la.Select(x => x!.Value).SequenceEqual(lb.Select(x => x!.Value));
+    }
     private static int MatchedChildSupport(int ai, int bj, IReadOnlyList<PartNode> a, IReadOnlyList<PartNode> b,
         IReadOnlyList<PartMatch> matches) =>
         matches.Count(m => m.Old >= 0 && m.Old < a.Count && m.New >= 0 && m.New < b.Count &&
