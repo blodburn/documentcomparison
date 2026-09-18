@@ -35,6 +35,24 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     private static readonly Regex QuotedHead = new(
         "^\\s*[\\x22“‘]([^\\x22”’]{1,96})[\\x22”’]",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex EmbeddedExplicitItemCandidate = new(
+        @"(?m)(?<gap>^[ \t]*|[ \t]+)(?<label>(?:[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|\(\d+\)|\d+[.)]|[가-하A-Za-z][.)]))(?=[ \t]+)",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex KoreanLexToken = new(
+        @"[가-힣A-Za-z]+|\d+(?:,\d{3})*(?:\.\d+)?%?", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex WordSetToken = new(
+        @"[가-힣A-Za-z]+|\d+(?:,\d{3})*(?:\.\d+)?%?", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex SimilarityToken = new(
+        """[가-힣A-Za-z0-9_]+|[^\s]""", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex BoundaryLexToken = new(
+        @"[가-힣A-Za-z]+(?:['’][A-Za-z]+)?|\d+(?:,\d{3})*(?:\.\d+)?%?", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex ReviewWordToken = new(
+        """[가-힣A-Za-z0-9_]+""", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex DiffToken = new(
+        """[가-힣A-Za-z0-9_]+|[^\s가-힣A-Za-z0-9_]""", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex KoreanPresence = new("[가-힣]", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex AlnumPresence = new("[가-힣A-Za-z0-9]", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex SentenceSeparator = new(@"[.!?。！？;:]|\n", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private readonly object _cancelLock = new();
     private CancellationTokenSource? _activeOperation;
 
@@ -1139,12 +1157,12 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     {
         // Exact V5.19.4.4k gate: only compact Korean edits are morph-refined.
         if (Math.Max(oldText.Length, newText.Length) > 96 ||
-            !Regex.IsMatch(oldText, "[가-힣]") || !Regex.IsMatch(newText, "[가-힣]"))
+            !KoreanPresence.IsMatch(oldText) || !KoreanPresence.IsMatch(newText))
             return null;
 
-        var a = Regex.Matches(oldText, @"[가-힣A-Za-z]+|\d+(?:,\d{3})*(?:\.\d+)?%?")
+        var a = KoreanLexToken.Matches(oldText)
             .Select(m => new WordSpan(m.Index, m.Index + m.Length, m.Value)).ToList();
-        var b = Regex.Matches(newText, @"[가-힣A-Za-z]+|\d+(?:,\d{3})*(?:\.\d+)?%?")
+        var b = KoreanLexToken.Matches(newText)
             .Select(m => new WordSpan(m.Index, m.Index + m.Length, m.Value)).ToList();
         if (a.Count == 0 || b.Count == 0) return null;
 
@@ -1197,7 +1215,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
                 if (k + 1 < ops.Count && ops[k + 1].Kind == "delete")
                 {
                     var dai = ops[k + 1].OldIndex!.Value;
-                    if (dai == ai + 1 && !Regex.IsMatch(oldText[a[ai].End..a[dai].Start], "[가-힣A-Za-z0-9]"))
+                    if (dai == ai + 1 && !AlnumPresence.IsMatch(oldText[a[ai].End..a[dai].Start]))
                     {
                         oldEnd = a[dai].End;
                         k++;
@@ -1206,7 +1224,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
                 else if (k + 1 < ops.Count && ops[k + 1].Kind == "insert")
                 {
                     var ibj = ops[k + 1].NewIndex!.Value;
-                    if (ibj == bj + 1 && !Regex.IsMatch(newText[b[bj].End..b[ibj].Start], "[가-힣A-Za-z0-9]"))
+                    if (ibj == bj + 1 && !AlnumPresence.IsMatch(newText[b[bj].End..b[ibj].Start]))
                     {
                         newEnd = b[ibj].End;
                         k++;
@@ -1287,9 +1305,6 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         // Do not split on one isolated "(1)" reference.  A single-space recovery is accepted
         // only for a consecutive enumerator sequence (normally 1,2,3...) and therefore keeps
         // prose references such as "Article 5 (1)" intact.
-        var candidateRegex = new Regex(
-            @"(?m)(?<gap>^[ \t]*|[ \t]+)(?<label>(?:[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|\(\d+\)|\d+[.)]|[가-하A-Za-z][.)]))(?=[ \t]+)",
-            RegexOptions.CultureInvariant);
         var chars = text.ToCharArray();
         var candidates = new List<(int Boundary, int GapLength, int LineStart, bool AtLineStart, string Family, int Ordinal)>();
 
@@ -1321,7 +1336,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             return null;
         }
 
-        foreach (Match m in candidateRegex.Matches(text))
+        foreach (Match m in EmbeddedExplicitItemCandidate.Matches(text))
         {
             var label = m.Groups["label"].Value;
             var key = EnumeratorKey(label);
@@ -1689,9 +1704,9 @@ public sealed class NativeComparisonEngine : IComparisonEngine
 
     private static bool HasReviewAnchors(string a, string b)
     {
-        var aw = Regex.Matches(a ?? string.Empty, """[가-힣A-Za-z0-9_]+""")
+        var aw = ReviewWordToken.Matches(a ?? string.Empty)
             .Select(m => TokenKey(m.Value)).Where(x => x.Length > 0).ToList();
-        var bw = Regex.Matches(b ?? string.Empty, """[가-힣A-Za-z0-9_]+""")
+        var bw = ReviewWordToken.Matches(b ?? string.Empty)
             .Select(m => TokenKey(m.Value)).Where(x => x.Length > 0).ToList();
         var shared = aw.Intersect(bw).Count(x => !ReviewStopWords.Contains(x));
         if (shared >= 2) return true;
@@ -1738,7 +1753,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     private static List<TokenSpan> LexTokens(string text)
     {
         var result = new List<TokenSpan>();
-        foreach (Match m in Regex.Matches(text ?? "", """[가-힣A-Za-z0-9_]+|[^\s가-힣A-Za-z0-9_]"""))
+        foreach (Match m in DiffToken.Matches(text ?? ""))
             result.Add(new TokenSpan(m.Index, m.Index + m.Length, m.Value));
         return result;
     }
@@ -1790,6 +1805,8 @@ public sealed class NativeComparisonEngine : IComparisonEngine
 
     private static List<(int A, int B)> LcsMatches(string[] a, string[] b)
     {
+        if ((long)(a.Length + 1) * (b.Length + 1) > 4_000_000L)
+            return MatcherPairs(a, b);
         var dp = new int[a.Length + 1, b.Length + 1];
         for (var i = a.Length - 1; i >= 0; i--)
             for (var j = b.Length - 1; j >= 0; j--)
@@ -1819,9 +1836,10 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             var (alo, ahi, blo, bhi) = queue.Pop();
             var bestI = alo; var bestJ = blo; var bestSize = 0;
             var j2len = new Dictionary<int, int>();
+            var next = new Dictionary<int, int>();
             for (var i = alo; i < ahi; i++)
             {
-                var next = new Dictionary<int, int>();
+                next.Clear();
                 if (b2j.TryGetValue(a[i], out var js))
                 {
                     foreach (var j in js)
@@ -1833,7 +1851,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
                         if (k > bestSize) { bestI = i - k + 1; bestJ = j - k + 1; bestSize = k; }
                     }
                 }
-                j2len = next;
+                (j2len, next) = (next, j2len);
             }
             if (bestSize == 0) continue;
             found.Add((bestI, bestJ, bestSize));
@@ -1883,7 +1901,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     }
 
     private static List<TokenSpan> BoundaryLexSpans(string text) =>
-        Regex.Matches(text ?? string.Empty, @"[가-힣A-Za-z]+(?:['’][A-Za-z]+)?|\d+(?:,\d{3})*(?:\.\d+)?%?")
+        BoundaryLexToken.Matches(text ?? string.Empty)
             .Select(m => new TokenSpan(m.Index, m.Index + m.Length, m.Value)).ToList();
 
     private static int BaseMapBoundary(string src, string dst, int pos)
@@ -1947,7 +1965,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         var left = pos;
         while (left > 0 && !BoundaryWordChar(src[left - 1])) left--;
         var separator = src[left..pos];
-        if (separator.Length == 0 || !Regex.IsMatch(separator, @"[.!?。！？;:]|\n"))
+        if (separator.Length == 0 || !SentenceSeparator.IsMatch(separator))
             return mapped;
         var q = Math.Clamp(mapped, 0, dst.Length);
         while (q < dst.Length && !BoundaryWordChar(dst[q])) q++;
@@ -2115,7 +2133,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         var m = QuotedHead.Match(value ?? string.Empty); return m.Success ? Normalize(m.Groups[1].Value) : string.Empty;
     }
     private static HashSet<string> WordSet(string value) =>
-        Regex.Matches((value ?? string.Empty).ToLowerInvariant(), @"[가-힣A-Za-z]+|\d+(?:,\d{3})*(?:\.\d+)?%?", RegexOptions.CultureInvariant)
+        WordSetToken.Matches((value ?? string.Empty).ToLowerInvariant())
             .Select(x => x.Value).Where(x => x.Length > 0).ToHashSet(StringComparer.Ordinal);
 
     private static double IndelRatio(string a, string b)
@@ -2128,6 +2146,27 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         // Use the Hyyro bit-parallel LCS recurrence so article alignment keeps Python's
         // scoring without the O(n*m) character matrix.
         if (b.Length > a.Length) (a, b) = (b, a);
+        if (b.Length <= 64)
+        {
+            var masks64 = new Dictionary<char, ulong>();
+            for (var j = 0; j < b.Length; j++)
+            {
+                var bit = 1UL << j;
+                masks64[b[j]] = masks64.TryGetValue(b[j], out var cur) ? cur | bit : bit;
+            }
+            var row64 = 0UL;
+            var all64 = b.Length == 64 ? ulong.MaxValue : (1UL << b.Length) - 1UL;
+            foreach (var ch in a)
+            {
+                var m = masks64.TryGetValue(ch, out var mask) ? mask : 0UL;
+                var x = row64 | m;
+                var y = (row64 << 1) | 1UL;
+                row64 = x & ~(x - y) & all64;
+            }
+            var lcs64 = BitOperations.PopCount(row64);
+            return 2.0 * lcs64 / Math.Max(1, a.Length + b.Length);
+        }
+
         var masks = new Dictionary<char, BigInteger>();
         for (var j = 0; j < b.Length; j++)
         {
@@ -2170,9 +2209,10 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             var (alo, ahi, blo, bhi) = queue.Pop();
             var bestI = alo; var bestJ = blo; var bestSize = 0;
             var j2len = new Dictionary<int, int>();
+            var next = new Dictionary<int, int>();
             for (var i = alo; i < ahi; i++)
             {
-                var next = new Dictionary<int, int>();
+                next.Clear();
                 if (b2j.TryGetValue(a[i], out var js))
                 {
                     foreach (var j in js)
@@ -2184,7 +2224,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
                         if (k > bestSize) { bestI = i - k + 1; bestJ = j - k + 1; bestSize = k; }
                     }
                 }
-                j2len = next;
+                (j2len, next) = (next, j2len);
             }
             if (bestSize == 0) continue;
             matches += bestSize;
@@ -2199,8 +2239,8 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     {
         var x = Normalize(a); var y = Normalize(b);
         if (x == y) return 1; if (x.Length == 0 || y.Length == 0) return 0;
-        var aa = Regex.Matches(x, """[가-힣A-Za-z0-9_]+|[^\s]""").Select(m => m.Value).ToArray();
-        var bb = Regex.Matches(y, """[가-힣A-Za-z0-9_]+|[^\s]""").Select(m => m.Value).ToArray();
+        var aa = SimilarityToken.Matches(x).Select(m => m.Value).ToArray();
+        var bb = SimilarityToken.Matches(y).Select(m => m.Value).ToArray();
         var lcs = LcsMatches(aa, bb).Count;
         return 2.0 * lcs / Math.Max(1, aa.Length + bb.Length);
     }

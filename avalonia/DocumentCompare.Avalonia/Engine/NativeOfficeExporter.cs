@@ -1,5 +1,4 @@
 using System.IO.Compression;
-using System.Security;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
@@ -11,6 +10,8 @@ internal static class NativeOfficeExporter
 {
     private const string W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
     private const string R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+    private static readonly Regex ExportTokenRegex = new(
+        @"[가-힣A-Za-z0-9_]+|\s+|[^가-힣A-Za-z0-9_\s]", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     public static Task WriteXlsxAsync(ComparisonResultVm result, string outputPath, CancellationToken cancellationToken) =>
         Task.Run(() => WriteXlsx(result, outputPath, cancellationToken), cancellationToken);
@@ -127,13 +128,13 @@ internal static class NativeOfficeExporter
                 switch (seg.Style)
                 {
                     case "delete":
-                        xml.Append("<rPr><color rgb=\"FFC00000\"/><strike/></rPr>");
+                        xml.Append("<rPr><strike/><color rgb=\"FFC00000\"/></rPr>");
                         break;
                     case "insert":
-                        xml.Append("<rPr><color rgb=\"FF1565C0\"/><u val=\"single\"/></rPr>");
+                        xml.Append("<rPr><u val=\"single\"/><color rgb=\"FF1565C0\"/></rPr>");
                         break;
                     case "both":
-                        xml.Append("<rPr><color rgb=\"FF7A3E9D\"/><strike/><u val=\"single\"/></rPr>");
+                        xml.Append("<rPr><strike/><u val=\"single\"/><color rgb=\"FF7A3E9D\"/></rPr>");
                         break;
                 }
                 xml.Append($"<t xml:space=\"preserve\">{Esc(seg.Text)}</t></r>");
@@ -164,6 +165,7 @@ internal static class NativeOfficeExporter
         using (var input = documentEntry.Open()) document = XDocument.Load(input, LoadOptions.PreserveWhitespace);
         XNamespace w = W;
         var body = document.Root?.Element(w + "body") ?? throw new InvalidDataException("Word body not found.");
+        EnsureSafeTrackedBody(body, w);
         var section = body.Elements(w + "sectPr").LastOrDefault();
         var revisedParagraphs = body.Elements(w + "p")
             .Select(p => new RevisedParagraph(ParagraphText(p, w), p.Element(w + "pPr") is { } pPr ? new XElement(pPr) : null))
@@ -182,10 +184,10 @@ internal static class NativeOfficeExporter
             var left = anchors[k]; var right = anchors[k + 1];
             var ai = left.A + 1; var aj = right.A; var bi = left.B + 1; var bj = right.B;
             var paired = Math.Min(aj - ai, bj - bi);
-            for (var p = 0; p < paired; p++) body.Add(TrackedParagraph(oldLines[ai + p], newLines[bi + p], author, ref revisionId, includePunctuation, PickParagraphProperties(newLines[bi + p], revisedParagraphs)));
+            for (var p = 0; p < paired; p++) body.Add(TrackedParagraph(oldLines[ai + p], newLines[bi + p], author, ref revisionId, includePunctuation, PickParagraphProperties(newLines[bi + p], revisedParagraphs, bi + p)));
             for (var p = ai + paired; p < aj; p++) body.Add(DeletedParagraph(oldLines[p], author, ref revisionId, null));
-            for (var p = bi + paired; p < bj; p++) body.Add(InsertedParagraph(newLines[p], author, ref revisionId, PickParagraphProperties(newLines[p], revisedParagraphs)));
-            if (right.A < oldLines.Count && right.B < newLines.Count) body.Add(PlainParagraph(newLines[right.B], PickParagraphProperties(newLines[right.B], revisedParagraphs)));
+            for (var p = bi + paired; p < bj; p++) body.Add(InsertedParagraph(newLines[p], author, ref revisionId, PickParagraphProperties(newLines[p], revisedParagraphs, p)));
+            if (right.A < oldLines.Count && right.B < newLines.Count) body.Add(PlainParagraph(newLines[right.B], PickParagraphProperties(newLines[right.B], revisedParagraphs, right.B)));
         }
         if (section is not null) body.Add(section);
         ReplaceEntry(zip, "word/document.xml", document.ToString(SaveOptions.DisableFormatting));
@@ -194,17 +196,35 @@ internal static class NativeOfficeExporter
 
     private sealed record RevisedParagraph(string Text, XElement? Properties);
 
-    private static XElement? PickParagraphProperties(string text, IReadOnlyList<RevisedParagraph> revised)
+    private static void EnsureSafeTrackedBody(XElement body, XNamespace w)
+    {
+        var unsupportedBlock = body.Elements().FirstOrDefault(x => x.Name != w + "p" && x.Name != w + "sectPr");
+        if (unsupportedBlock is not null)
+            throw new InvalidOperationException($"Word 변경추적 내보내기는 현재 표/콘텐츠 컨트롤 등 복합 본문 구조를 안전하게 보존할 수 없습니다 ({unsupportedBlock.Name.LocalName}). 원본 데이터 유실을 막기 위해 저장을 중단했습니다.");
+
+        foreach (var p in body.Elements(w + "p"))
+        {
+            var unsafeNode = p.Descendants().FirstOrDefault(x =>
+                x.Name == w + "drawing" || x.Name == w + "object" || x.Name == w + "pict" ||
+                x.Name == w + "fldChar" || x.Name == w + "instrText" || x.Name == w + "hyperlink" ||
+                x.Name == w + "sdt" || x.Name == w + "bookmarkStart" || x.Name == w + "bookmarkEnd" ||
+                x.Name == w + "commentReference" || x.Name == w + "footnoteReference" || x.Name == w + "endnoteReference");
+            if (unsafeNode is not null)
+                throw new InvalidOperationException($"Word 변경추적 내보내기는 현재 {unsafeNode.Name.LocalName} 요소를 포함한 문단을 안전하게 재작성할 수 없습니다. 원본 데이터 유실을 막기 위해 저장을 중단했습니다.");
+        }
+    }
+
+    private static XElement? PickParagraphProperties(string text, IReadOnlyList<RevisedParagraph> revised, int preferredIndex)
     {
         var key = NativeComparisonEngine.Normalize(text);
-        var exact = revised.FirstOrDefault(x => NativeComparisonEngine.Normalize(x.Text) == key);
-        if (exact?.Properties is not null) return new XElement(exact.Properties);
-        if (key.Length >= 16)
-        {
-            var prefix = key[..Math.Min(24, key.Length)];
-            var near = revised.FirstOrDefault(x => NativeComparisonEngine.Normalize(x.Text).Contains(prefix, StringComparison.Ordinal));
-            if (near?.Properties is not null) return new XElement(near.Properties);
-        }
+        var exact = revised
+            .Select((x, i) => (Item: x, Index: i))
+            .Where(x => NativeComparisonEngine.Normalize(x.Item.Text) == key && x.Item.Properties is not null)
+            .OrderBy(x => Math.Abs(x.Index - preferredIndex))
+            .FirstOrDefault();
+        if (exact.Item?.Properties is not null) return new XElement(exact.Item.Properties);
+        if (preferredIndex >= 0 && preferredIndex < revised.Count && revised[preferredIndex].Properties is not null)
+            return new XElement(revised[preferredIndex].Properties!);
         return null;
     }
 
@@ -257,11 +277,12 @@ internal static class NativeOfficeExporter
 
     private static XAttribute[] RevisionAttrs(XNamespace w, int id, string author) => new[]
     {
-        new XAttribute(w + "id", id), new XAttribute(w + "author", string.IsNullOrWhiteSpace(author) ? "Revised" : author),
+        new XAttribute(w + "id", id), new XAttribute(w + "author", SanitizeXmlText(string.IsNullOrWhiteSpace(author) ? "Revised" : author)),
         new XAttribute(w + "date", DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ"))
     };
 
-    private static XElement TextNode(XName name, string text) => new(name, new XAttribute(XNamespace.Xml + "space", "preserve"), text);
+    private static XElement TextNode(XName name, string text) =>
+        new(name, new XAttribute(XNamespace.Xml + "space", "preserve"), SanitizeXmlText(text));
 
     private static void EnsureTrackRevisions(ZipArchive zip)
     {
@@ -302,7 +323,7 @@ internal static class NativeOfficeExporter
     }
 
     private sealed record SpanToken(int Start, int End, string Text);
-    private static List<SpanToken> Tokens(string text) => Regex.Matches(text ?? "", @"[가-힣A-Za-z0-9_]+|\s+|[^가-힣A-Za-z0-9_\s]")
+    private static List<SpanToken> Tokens(string text) => ExportTokenRegex.Matches(text ?? "")
         .Select(m => new SpanToken(m.Index, m.Index + m.Length, m.Value)).ToList();
     private static string Key(string text) => NativeComparisonEngine.Normalize(text);
     private static string JoinTokenRange(string source, IReadOnlyList<SpanToken> tokens, int start, int end)
@@ -313,6 +334,9 @@ internal static class NativeOfficeExporter
 
     private static List<(int A, int B)> Lcs(string[] a, string[] b)
     {
+        if ((long)(a.Length + 1) * (b.Length + 1) > 4_000_000L)
+            return SequencePairs(a, b);
+
         var dp = new int[a.Length + 1, b.Length + 1];
         for (var i = a.Length - 1; i >= 0; i--) for (var j = b.Length - 1; j >= 0; j--)
             dp[i, j] = a[i] == b[j] ? dp[i + 1, j + 1] + 1 : Math.Max(dp[i + 1, j], dp[i, j + 1]);
@@ -321,7 +345,92 @@ internal static class NativeOfficeExporter
         return r;
     }
 
-    private static string Esc(string value) => SecurityElement.Escape(value ?? "") ?? "";
+    private static List<(int A, int B)> SequencePairs(IReadOnlyList<string> a, IReadOnlyList<string> b)
+    {
+        var b2j = new Dictionary<string, List<int>>(StringComparer.Ordinal);
+        for (var j = 0; j < b.Count; j++)
+        {
+            if (!b2j.TryGetValue(b[j], out var list)) b2j[b[j]] = list = new List<int>();
+            list.Add(j);
+        }
+
+        var queue = new Stack<(int Alo, int Ahi, int Blo, int Bhi)>();
+        queue.Push((0, a.Count, 0, b.Count));
+        var blocks = new List<(int A, int B, int Size)>();
+        while (queue.Count > 0)
+        {
+            var (alo, ahi, blo, bhi) = queue.Pop();
+            var bestI = alo; var bestJ = blo; var bestSize = 0;
+            var previous = new Dictionary<int, int>();
+            var current = new Dictionary<int, int>();
+            for (var i = alo; i < ahi; i++)
+            {
+                current.Clear();
+                if (b2j.TryGetValue(a[i], out var js))
+                {
+                    foreach (var j in js)
+                    {
+                        if (j < blo) continue;
+                        if (j >= bhi) break;
+                        var k = (previous.TryGetValue(j - 1, out var p) ? p : 0) + 1;
+                        current[j] = k;
+                        if (k > bestSize) { bestI = i - k + 1; bestJ = j - k + 1; bestSize = k; }
+                    }
+                }
+                (previous, current) = (current, previous);
+            }
+            if (bestSize == 0) continue;
+            blocks.Add((bestI, bestJ, bestSize));
+            if (alo < bestI && blo < bestJ) queue.Push((alo, bestI, blo, bestJ));
+            if (bestI + bestSize < ahi && bestJ + bestSize < bhi)
+                queue.Push((bestI + bestSize, ahi, bestJ + bestSize, bhi));
+        }
+        blocks.Sort((x, y) => x.A != y.A ? x.A.CompareTo(y.A) : x.B.CompareTo(y.B));
+        var result = new List<(int A, int B)>();
+        foreach (var block in blocks)
+            for (var k = 0; k < block.Size; k++) result.Add((block.A + k, block.B + k));
+        return result;
+    }
+
+    private static string SanitizeXmlText(string value)
+    {
+        if (string.IsNullOrEmpty(value)) return string.Empty;
+        var sb = new StringBuilder(value.Length);
+        for (var i = 0; i < value.Length; i++)
+        {
+            var ch = value[i];
+            if (char.IsHighSurrogate(ch))
+            {
+                if (i + 1 < value.Length && char.IsLowSurrogate(value[i + 1]))
+                    sb.Append(ch).Append(value[++i]);
+                continue;
+            }
+            if (char.IsLowSurrogate(ch) || ch == '\uFFFE' || ch == '\uFFFF') continue;
+            if (ch < 0x20 && ch != '\t' && ch != '\n' && ch != '\r') continue;
+            sb.Append(ch);
+        }
+        return sb.ToString();
+    }
+
+    private static string Esc(string value)
+    {
+        value = SanitizeXmlText(value);
+        if (value.Length == 0) return string.Empty;
+        var sb = new StringBuilder(value.Length);
+        foreach (var ch in value)
+        {
+            switch (ch)
+            {
+                case '<': sb.Append("&lt;"); break;
+                case '>': sb.Append("&gt;"); break;
+                case '&': sb.Append("&amp;"); break;
+                case '"': sb.Append("&quot;"); break;
+                case '\'': sb.Append("&apos;"); break;
+                default: sb.Append(ch); break;
+            }
+        }
+        return sb.ToString();
+    }
     private static void Put(ZipArchive zip, string path, string content)
     {
         var entry = zip.CreateEntry(path, CompressionLevel.Optimal);

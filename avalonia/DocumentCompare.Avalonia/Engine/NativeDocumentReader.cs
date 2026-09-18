@@ -9,12 +9,11 @@ internal static class NativeDocumentReader
 {
     static NativeDocumentReader() => Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
-    private static Encoding[] TextEncodings() => new Encoding[]
+    private static Encoding[] StrictTextEncodings() => new Encoding[]
     {
         new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true),
-        Encoding.UTF8,
-        Encoding.GetEncoding(949),
-        Encoding.GetEncoding(51949)
+        Encoding.GetEncoding(949, EncoderFallback.ExceptionFallback, DecoderFallback.ExceptionFallback),
+        Encoding.GetEncoding(51949, EncoderFallback.ExceptionFallback, DecoderFallback.ExceptionFallback)
     };
 
     public static async Task<string> ReadAsync(string path, CancellationToken cancellationToken)
@@ -36,15 +35,36 @@ internal static class NativeDocumentReader
     private static string ReadText(string path)
     {
         var bytes = File.ReadAllBytes(path);
-        foreach (var encoding in TextEncodings())
+        if (TryDecodeBom(bytes, out var bomText)) return NormalizeNewlines(bomText);
+
+        foreach (var encoding in StrictTextEncodings())
         {
-            try
-            {
-                return NormalizeNewlines(encoding.GetString(bytes));
-            }
+            try { return NormalizeNewlines(encoding.GetString(bytes)); }
             catch (DecoderFallbackException) { }
         }
+
+        // Last-resort replacement fallback only after strict UTF-8 / CP949 / EUC-KR all fail.
         return NormalizeNewlines(Encoding.UTF8.GetString(bytes));
+    }
+
+    private static bool TryDecodeBom(byte[] bytes, out string text)
+    {
+        text = string.Empty;
+        try
+        {
+            if (bytes.Length >= 4 && bytes[0] == 0x00 && bytes[1] == 0x00 && bytes[2] == 0xFE && bytes[3] == 0xFF)
+            { text = new UTF32Encoding(bigEndian: true, byteOrderMark: false, throwOnInvalidCharacters: true).GetString(bytes, 4, bytes.Length - 4); return true; }
+            if (bytes.Length >= 4 && bytes[0] == 0xFF && bytes[1] == 0xFE && bytes[2] == 0x00 && bytes[3] == 0x00)
+            { text = new UTF32Encoding(bigEndian: false, byteOrderMark: false, throwOnInvalidCharacters: true).GetString(bytes, 4, bytes.Length - 4); return true; }
+            if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
+            { text = new UTF8Encoding(false, true).GetString(bytes, 3, bytes.Length - 3); return true; }
+            if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE)
+            { text = new UnicodeEncoding(bigEndian: false, byteOrderMark: false, throwOnInvalidBytes: true).GetString(bytes, 2, bytes.Length - 2); return true; }
+            if (bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF)
+            { text = new UnicodeEncoding(bigEndian: true, byteOrderMark: false, throwOnInvalidBytes: true).GetString(bytes, 2, bytes.Length - 2); return true; }
+        }
+        catch (DecoderFallbackException) { }
+        return false;
     }
 
     private sealed record NumberLevel(int Start, string Format, string Pattern);
@@ -63,7 +83,7 @@ internal static class NativeDocumentReader
     {
         using var archive = ZipFile.OpenRead(path);
         XNamespace w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
-        var doc = LoadXmlPart(archive, "word/document.xml")
+        var doc = LoadXmlPart(archive, "word/document.xml", 128L * 1024 * 1024)
             ?? throw new InvalidDataException("DOCX 본문(word/document.xml)을 찾을 수 없습니다.");
         var body = doc.Root?.Element(w + "body")
             ?? throw new InvalidDataException("DOCX 본문 구조를 읽을 수 없습니다.");
@@ -80,7 +100,7 @@ internal static class NativeDocumentReader
         }
 
         var lines = new List<string>();
-        foreach (var block in body.Elements())
+        foreach (var block in EnumerateVisibleBlocks(body, w))
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (block.Name == w + "p")
@@ -93,8 +113,6 @@ internal static class NativeDocumentReader
                 foreach (var row in block.Elements(w + "tr"))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    // Preserve paragraph boundaries inside table cells. This keeps legal article
-                    // headings first-class while still restoring Word automatic numbering.
                     var cells = row.Elements(w + "tc")
                         .Select(tc => string.Join("\n", tc.Descendants(w + "p")
                             .Select(VisibleParagraph)
@@ -107,10 +125,30 @@ internal static class NativeDocumentReader
         return string.Join("\n", lines);
     }
 
-    private static XDocument? LoadXmlPart(ZipArchive archive, string name)
+    private static IEnumerable<XElement> EnumerateVisibleBlocks(XElement container, XNamespace w)
+    {
+        foreach (var child in container.Elements())
+        {
+            if (child.Name == w + "p" || child.Name == w + "tbl")
+            {
+                yield return child;
+                continue;
+            }
+            if (child.Name == w + "sdt")
+            {
+                var content = child.Element(w + "sdtContent");
+                if (content is null) continue;
+                foreach (var nested in EnumerateVisibleBlocks(content, w)) yield return nested;
+            }
+        }
+    }
+
+    private static XDocument? LoadXmlPart(ZipArchive archive, string name, long maxUncompressedBytes = 32L * 1024 * 1024)
     {
         var entry = archive.GetEntry(name);
         if (entry is null) return null;
+        if (entry.Length > maxUncompressedBytes)
+            throw new InvalidDataException($"DOCX 내부 XML이 너무 큽니다: {name} ({entry.Length:N0} bytes)");
         using var stream = entry.Open();
         return XDocument.Load(stream, LoadOptions.PreserveWhitespace);
     }
@@ -267,7 +305,7 @@ internal static class NativeDocumentReader
         // "selected"/date metadata into the comparison document.
         foreach (var run in paragraph.Descendants(w + "r"))
         {
-            if (run.Ancestors().Any(a => a.Name == w + "del" || a.Name == w + "moveFrom" || a.Name == w + "sdt"))
+            if (run.Ancestors().Any(a => a.Name == w + "del" || a.Name == w + "moveFrom" || a.Name == w + "sdtPr"))
                 continue;
             var rPr = run.Element(w + "rPr");
             if (rPr?.Element(w + "vanish") is not null || rPr?.Element(w + "webHidden") is not null)
