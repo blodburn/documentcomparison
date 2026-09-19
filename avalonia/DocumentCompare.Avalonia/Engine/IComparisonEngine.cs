@@ -24,7 +24,10 @@ public interface IComparisonEngine : IAsyncDisposable
         string outputPath,
         string author,
         bool includePunctuation,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        ComparisonResultVm? comparisonResult = null,
+        int originalDocumentIndex = -1,
+        int revisedDocumentIndex = -1);
 
     Task PingAsync(CancellationToken cancellationToken = default);
     void AbortCurrentOperation();

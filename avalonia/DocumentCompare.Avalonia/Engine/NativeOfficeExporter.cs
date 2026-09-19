@@ -18,11 +18,13 @@ internal static class NativeOfficeExporter
 
     public static async Task WriteTrackedDocxAsync(
         string originalPath, string revisedPath, string outputPath, string author, bool includePunctuation,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, ComparisonResultVm? comparisonResult = null,
+        int originalDocumentIndex = -1, int revisedDocumentIndex = -1)
     {
         var oldText = await NativeDocumentReader.ReadAsync(originalPath, cancellationToken);
         var newText = await NativeDocumentReader.ReadAsync(revisedPath, cancellationToken);
-        await Task.Run(() => WriteTrackedDocx(oldText, newText, originalPath, revisedPath, outputPath, author, includePunctuation, cancellationToken), cancellationToken);
+        await Task.Run(() => WriteTrackedDocx(oldText, newText, originalPath, revisedPath, outputPath, author,
+            includePunctuation, cancellationToken, comparisonResult, originalDocumentIndex, revisedDocumentIndex), cancellationToken);
     }
 
     private static void WriteXlsx(ComparisonResultVm result, string outputPath, CancellationToken token)
@@ -62,7 +64,7 @@ internal static class NativeOfficeExporter
         Put(zip, "xl/styles.xml", """
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-  <fonts count="2"><font><sz val="10"/><name val="Calibri"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="10"/><name val="Calibri"/></font></fonts>
+  <fonts count="2"><font><sz val="10"/><name val="Calibri"/></font><font><b/><sz val="10"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font></fonts>
   <fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF1F4E78"/><bgColor indexed="64"/></patternFill></fill></fills>
   <borders count="1"><border/></borders><cellStyleXfs count="1"><xf/></cellStyleXfs>
   <cellXfs count="2"><xf fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf><xf fontId="1" fillId="2" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf></cellXfs>
@@ -70,7 +72,7 @@ internal static class NativeOfficeExporter
 """);
 
         var xml = new StringBuilder(1024 * 32);
-        xml.Append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><cols>");
+        xml.Append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetViews><sheetView workbookViewId=\"0\"><pane ySplit=\"1\" topLeftCell=\"A2\" activePane=\"bottomLeft\" state=\"frozen\"/></sheetView></sheetViews><cols>");
         for (var c = 0; c < result.Names.Count; c++) xml.Append($"<col min=\"{c + 1}\" max=\"{c + 1}\" width=\"38\" customWidth=\"1\"/>");
         xml.Append($"<col min=\"{result.Names.Count + 1}\" max=\"{result.Names.Count + 1}\" width=\"58\" customWidth=\"1\"/></cols><sheetData>");
         var rowNumber = 1;
@@ -102,7 +104,7 @@ internal static class NativeOfficeExporter
             Cell(xml, rowNumber, result.Names.Count, string.Join("\n", row.DisplayMessages), 0);
             xml.Append("</row>");
         }
-        xml.Append($"</sheetData><autoFilter ref=\"A1:{ColumnName(result.Names.Count + 1)}{Math.Max(1, rowNumber)}\"/><sheetViews><sheetView workbookViewId=\"0\"><pane ySplit=\"1\" topLeftCell=\"A2\" activePane=\"bottomLeft\" state=\"frozen\"/></sheetView></sheetViews></worksheet>");
+        xml.Append($"</sheetData><autoFilter ref=\"A1:{ColumnName(result.Names.Count + 1)}{Math.Max(1, rowNumber)}\"/></worksheet>");
         Put(zip, "xl/worksheets/sheet1.xml", xml.ToString());
     }
 
@@ -150,7 +152,9 @@ internal static class NativeOfficeExporter
         return s;
     }
 
-    private static void WriteTrackedDocx(string oldText, string newText, string originalPath, string revisedPath, string outputPath, string author, bool includePunctuation, CancellationToken token)
+    private static void WriteTrackedDocx(string oldText, string newText, string originalPath, string revisedPath, string outputPath,
+        string author, bool includePunctuation, CancellationToken token, ComparisonResultVm? comparisonResult,
+        int originalDocumentIndex, int revisedDocumentIndex)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath))!);
         var revisedIsDocx = Path.GetExtension(revisedPath).Equals(".docx", StringComparison.OrdinalIgnoreCase);
@@ -190,47 +194,42 @@ internal static class NativeOfficeExporter
             originalParagraphs = oldText.Split('\n').Select(x => x.Trim()).Where(x => x.Length > 0)
                 .Select(x => new ParagraphSource(x, "body")).ToList();
 
-        var oldKeys = originalParagraphs.Select(x => NativeComparisonEngine.Normalize(x.Text)).ToArray();
-        var newKeys = revisedParagraphs.Select(x => NativeComparisonEngine.Normalize(x.Text)).ToArray();
-        var paragraphMatches = Lcs(oldKeys, newKeys);
-        var anchors = new List<(int A, int B)> { (-1, -1) };
-        anchors.AddRange(paragraphMatches);
-        anchors.Add((originalParagraphs.Count, revisedParagraphs.Count));
+        // Reuse the comparison result as high-confidence paragraph anchors.  This keeps Word
+        // export on the same article/general-unit lineage as the on-screen comparison.  Exact
+        // paragraph anchors fill the remaining gaps; only the residual gaps use local similarity.
+        var preferred = BuildPreferredParagraphPairs(originalParagraphs, revisedParagraphs, comparisonResult,
+            originalDocumentIndex, revisedDocumentIndex);
+        var ops = AlignParagraphs(originalParagraphs, revisedParagraphs, preferred, token);
 
         var revisionId = NextRevisionId(document, w);
-        for (var k = 0; k < anchors.Count - 1; k++)
+        var bCursor = 0;
+        for (var k = 0; k < ops.Count;)
         {
             token.ThrowIfCancellationRequested();
-            var left = anchors[k]; var right = anchors[k + 1];
-            var ai = left.A + 1; var aj = right.A; var bi = left.B + 1; var bj = right.B;
-            var paired = Math.Min(aj - ai, bj - bi);
-
-            for (var p = 0; p < paired; p++)
+            var op = ops[k];
+            if (op.Old >= 0 && op.New >= 0)
             {
-                var oldIndex = ai + p; var newIndex = bi + p;
-                ApplyTrackedTextDiff(revisedParagraphs[newIndex].Paragraph, originalParagraphs[oldIndex].Text, revisedParagraphs[newIndex].Text,
-                    author, ref revisionId, includePunctuation, w);
+                ApplyTrackedTextDiff(revisedParagraphs[op.New].Paragraph, originalParagraphs[op.Old].Text,
+                    revisedParagraphs[op.New].Text, author, ref revisionId, includePunctuation, w);
+                bCursor = Math.Max(bCursor, op.New + 1);
+                k++;
+                continue;
+            }
+            if (op.New >= 0)
+            {
+                MarkWholeParagraphInserted(revisedParagraphs[op.New].Paragraph, author, ref revisionId, w);
+                bCursor = Math.Max(bCursor, op.New + 1);
+                k++;
+                continue;
             }
 
-            // A-only paragraphs: A contributes text+logical position only. Insert the whole range
-            // in source order. At end-of-document a moving cursor prevents AddAfterSelf() from
-            // reversing multiple deleted paragraphs.
-            if (ai + paired < aj)
+            var deleted = new List<ParagraphSource>();
+            while (k < ops.Count && ops[k].Old >= 0 && ops[k].New < 0)
             {
-                var deletedRange = originalParagraphs.GetRange(ai + paired, aj - (ai + paired));
-                InsertDeletedParagraphRange(body, revisedParagraphs, bi + paired, deletedRange, author, ref revisionId, w);
+                deleted.Add(originalParagraphs[ops[k].Old]);
+                k++;
             }
-
-            // B-only paragraphs already exist with their complete B formatting.
-            for (var p = bi + paired; p < bj; p++)
-                MarkWholeParagraphInserted(revisedParagraphs[p].Paragraph, author, ref revisionId, w);
-
-            if (right.A < originalParagraphs.Count && right.B < revisedParagraphs.Count &&
-                !NativeComparisonEngine.SemanticEqual(originalParagraphs[right.A].Text, revisedParagraphs[right.B].Text))
-            {
-                ApplyTrackedTextDiff(revisedParagraphs[right.B].Paragraph, originalParagraphs[right.A].Text, revisedParagraphs[right.B].Text,
-                    author, ref revisionId, includePunctuation, w);
-            }
+            InsertDeletedParagraphRange(body, revisedParagraphs, bCursor, deleted, author, ref revisionId, w);
         }
 
         ReplaceEntry(zip, "word/document.xml", document.ToString(SaveOptions.DisableFormatting));
@@ -265,6 +264,165 @@ internal static class NativeOfficeExporter
     private sealed record RunMap(XElement Run, int Start, int End, string Text, bool Simple);
     private sealed record ParagraphSource(string Text, string ContainerKind);
     private sealed record ParagraphEntry(XElement Paragraph, string Text, string ContainerKind, XElement TopLevelBlock);
+    private sealed record ParagraphOp(int Old, int New);
+
+    private static string MemberAnchorText(MemberVm member)
+    {
+        if (!string.IsNullOrWhiteSpace(member.Header)) return member.Header;
+        if (!string.IsNullOrWhiteSpace(member.Body) && !member.Body.Contains('\n')) return member.Body;
+        if (!string.IsNullOrWhiteSpace(member.Text) && !member.Text.Contains('\n')) return member.Text;
+        return string.Empty;
+    }
+
+    private static int FindParagraphByText<T>(IReadOnlyList<T> items, Func<T, string> textSelector, string text,
+        HashSet<int> used, int preferredAfter)
+    {
+        var key = NativeComparisonEngine.Normalize(text);
+        if (key.Length == 0) return -1;
+        var candidates = Enumerable.Range(0, items.Count)
+            .Where(i => !used.Contains(i) && NativeComparisonEngine.Normalize(textSelector(items[i])) == key)
+            .ToList();
+        if (candidates.Count == 0) return -1;
+        var at = candidates.OrderBy(i => i < preferredAfter ? 1 : 0).ThenBy(i => Math.Abs(i - preferredAfter)).First();
+        used.Add(at);
+        return at;
+    }
+
+    private static List<(int Old, int New)> LongestMonotonicPairs(List<(int Old, int New)> raw)
+    {
+        raw = raw.Distinct().OrderBy(x => x.Old).ThenBy(x => x.New).ToList();
+        if (raw.Count <= 1) return raw;
+        var len = Enumerable.Repeat(1, raw.Count).ToArray();
+        var prev = Enumerable.Repeat(-1, raw.Count).ToArray();
+        var best = 0;
+        for (var i = 0; i < raw.Count; i++)
+        {
+            for (var j = 0; j < i; j++)
+            {
+                if (raw[j].Old < raw[i].Old && raw[j].New < raw[i].New && len[j] + 1 > len[i])
+                { len[i] = len[j] + 1; prev[i] = j; }
+            }
+            if (len[i] > len[best]) best = i;
+        }
+        var result = new List<(int Old, int New)>();
+        for (var i = best; i >= 0; i = prev[i])
+        {
+            result.Add(raw[i]);
+            if (prev[i] < 0) break;
+        }
+        result.Reverse();
+        return result;
+    }
+
+    private static List<(int Old, int New)> BuildPreferredParagraphPairs(
+        IReadOnlyList<ParagraphSource> oldParagraphs, IReadOnlyList<ParagraphEntry> newParagraphs,
+        ComparisonResultVm? result, int oldDoc, int newDoc)
+    {
+        if (result is null || oldDoc < 0 || newDoc < 0 || oldDoc == newDoc) return new();
+        if (result.Rows.Count == 0) return new();
+        var usedOld = new HashSet<int>(); var usedNew = new HashSet<int>();
+        var raw = new List<(int Old, int New)>();
+        var oldHint = 0; var newHint = 0;
+        foreach (var row in result.Rows)
+        {
+            if (row.Members.Count <= Math.Max(oldDoc, newDoc)) continue;
+            var om = row.Members[oldDoc]; var nm = row.Members[newDoc];
+            if (om is null || nm is null) continue;
+            var ot = MemberAnchorText(om); var nt = MemberAnchorText(nm);
+            if (ot.Length == 0 || nt.Length == 0) continue;
+            var oi = FindParagraphByText(oldParagraphs, x => x.Text, ot, usedOld, oldHint);
+            var ni = FindParagraphByText(newParagraphs, x => x.Text, nt, usedNew, newHint);
+            if (oi < 0 || ni < 0) continue;
+            raw.Add((oi, ni));
+            oldHint = oi + 1; newHint = ni + 1;
+        }
+        // Moved units can cross in document order.  A single linear paragraph edit stream cannot
+        // use crossing anchors, so retain the largest monotonic subset and let residual gaps be
+        // handled as delete/insert around B's final order.
+        return LongestMonotonicPairs(raw);
+    }
+
+    private static List<ParagraphOp> AlignParagraphGap(IReadOnlyList<ParagraphSource> a, IReadOnlyList<ParagraphEntry> b,
+        int a0, int a1, int b0, int b1)
+    {
+        var n = a1 - a0; var m = b1 - b0;
+        var result = new List<ParagraphOp>();
+        if (n <= 0) { for (var j = b0; j < b1; j++) result.Add(new ParagraphOp(-1, j)); return result; }
+        if (m <= 0) { for (var i = a0; i < a1; i++) result.Add(new ParagraphOp(i, -1)); return result; }
+
+        // Exact anchors normally keep these gaps small.  Avoid quadratic memory on pathological
+        // fully rewritten documents while retaining the old positional fallback semantics.
+        if ((long)(n + 1) * (m + 1) > 250_000L)
+        {
+            var paired = Math.Min(n, m);
+            for (var k = 0; k < paired; k++) result.Add(new ParagraphOp(a0 + k, b0 + k));
+            for (var i = a0 + paired; i < a1; i++) result.Add(new ParagraphOp(i, -1));
+            for (var j = b0 + paired; j < b1; j++) result.Add(new ParagraphOp(-1, j));
+            return result;
+        }
+
+        const double gap = .48;
+        var dp = new double[n + 1, m + 1];
+        var prev = new char[n + 1, m + 1];
+        for (var i = 1; i <= n; i++) { dp[i, 0] = dp[i - 1, 0] + gap; prev[i, 0] = 'D'; }
+        for (var j = 1; j <= m; j++) { dp[0, j] = dp[0, j - 1] + gap; prev[0, j] = 'I'; }
+        for (var i = 1; i <= n; i++)
+        for (var j = 1; j <= m; j++)
+        {
+            var oa = a[a0 + i - 1]; var nb = b[b0 + j - 1];
+            var sim = NativeComparisonEngine.SemanticEqual(oa.Text, nb.Text)
+                ? 1.0 : NativeComparisonEngine.ExportSimilarity(oa.Text, nb.Text);
+            var containerPenalty = oa.ContainerKind == nb.ContainerKind ? 0.0 : .10;
+            var matchCost = sim >= .38 ? .92 * (1.0 - sim) + containerPenalty : 1.04 + containerPenalty;
+            var mc = dp[i - 1, j - 1] + matchCost;
+            var dc = dp[i - 1, j] + gap;
+            var ic = dp[i, j - 1] + gap;
+            if (mc <= dc && mc <= ic) { dp[i, j] = mc; prev[i, j] = 'M'; }
+            else if (dc <= ic) { dp[i, j] = dc; prev[i, j] = 'D'; }
+            else { dp[i, j] = ic; prev[i, j] = 'I'; }
+        }
+        var rev = new List<ParagraphOp>(); var x = n; var y = m;
+        while (x > 0 || y > 0)
+        {
+            var op = prev[x, y];
+            if (op == 'M') { rev.Add(new ParagraphOp(a0 + x - 1, b0 + y - 1)); x--; y--; }
+            else if (op == 'D') { rev.Add(new ParagraphOp(a0 + x - 1, -1)); x--; }
+            else { rev.Add(new ParagraphOp(-1, b0 + y - 1)); y--; }
+        }
+        rev.Reverse(); return rev;
+    }
+
+    private static List<ParagraphOp> AlignParagraphs(IReadOnlyList<ParagraphSource> a, IReadOnlyList<ParagraphEntry> b,
+        IReadOnlyList<(int Old, int New)> preferred, CancellationToken token)
+    {
+        var oldKeys = a.Select(x => NativeComparisonEngine.Normalize(x.Text)).ToArray();
+        var newKeys = b.Select(x => NativeComparisonEngine.Normalize(x.Text)).ToArray();
+        var exact = Lcs(oldKeys, newKeys);
+        var forced = preferred.OrderBy(x => x.Old).ThenBy(x => x.New).ToList();
+        var anchors = new List<(int Old, int New)> { (-1, -1) };
+        var po = -1; var pn = -1;
+        foreach (var f in forced)
+        {
+            foreach (var e in exact.Where(e => e.A > po && e.A < f.Old && e.B > pn && e.B < f.New))
+                anchors.Add((e.A, e.B));
+            if (f.Old > anchors[^1].Old && f.New > anchors[^1].New) anchors.Add(f);
+            po = f.Old; pn = f.New;
+        }
+        foreach (var e in exact.Where(e => e.A > po && e.B > pn))
+            if (e.A > anchors[^1].Old && e.B > anchors[^1].New) anchors.Add((e.A, e.B));
+        anchors.Add((a.Count, b.Count));
+
+        var result = new List<ParagraphOp>();
+        for (var k = 0; k < anchors.Count - 1; k++)
+        {
+            token.ThrowIfCancellationRequested();
+            var left = anchors[k]; var right = anchors[k + 1];
+            result.AddRange(AlignParagraphGap(a, b, left.Old + 1, right.Old, left.New + 1, right.New));
+            if (right.Old < a.Count && right.New < b.Count)
+                result.Add(new ParagraphOp(right.Old, right.New));
+        }
+        return result;
+    }
 
     private static List<XElement> BodyParagraphs(XElement body, XNamespace w) =>
         body.Descendants(w + "p")
@@ -311,7 +469,7 @@ internal static class NativeOfficeExporter
         foreach (var run in paragraph.Descendants(w + "r"))
         {
             if (run.Ancestors().Any(a => a.Name == w + "del" || a.Name == w + "moveFrom")) continue;
-            foreach (var node in run.Descendants())
+            foreach (var node in run.Elements())
             {
                 if (node.Name == w + "t") sb.Append(node.Value);
                 else if (node.Name == w + "tab") sb.Append('\t');
@@ -368,6 +526,55 @@ internal static class NativeOfficeExporter
         return result;
     }
 
+    private static XElement RunWithChild(XElement sourceRun, XElement child, XNamespace w)
+    {
+        var run = new XElement(w + "r");
+        var rPr = sourceRun.Element(w + "rPr");
+        if (rPr is not null) run.Add(new XElement(rPr));
+        run.Add(child);
+        return run;
+    }
+
+    private static bool Covered(int start, int end, IReadOnlyList<(int Start, int End)> ranges) =>
+        ranges.Any(r => r.Start < end && r.End > start);
+
+    private static IEnumerable<object> SplitRunForInsertions(RunMap map, IReadOnlyList<(int Start, int End)> local,
+        string author, ref int id, XNamespace w)
+    {
+        var pieces = new List<object>(); var cursor = 0;
+        foreach (var child in map.Run.Elements().Where(x => x.Name != w + "rPr"))
+        {
+            if (child.Name == w + "t")
+            {
+                var value = child.Value; var childStart = cursor; var childEnd = cursor + value.Length;
+                var cuts = local.SelectMany(r => new[] { Math.Max(childStart, r.Start), Math.Min(childEnd, r.End) })
+                    .Where(x => x > childStart && x < childEnd).Append(childStart).Append(childEnd).Distinct().OrderBy(x => x).ToList();
+                for (var k = 0; k + 1 < cuts.Count; k++)
+                {
+                    var a = cuts[k]; var b = cuts[k + 1]; if (b <= a) continue;
+                    var run = RunFragment(map.Run, value[(a - childStart)..(b - childStart)], w);
+                    if (Covered(a, b, local)) pieces.Add(new XElement(w + "ins", RevisionAttrs(w, id++, author), run));
+                    else pieces.Add(run);
+                }
+                cursor = childEnd;
+                continue;
+            }
+            if (child.Name == w + "tab" || child.Name == w + "br" || child.Name == w + "cr")
+            {
+                var run = RunWithChild(map.Run, new XElement(child), w);
+                if (Covered(cursor, cursor + 1, local)) pieces.Add(new XElement(w + "ins", RevisionAttrs(w, id++, author), run));
+                else pieces.Add(run);
+                cursor++;
+                continue;
+            }
+
+            // Fields, drawings and other non-text run children are copied untouched and never
+            // turned into insertions merely because adjacent text changed.
+            pieces.Add(RunWithChild(map.Run, new XElement(child), w));
+        }
+        return pieces;
+    }
+
     private static void MarkInsertionRanges(XElement paragraph, IEnumerable<(int Start, int End)> ranges,
         string author, ref int id, XNamespace w)
     {
@@ -379,26 +586,45 @@ internal static class NativeOfficeExporter
             var local = merged.Select(r => (Start: Math.Max(r.Start, map.Start) - map.Start, End: Math.Min(r.End, map.End) - map.Start))
                 .Where(r => r.End > r.Start).ToList();
             if (local.Count == 0) continue;
-
-            if (!map.Simple)
-            {
-                // Complex runs (drawings/fields/tabs) stay byte-for-byte intact; if their visible
-                // text changed, mark the whole run rather than reconstructing and losing content.
-                var parent = map.Run.Parent; if (parent is null) continue;
-                map.Run.ReplaceWith(new XElement(w + "ins", RevisionAttrs(w, id++, author), map.Run));
-                continue;
-            }
-
-            var pieces = new List<object>(); var cursor = 0;
-            foreach (var r in local)
-            {
-                if (cursor < r.Start) pieces.Add(RunFragment(map.Run, map.Text[cursor..r.Start], w));
-                pieces.Add(new XElement(w + "ins", RevisionAttrs(w, id++, author), RunFragment(map.Run, map.Text[r.Start..r.End], w)));
-                cursor = r.End;
-            }
-            if (cursor < map.Text.Length) pieces.Add(RunFragment(map.Run, map.Text[cursor..], w));
-            map.Run.ReplaceWith(pieces);
+            var pieces = SplitRunForInsertions(map, local, author, ref id, w).ToList();
+            if (pieces.Count > 0) map.Run.ReplaceWith(pieces);
         }
+    }
+
+    private static XElement DirectParagraphChild(XElement run, XElement paragraph)
+    {
+        var current = run;
+        while (current.Parent is XElement parent && parent != paragraph) current = parent;
+        return current.Parent == paragraph ? current : run;
+    }
+
+    private static List<object> SplitRunAtDeletion(RunMap map, int local, XElement delNode, XNamespace w)
+    {
+        var pieces = new List<object>(); var cursor = 0; var inserted = false;
+        foreach (var child in map.Run.Elements().Where(x => x.Name != w + "rPr"))
+        {
+            if (child.Name == w + "t")
+            {
+                var value = child.Value; var end = cursor + value.Length;
+                if (!inserted && local >= cursor && local <= end)
+                {
+                    var cut = Math.Clamp(local - cursor, 0, value.Length);
+                    if (cut > 0) pieces.Add(RunFragment(map.Run, value[..cut], w));
+                    pieces.Add(delNode); inserted = true;
+                    if (cut < value.Length) pieces.Add(RunFragment(map.Run, value[cut..], w));
+                }
+                else pieces.Add(RunFragment(map.Run, value, w));
+                cursor = end; continue;
+            }
+            if (child.Name == w + "tab" || child.Name == w + "br" || child.Name == w + "cr")
+            {
+                if (!inserted && local == cursor) { pieces.Add(delNode); inserted = true; }
+                pieces.Add(RunWithChild(map.Run, new XElement(child), w)); cursor++; continue;
+            }
+            pieces.Add(RunWithChild(map.Run, new XElement(child), w));
+        }
+        if (!inserted) pieces.Add(delNode);
+        return pieces;
     }
 
     private static void InsertDeletionAt(XElement paragraph, int offset, string deletedText, string author,
@@ -415,21 +641,28 @@ internal static class NativeOfficeExporter
         }
 
         offset = Math.Clamp(offset, 0, maps[^1].End);
-        var target = maps.FirstOrDefault(x => offset <= x.End) ?? maps[^1];
+        var targetIndex = maps.FindIndex(x => offset < x.End);
+        if (targetIndex < 0) targetIndex = maps.Count - 1;
+        var target = maps[targetIndex];
         var local = Math.Clamp(offset - target.Start, 0, target.Text.Length);
         var delNode = new XElement(w + "del", RevisionAttrs(w, id++, author), RunFragment(target.Run, deletedText, w, deleted: true));
-        if (target.Simple && local > 0 && local < target.Text.Length)
+        if (local > 0 && local < target.Text.Length)
         {
-            var parts = new List<object>
-            {
-                RunFragment(target.Run, target.Text[..local], w),
-                delNode,
-                RunFragment(target.Run, target.Text[local..], w)
-            };
-            target.Run.ReplaceWith(parts);
+            target.Run.ReplaceWith(SplitRunAtDeletion(target, local, delNode, w));
         }
-        else if (local <= 0) target.Run.AddBeforeSelf(delNode);
-        else target.Run.AddAfterSelf(delNode);
+        else if (local <= 0)
+        {
+            var boundary = DirectParagraphChild(target.Run, paragraph);
+            var previous = targetIndex > 0 && maps[targetIndex - 1].End == offset ? maps[targetIndex - 1] : null;
+            if (previous is not null && ReferenceEquals(DirectParagraphChild(previous.Run, paragraph), boundary))
+                target.Run.AddBeforeSelf(delNode);
+            else
+                boundary.AddBeforeSelf(delNode);
+        }
+        else
+        {
+            DirectParagraphChild(target.Run, paragraph).AddAfterSelf(delNode);
+        }
     }
 
     private static void ApplyTrackedTextDiff(XElement paragraph, string oldText, string newText, string author,
@@ -471,6 +704,7 @@ internal static class NativeOfficeExporter
     {
         var text = ParagraphVisibleText(paragraph, w);
         if (text.Length > 0) MarkInsertionRanges(paragraph, new[] { (0, text.Length) }, author, ref id, w);
+        MarkParagraphMarkRevision(paragraph, inserted: true, author, ref id, w);
     }
 
     private static void InsertDeletedParagraphRange(XElement body, IReadOnlyList<ParagraphEntry> revisedParagraphs,
@@ -548,16 +782,46 @@ internal static class NativeOfficeExporter
         return new XElement(w + "p", properties is null ? null : new XElement(properties), new XElement(w + "r", TextNode(w + "t", text)));
     }
 
+    private static void MarkParagraphMarkRevision(XElement paragraph, bool inserted, string author, ref int id, XNamespace w)
+    {
+        var pPr = paragraph.Element(w + "pPr");
+        if (pPr is null)
+        {
+            pPr = new XElement(w + "pPr");
+            paragraph.AddFirst(pPr);
+        }
+        var rPr = pPr.Element(w + "rPr");
+        if (rPr is null)
+        {
+            rPr = new XElement(w + "rPr");
+            var before = pPr.Elements().FirstOrDefault(x => x.Name == w + "sectPr" || x.Name == w + "pPrChange");
+            if (before is null) pPr.Add(rPr); else before.AddBeforeSelf(rPr);
+        }
+        var kind = inserted ? w + "ins" : w + "del";
+        if (rPr.Element(kind) is null)
+        {
+            var revision = new XElement(kind, RevisionAttrs(w, id++, author));
+            var before = rPr.Element(w + "rPrChange");
+            if (before is null) rPr.Add(revision); else before.AddBeforeSelf(revision);
+        }
+    }
+
     private static XElement InsertedParagraph(string text, string author, ref int id, XElement? properties)
     {
         XNamespace w = W;
-        return new XElement(w + "p", properties is null ? null : new XElement(properties), new XElement(w + "ins", RevisionAttrs(w, id++, author), new XElement(w + "r", TextNode(w + "t", text))));
+        var p = new XElement(w + "p", properties is null ? null : new XElement(properties),
+            new XElement(w + "ins", RevisionAttrs(w, id++, author), new XElement(w + "r", TextNode(w + "t", text))));
+        MarkParagraphMarkRevision(p, inserted: true, author, ref id, w);
+        return p;
     }
 
     private static XElement DeletedParagraph(string text, string author, ref int id, XElement? properties)
     {
         XNamespace w = W;
-        return new XElement(w + "p", properties is null ? null : new XElement(properties), new XElement(w + "del", RevisionAttrs(w, id++, author), new XElement(w + "r", TextNode(w + "delText", text))));
+        var p = new XElement(w + "p", properties is null ? null : new XElement(properties),
+            new XElement(w + "del", RevisionAttrs(w, id++, author), new XElement(w + "r", TextNode(w + "delText", text))));
+        MarkParagraphMarkRevision(p, inserted: false, author, ref id, w);
+        return p;
     }
 
     private static XElement TrackedParagraph(string oldText, string newText, string author, ref int id, bool includePunctuation, XElement? properties)

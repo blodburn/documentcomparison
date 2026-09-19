@@ -139,6 +139,13 @@ internal static class NativeDocumentReader
                 var content = child.Element(w + "sdtContent");
                 if (content is null) continue;
                 foreach (var nested in EnumerateVisibleBlocks(content, w)) yield return nested;
+                continue;
+            }
+            // customXml is a transparent block wrapper in many form/contract documents.  Its
+            // paragraphs/tables are visible Word content and must participate in comparison.
+            if (child.Name == w + "customXml")
+            {
+                foreach (var nested in EnumerateVisibleBlocks(child, w)) yield return nested;
             }
         }
     }

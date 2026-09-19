@@ -166,7 +166,7 @@ public partial class MainWindow : Window
 
     private void ApplyLanguage()
     {
-        Title = L("문서 비교기 V5.20.11", "Document Compare V5.20.11");
+        Title = L("문서 비교기 V5.20.12", "Document Compare V5.20.12");
         AppTitleText.Text = L("문서 비교기", "Document Compare");
         CompareButton.Content = L("비교 시작", "Compare");
         CancelButton.Content = L("취소", "Cancel");
@@ -614,7 +614,8 @@ public partial class MainWindow : Window
         {
             await _engine.ExportWordAsync(
                 original, revised, save, Path.GetFileNameWithoutExtension(revised),
-                _lastIncludePunctuation, _operationCts?.Token ?? CancellationToken.None);
+                _lastIncludePunctuation, _operationCts?.Token ?? CancellationToken.None,
+                _result, pair.Value.Original, pair.Value.Revised);
             StatusText.Text = L($"Word 저장 완료 · 변경 전 {Path.GetFileName(original)} → 최종 {Path.GetFileName(revised)}", $"Word saved · Original {Path.GetFileName(original)} → Revised {Path.GetFileName(revised)}");
         }
         catch (Exception ex) { StatusText.Text = L("Word 저장 실패: ", "Word save failed: ") + CompactError(ex); }

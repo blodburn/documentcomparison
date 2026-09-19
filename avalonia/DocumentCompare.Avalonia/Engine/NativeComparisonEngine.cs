@@ -112,8 +112,10 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         NativeOfficeExporter.WriteXlsxAsync(result, outputPath, cancellationToken);
 
     public Task ExportWordAsync(string originalPath, string revisedPath, string outputPath, string author, bool includePunctuation,
-        CancellationToken cancellationToken = default) =>
-        NativeOfficeExporter.WriteTrackedDocxAsync(originalPath, revisedPath, outputPath, author, includePunctuation, cancellationToken);
+        CancellationToken cancellationToken = default, ComparisonResultVm? comparisonResult = null,
+        int originalDocumentIndex = -1, int revisedDocumentIndex = -1) =>
+        NativeOfficeExporter.WriteTrackedDocxAsync(originalPath, revisedPath, outputPath, author, includePunctuation,
+            cancellationToken, comparisonResult, originalDocumentIndex, revisedDocumentIndex);
 
     public Task PingAsync(CancellationToken cancellationToken = default)
     {
@@ -2110,6 +2112,8 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         }
         return sb.ToString().Trim();
     }
+
+    internal static double ExportSimilarity(string a, string b) => Similarity(a, b);
 
     internal static bool SemanticEqual(string a, string b) =>
         string.Equals(CanonicalVisibleText(a), CanonicalVisibleText(b), StringComparison.Ordinal);
