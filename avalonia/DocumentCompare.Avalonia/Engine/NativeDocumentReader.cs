@@ -67,8 +67,9 @@ internal static class NativeDocumentReader
         return false;
     }
 
-    private sealed record NumberLevel(int Start, string Format, string Pattern);
-    private sealed record NumberInstance(int AbstractId, Dictionary<int, int> Overrides);
+    private sealed record NumberLevel(int Start, string Format, string Pattern, int RestartAfterLevel);
+    private sealed record NumberInstance(int AbstractId, Dictionary<int, int> StartOverrides,
+        Dictionary<int, NumberLevel> LevelOverrides);
     private sealed record StyleNumber(string? BasedOn, int? NumId, int Level);
 
     private sealed class NumberingContext
@@ -176,7 +177,10 @@ internal static class NativeDocumentReader
                     var start = IntVal(lvl.Element(w + "start"), w, 1);
                     var fmt = Val(lvl.Element(w + "numFmt"), w) ?? "decimal";
                     var pattern = Val(lvl.Element(w + "lvlText"), w) ?? $"%{ilvl + 1}.";
-                    levels[ilvl] = new NumberLevel(start, fmt, pattern);
+                    var restartRaw = lvl.Element(w + "lvlRestart") is XElement lr && int.TryParse(Val(lr, w), out var rv)
+                        ? rv : (ilvl > 0 ? ilvl : 0);
+                    var restartAfter = restartRaw == 0 ? -1 : restartRaw - 1;
+                    levels[ilvl] = new NumberLevel(start, fmt, pattern, restartAfter);
                 }
                 ctx.Abstracts[aid] = levels;
             }
@@ -186,14 +190,26 @@ internal static class NativeDocumentReader
                 if (!IntAttr(num, w + "numId", out var nid)) continue;
                 var abs = num.Element(w + "abstractNumId");
                 if (abs is null || !int.TryParse(Val(abs, w), out var aid)) continue;
-                var overrides = new Dictionary<int, int>();
+                var startOverrides = new Dictionary<int, int>();
+                var levelOverrides = new Dictionary<int, NumberLevel>();
                 foreach (var ov in num.Elements(w + "lvlOverride"))
                 {
                     if (!IntAttr(ov, w + "ilvl", out var ilvl)) continue;
                     var so = ov.Element(w + "startOverride");
-                    if (so is not null && int.TryParse(Val(so, w), out var sv)) overrides[ilvl] = sv;
+                    if (so is not null && int.TryParse(Val(so, w), out var sv)) startOverrides[ilvl] = sv;
+                    var lvl = ov.Element(w + "lvl");
+                    if (lvl is null) continue;
+                    NumberLevel? baseDef = null;
+                    if (ctx.Abstracts.TryGetValue(aid, out var baseLevels) && baseLevels.TryGetValue(ilvl, out var foundBase))
+                        baseDef = foundBase;
+                    var start = IntVal(lvl.Element(w + "start"), w, baseDef?.Start ?? 1);
+                    var fmt = Val(lvl.Element(w + "numFmt"), w) ?? baseDef?.Format ?? "decimal";
+                    var pattern = Val(lvl.Element(w + "lvlText"), w) ?? baseDef?.Pattern ?? $"%{ilvl + 1}.";
+                    var restartRaw = lvl.Element(w + "lvlRestart") is XElement lr && int.TryParse(Val(lr, w), out var rv)
+                        ? rv : (baseDef is not null ? (baseDef.RestartAfterLevel < 0 ? 0 : baseDef.RestartAfterLevel + 1) : (ilvl > 0 ? ilvl : 0));
+                    levelOverrides[ilvl] = new NumberLevel(start, fmt, pattern, restartRaw == 0 ? -1 : restartRaw - 1);
                 }
-                ctx.Instances[nid] = new NumberInstance(aid, overrides);
+                ctx.Instances[nid] = new NumberInstance(aid, startOverrides, levelOverrides);
             }
         }
 
@@ -245,20 +261,35 @@ internal static class NativeDocumentReader
         if (got is null || got.Value.NumId == 0) return string.Empty;
         var (numId, level) = got.Value;
         if (!ctx.Instances.TryGetValue(numId, out var instance) ||
-            !ctx.Abstracts.TryGetValue(instance.AbstractId, out var levels) ||
-            !levels.TryGetValue(level, out var def)) return string.Empty;
+            !ctx.Abstracts.TryGetValue(instance.AbstractId, out var levels)) return string.Empty;
+        NumberLevel? EffectiveLevel(int lv) => instance.LevelOverrides.TryGetValue(lv, out var od)
+            ? od : levels.TryGetValue(lv, out var bd) ? bd : null;
+        var def = EffectiveLevel(level); if (def is null) return string.Empty;
 
         if (!ctx.Counters.TryGetValue(numId, out var counters)) ctx.Counters[numId] = counters = new();
-        foreach (var k in counters.Keys.Where(k => k > level).ToList()) counters.Remove(k);
-        var start = instance.Overrides.TryGetValue(level, out var ov) ? ov : def.Start;
+        // Respect lvlRestart.  Removal cascades through ordinary hierarchical levels, while a
+        // restart value of 0 (-1 internally) preserves the deeper counter across parent changes.
+        var changed = new HashSet<int> { level };
+        var progress = true;
+        while (progress)
+        {
+            progress = false;
+            foreach (var k in counters.Keys.Where(k => k > level).ToList())
+            {
+                var kd = EffectiveLevel(k);
+                if (kd is not null && kd.RestartAfterLevel >= 0 && changed.Contains(kd.RestartAfterLevel))
+                { counters.Remove(k); changed.Add(k); progress = true; }
+            }
+        }
+        var start = instance.StartOverrides.TryGetValue(level, out var ov) ? ov : def.Start;
         counters[level] = counters.TryGetValue(level, out var cur) ? cur + 1 : start;
 
         return System.Text.RegularExpressions.Regex.Replace(def.Pattern, @"%(\d+)", m =>
         {
             var lv = int.Parse(m.Groups[1].Value) - 1;
-            var value = counters.TryGetValue(lv, out var v) ? v : (levels.TryGetValue(lv, out var ld) ? ld.Start : 1);
-            var fmt = levels.TryGetValue(lv, out var fd) ? fd.Format : "decimal";
-            return FormatNumber(value, fmt);
+            var ld = EffectiveLevel(lv);
+            var value = counters.TryGetValue(lv, out var v) ? v : (ld?.Start ?? 1);
+            return FormatNumber(value, ld?.Format ?? "decimal");
         }).Trim();
     }
 

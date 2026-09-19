@@ -561,49 +561,41 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         var n = articleA.Count;
         var m = articleB.Count;
         const double gap = .48;
-        var dp = new double[n + 1, m + 1];
-        var prev = new char[n + 1, m + 1];
-        for (var i = 1; i <= n; i++) { dp[i, 0] = dp[i - 1, 0] + gap; prev[i, 0] = 'D'; }
-        for (var j = 1; j <= m; j++) { dp[0, j] = dp[0, j - 1] + gap; prev[0, j] = 'I'; }
-
-        var simCache = new Dictionary<(int, int), double>();
-        double Sim(int ai, int bj)
-        {
-            var key = (ai, bj);
-            if (!simCache.TryGetValue(key, out var s0))
-            {
-                s0 = UnitLineageSimilarity(a[articleA[ai]], b[articleB[bj]]);
-                simCache[key] = s0;
-            }
-            return s0;
-        }
-
+        // Preserve the exact DP decision rule while using only two score rows.  The traceback
+        // matrix stores one byte per cell instead of a double + char + similarity-cache entry.
+        const byte M = 1, D = 2, I = 3;
+        var prev = new byte[n + 1, m + 1];
+        var prior = new double[m + 1];
+        var current = new double[m + 1];
+        for (var j = 1; j <= m; j++) { prior[j] = prior[j - 1] + gap; prev[0, j] = I; }
         for (var i = 1; i <= n; i++)
         {
             token.ThrowIfCancellationRequested();
+            current[0] = prior[0] + gap; prev[i, 0] = D;
             for (var j = 1; j <= m; j++)
             {
-                var sim = Sim(i - 1, j - 1);
+                var sim = UnitLineageSimilarity(a[articleA[i - 1]], b[articleB[j - 1]]);
                 var matchCost = sim >= .43 ? .94 * (1.0 - sim) : 1.08;
                 if (string.Equals(a[articleA[i - 1]].Number, b[articleB[j - 1]].Number, StringComparison.OrdinalIgnoreCase))
                     matchCost -= .015;
-                var mc = dp[i - 1, j - 1] + matchCost;
-                var dc = dp[i - 1, j] + gap;
-                var ic = dp[i, j - 1] + gap;
-                if (mc <= dc && mc <= ic) { dp[i, j] = mc; prev[i, j] = 'M'; }
-                else if (dc <= ic) { dp[i, j] = dc; prev[i, j] = 'D'; }
-                else { dp[i, j] = ic; prev[i, j] = 'I'; }
+                var mc = prior[j - 1] + matchCost;
+                var dc = prior[j] + gap;
+                var ic = current[j - 1] + gap;
+                if (mc <= dc && mc <= ic) { current[j] = mc; prev[i, j] = M; }
+                else if (dc <= ic) { current[j] = dc; prev[i, j] = D; }
+                else { current[j] = ic; prev[i, j] = I; }
             }
+            (prior, current) = (current, prior);
         }
 
-        var ops = new List<(char Op, int A, int B)>();
+        var ops = new List<(byte Op, int A, int B)>();
         var x = n; var y = m;
         while (x > 0 || y > 0)
         {
             var op = prev[x, y];
-            if (op == 'M') { ops.Add(('M', x - 1, y - 1)); x--; y--; }
-            else if (op == 'D') { ops.Add(('D', x - 1, -1)); x--; }
-            else { ops.Add(('I', -1, y - 1)); y--; }
+            if (op == M) { ops.Add((M, x - 1, y - 1)); x--; y--; }
+            else if (op == D) { ops.Add((D, x - 1, -1)); x--; }
+            else { ops.Add((I, -1, y - 1)); y--; }
         }
         ops.Reverse();
 
@@ -611,8 +603,9 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         var usedB = new HashSet<int>();
         foreach (var op in ops)
         {
-            if (op.Op != 'M') continue;
-            var bi = articleA[op.A]; var oj = articleB[op.B]; var sim = Sim(op.A, op.B);
+            if (op.Op != M) continue;
+            var bi = articleA[op.A]; var oj = articleB[op.B];
+            var sim = UnitLineageSimilarity(a[bi], b[oj]);
             if (sim < .43) continue;
             var mode = string.Equals(a[bi].Number, b[oj].Number, StringComparison.OrdinalIgnoreCase) ? "same" : "renumbered";
             mapping[bi] = new UnitMatch(bi, oj, sim, mode);
