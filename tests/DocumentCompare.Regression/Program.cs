@@ -186,4 +186,62 @@ Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);var kcp=Path.Combi
 Check(await Read(kcp)==pure,"valid CP949 was misdetected as UTF-16");
 Console.WriteLine("PASS PURE-KOREAN BOMLESS UTF16 + CP949");
 
+
+// 24. Property-format Track Changes (pPrChange/rPrChange/etc.) must be rejected before mixing histories.
+var pra=Path.Combine(dir,"propertyRevA.docx");var prb=Path.Combine(dir,"propertyRevB.docx");var pro=Path.Combine(dir,"propertyRevOut.docx");
+Make(pra,P("Alpha"));
+Make(prb,"<w:p><w:pPr><w:jc w:val=\"center\"/><w:pPrChange w:id=\"42\" w:author=\"Old\"><w:pPr><w:jc w:val=\"left\"/></w:pPr></w:pPrChange></w:pPr><w:r><w:t>Alpha changed</w:t></w:r></w:p>");
+var propertyRevisionBlocked=false;try{await eng.ExportWordAsync(pra,prb,pro,"Current",true);}catch(InvalidOperationException ex){propertyRevisionBlocked=ex.Message.Contains("기존 Word 변경추적");}
+Check(propertyRevisionBlocked,"pPrChange was not rejected as an existing tracked revision");
+Console.WriteLine("PASS PROPERTY REVISION GUARD");
+
+// 25. Table row/cell SDT and customXml wrappers are transparent visible structure, not data-loss boundaries.
+var rowSdt=Path.Combine(dir,"rowSdt.docx");var cellSdt=Path.Combine(dir,"cellSdt.docx");var customRow=Path.Combine(dir,"customRow.docx");
+Make(rowSdt,"<w:tbl><w:tblPr/><w:tblGrid><w:gridCol/></w:tblGrid><w:sdt><w:sdtPr/><w:sdtContent><w:tr><w:tc>"+P("SDT_ROW_CELL")+"</w:tc></w:tr></w:sdtContent></w:sdt></w:tbl>");
+Make(cellSdt,"<w:tbl><w:tblPr/><w:tblGrid><w:gridCol/></w:tblGrid><w:tr><w:sdt><w:sdtPr/><w:sdtContent><w:tc>"+P("SDT_CELL")+"</w:tc></w:sdtContent></w:sdt></w:tr></w:tbl>");
+Make(customRow,"<w:tbl><w:tblPr/><w:tblGrid><w:gridCol/></w:tblGrid><w:customXml w:uri=\"urn:test\" w:element=\"row\"><w:tr><w:tc>"+P("CUSTOM_ROW")+"</w:tc></w:tr></w:customXml></w:tbl>");
+Check((await Read(rowSdt)).Contains("SDT_ROW_CELL"),"row-level SDT table text disappeared");
+Check((await Read(cellSdt)).Contains("SDT_CELL"),"cell-level SDT table text disappeared");
+Check((await Read(customRow)).Contains("CUSTOM_ROW"),"customXml-wrapped table row disappeared");
+Console.WriteLine("PASS TABLE SDT/CUSTOMXML VISIBILITY");
+
+// 26. Number-only change must create a valid Word numbering revision, not UI-only change.
+static void MakeSingleNumbered(string path,int start,string Wns){using var fs=new FileStream(path,FileMode.Create);using var z=new ZipArchive(fs,ZipArchiveMode.Create);Put(z,"[Content_Types].xml","<?xml version=\"1.0\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/><Override PartName=\"/word/numbering.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml\"/></Types>");Put(z,"_rels/.rels","<?xml version=\"1.0\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"word/document.xml\"/></Relationships>");Put(z,"word/_rels/document.xml.rels","<?xml version=\"1.0\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rIdNum\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering\" Target=\"numbering.xml\"/></Relationships>");Put(z,"word/document.xml","<?xml version=\"1.0\"?><w:document xmlns:w=\""+Wns+"\"><w:body><w:p><w:pPr><w:numPr><w:ilvl w:val=\"0\"/><w:numId w:val=\"1\"/></w:numPr></w:pPr><w:r><w:t>Same item</w:t></w:r></w:p><w:sectPr/></w:body></w:document>");Put(z,"word/numbering.xml",$"<?xml version=\"1.0\"?><w:numbering xmlns:w=\"{Wns}\"><w:abstractNum w:abstractNumId=\"0\"><w:lvl w:ilvl=\"0\"><w:start w:val=\"{start}\"/><w:numFmt w:val=\"decimal\"/><w:lvlText w:val=\"%1.\"/></w:lvl></w:abstractNum><w:num w:numId=\"1\"><w:abstractNumId w:val=\"0\"/></w:num></w:numbering>");}
+var numA=Path.Combine(dir,"numberOnlyA.docx");var numB=Path.Combine(dir,"numberOnlyB.docx");var numOut=Path.Combine(dir,"numberOnlyOut.docx");MakeSingleNumbered(numA,1,W);MakeSingleNumbered(numB,2,W);
+var numCmp=await eng.CompareAsync(new[]{numA,numB},0,"general",true,true);Check(numCmp.Rows.Any(r=>r.Changed),"number-only change was not visible in comparison");
+await eng.ExportWordAsync(numA,numB,numOut,"T",true,default,numCmp,0,1);var numDoc=Doc(numOut);var numChange=numDoc.Descendants(w+"numberingChange").SingleOrDefault();
+Check(numChange is not null&&numChange.Attribute(w+"original")?.Value=="1.","number-only change did not emit w:numberingChange with original label");
+using(var wd=WordprocessingDocument.Open(numOut,false)){var errors=new OpenXmlValidator().Validate(wd.MainDocumentPart!.Document).ToList();Check(errors.Count==0,"numberingChange OpenXML invalid: "+string.Join(" | ",errors.Take(5).Select(e=>e.Description)));}
+Console.WriteLine("PASS WORD NUMBERING CHANGE TRACKING");
+
+// 27. Roman article parser must accept canonical numerals but reject ordinary Roman-letter words.
+var parseUnits=typeof(NativeComparisonEngine).GetMethod("ParseUnits",BindingFlags.Static|BindingFlags.NonPublic)!;
+var falseRomans=(System.Collections.IEnumerable)parseUnits.Invoke(null,new object[]{"Article CIVIL Rights\nBody one\nArticle MIX Terms\nBody two","auto"})!;
+var falseNums=new List<string>();foreach(var u in falseRomans){var number=(string)u!.GetType().GetProperty("Number")!.GetValue(u)!;if(number.Length>0)falseNums.Add(number);}
+Check(!falseNums.Contains("CIVIL")&&!falseNums.Contains("MIX"),"ordinary Roman-letter words became article numbers: "+string.Join(",",falseNums));
+var trueRomans=(System.Collections.IEnumerable)parseUnits.Invoke(null,new object[]{"ARTICLE IV TERM\nAlpha\nARTICLE IX END\nBeta","auto"})!;var trueNums=new List<string>();foreach(var u in trueRomans){var number=(string)u!.GetType().GetProperty("Number")!.GetValue(u)!;if(number.Length>0)trueNums.Add(number);}
+Check(trueNums.Contains("IV")&&trueNums.Contains("IX"),"canonical Roman articles stopped parsing: "+string.Join(",",trueNums));
+Console.WriteLine("PASS CANONICAL ROMAN ARTICLE FILTER");
+
+// 28. SpreadsheetML rich text properties use deterministic strike -> color -> underline order.
+using(var z=ZipFile.OpenRead(xo)){using var sr=new StreamReader(z.GetEntry("xl/worksheets/sheet1.xml")!.Open());var xml=sr.ReadToEnd();Check(!xml.Contains("<rPr><u val=\"single\"/><color"),"insert rPr regressed to underline-before-color");Check(!xml.Contains("<rPr><strike/><u val=\"single\"/><color"),"both rPr regressed to underline-before-color");Check(xml.Contains("<rPr><color rgb=\"FF1565C0\"/><u val=\"single\"/></rPr>"),"insert color->underline order missing");}
+Console.WriteLine("PASS XLSX RPR ORDER");
+
+// 29. Large Word paragraph gaps use linear-space similarity alignment, not blind positional pairing.
+var largeA=Path.Combine(dir,"largeGapA.txt");var largeB=Path.Combine(dir,"largeGapB.docx");var largeOut=Path.Combine(dir,"largeGapOut.docx");
+var largeOld=Enumerable.Range(0,505).Select(i=>$"Clause {i:D3} stable unique wording").ToList();File.WriteAllLines(largeA,largeOld,new UTF8Encoding(false));
+var largeBody=P("UNRELATED LEADING PARAGRAPH")+string.Concat(largeOld.Select((x,i)=>P(x+" revised")));Make(largeB,largeBody);
+await eng.ExportWordAsync(largeA,largeB,largeOut,"T",true);var largeDoc=Doc(largeOut);var firstP=largeDoc.Descendants(w+"p").First();
+Check(firstP.Descendants(w+"ins").Any()&&firstP.Element(w+"pPr")?.Element(w+"rPr")?.Element(w+"ins") is not null,"large-gap alignment blindly paired the unrelated leading paragraph");
+Console.WriteLine("PASS LARGE-GAP LINEAR-SPACE ALIGNMENT");
+
+
+// 30. In-place Word export must preserve a row-level SDT wrapper while tracking text inside it.
+var sdtExpA=Path.Combine(dir,"sdtExportA.docx");var sdtExpB=Path.Combine(dir,"sdtExportB.docx");var sdtExpO=Path.Combine(dir,"sdtExportOut.docx");
+string SdtTable(string value)=>"<w:tbl><w:tblPr/><w:tblGrid><w:gridCol/></w:tblGrid><w:sdt><w:sdtPr><w:tag w:val=\"locked-row\"/></w:sdtPr><w:sdtContent><w:tr><w:tc>"+P(value)+"</w:tc></w:tr></w:sdtContent></w:sdt></w:tbl>";
+Make(sdtExpA,SdtTable("Controlled old wording"));Make(sdtExpB,SdtTable("Controlled new wording"));await eng.ExportWordAsync(sdtExpA,sdtExpB,sdtExpO,"T",true);var sdtOut=Doc(sdtExpO);
+Check(sdtOut.Descendants(w+"sdt").Any(),"row SDT wrapper was destroyed during export");Check(sdtOut.Descendants(w+"delText").Any(x=>x.Value.Contains("old")),"row SDT deletion missing");Check(sdtOut.Descendants(w+"ins").Descendants(w+"t").Any(x=>x.Value.Contains("new")),"row SDT insertion missing");
+using(var wd=WordprocessingDocument.Open(sdtExpO,false)){var errors=new OpenXmlValidator().Validate(wd.MainDocumentPart!.Document).ToList();Check(errors.Count==0,"SDT tracked export OpenXML invalid: "+string.Join(" | ",errors.Take(5).Select(e=>e.Description)));}
+Console.WriteLine("PASS SDT IN-PLACE WORD EXPORT");
+
 Console.WriteLine("ALL REGRESSIONS PASSED");

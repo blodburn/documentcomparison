@@ -8,17 +8,20 @@ namespace DocumentCompare.Avalonia.Engine;
 
 public sealed class NativeComparisonEngine : IComparisonEngine
 {
+    private const string RomanNumberPattern = @"(?!(?:MIX)\b)(?=[IVXLCDM]+\b)M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})";
+    private static readonly Regex RomanCanonical = new("^(?:" + RomanNumberPattern + ")$",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex KoreanArticle = new(
         """^[\s\p{Cf}]*제\s*(\d+)\s*조(?:\s*의\s*(\d+))?\s*(?:\(([^\n)]{1,120})\))?\s*(.*)$""",
         RegexOptions.Compiled);
     private static readonly Regex EnglishArticle = new(
-        """^[\s\p{Cf}]*(?:Article|Section)\s+((?:\d+(?:[-.]\d+)*)|(?:[IVXLCDM]+))\s*(?:[.:-])?\s*(.*)$""",
+        @"^[\s\p{Cf}]*(?:Article|Section)\s+((?:\d+(?:[-.]\d+)*)|(?:" + RomanNumberPattern + @"))\s*(?:[.:-])?\s*(.*)$",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex SectionHeading = new(
         """^[\s\p{Cf}]*(?:제\s*\d+\s*(?:장|절|관)\b.*|(?:Chapter|Part)\s+\d+(?:[-.]\d+)*\b.*)$""",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex EnglishHierarchy = new(
-        """^[\s\p{Cf}]*(?:[•●▪◦·*]+\s*)?(?<level>Chapter|Part)\s+(?<num>(?:\d+(?:[-.]\d+)*)|(?:[IVXLCDM]+))\s*[.\-:–—]?\s*(?<title>.*?)\s*$""",
+        @"^[\s\p{Cf}]*(?:[•●▪◦·*]+\s*)?(?<level>Chapter|Part)\s+(?<num>(?:\d+(?:[-.]\d+)*)|(?:" + RomanNumberPattern + @"))\s*[.\-:–—]?\s*(?<title>.*?)\s*$",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex KoreanHierarchy = new(
         """^[\s\p{Cf}]*(?:[•●▪◦·*]+\s*)?제\s*(?<num>\d+)\s*(?<level>장|절|관)\s*(?:\((?<p>[^)\n]*)\)|\[(?<b>[^]\n]*)\]|(?<title>.*?))\s*$""",
@@ -27,7 +30,8 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         """^[ \t\p{Cf}]*(?<label>(?:[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|\(\d+\)|\([A-Za-z]\)|\([IVXLCDMivxlcdm]{2,}\)|\d+[.)]|[가-하A-Za-z][.)]))(?<ws>[ \t]+)""",
         RegexOptions.Compiled | RegexOptions.Multiline | RegexOptions.CultureInvariant);
     private static readonly Regex StrongInlineEnglishArticle = new(
-        """(?<![A-Za-z0-9])(?:Article|Section)\s+(?:(?:\d+(?:[-.]\d+)*)|(?:[IVXLCDM]+))\s*(?:[.:-])?\s*\([^\n)]{1,180}[)}]""",
+        @"(?<![A-Za-z0-9])(?:Article|Section)\s+(?:(?:\d+(?:[-.]\d+)*)|(?:" + RomanNumberPattern + @"))\s*(?:[.:-])?\s*\([^
+)]{1,180}[)}]",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex StrongInlineKoreanArticle = new(
         """제\s*\d+\s*조(?:\s*의\s*\d+)?\s*\([^\n)]{1,180}[)}]""",
@@ -256,7 +260,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     private static int RomanValue(string value)
     {
         var s = (value ?? string.Empty).Trim().ToUpperInvariant();
-        if (s.Length == 0 || s.Any(ch => !"IVXLCDM".Contains(ch))) return 0;
+        if (s.Length == 0 || !RomanCanonical.IsMatch(s)) return 0;
         static int V(char ch) => ch switch { 'I' => 1, 'V' => 5, 'X' => 10, 'L' => 50, 'C' => 100, 'D' => 500, 'M' => 1000, _ => 0 };
         var total = 0; var prev = 0;
         foreach (var ch in s.Reverse()) { var v = V(ch); if (v < prev) total -= v; else { total += v; prev = v; } }
@@ -266,8 +270,8 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     private static double? ArticleNumberValue(string value)
     {
         var s = (value ?? string.Empty).Trim();
-        if (Regex.IsMatch(s, "^[IVXLCDM]+$", RegexOptions.IgnoreCase))
-            return RomanValue(s);
+        var roman = RomanValue(s);
+        if (roman > 0) return roman;
         var m = Regex.Match(s, @"^(\d+)(?:[.-](\d+))?");
         if (!m.Success) return null;
         var a = double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);
@@ -1660,7 +1664,8 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         if(label.Length==1&&"①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳".Contains(label[0])) return "circled";
         if(Regex.IsMatch(label,@"^\(\d+\)$")) return "paren-number";
         if(Regex.IsMatch(label,@"^\([A-Za-z]\)$")) return "paren-alpha";
-        if(Regex.IsMatch(label,@"^\([IVXLCDMivxlcdm]{2,}\)$")) return "paren-roman";
+        if(Regex.IsMatch(label,@"^\([IVXLCDMivxlcdm]{2,}\)$"))
+            return RomanValue(label[1..^1]) > 0 ? "paren-roman" : "other";
         if(Regex.IsMatch(label,@"^\d+[.)]$")) return "number";
         if(Regex.IsMatch(label,@"^[A-Za-z][.)]$")) return "alpha";
         if(Regex.IsMatch(label,@"^[가-하][.)]$")) return "korean";
@@ -1682,7 +1687,11 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         m = Regex.Match(label, @"^\(([A-Za-z])\)$");
         if (m.Success) return char.ToUpperInvariant(m.Groups[1].Value[0]) - 'A' + 1;
         m = Regex.Match(label, @"^\(([IVXLCDMivxlcdm]{2,})\)$");
-        if (m.Success) return RomanValue(m.Groups[1].Value);
+        if (m.Success)
+        {
+            var rv = RomanValue(m.Groups[1].Value);
+            return rv > 0 ? rv : null;
+        }
         if (Regex.IsMatch(label, @"^[A-Za-z][.)]$")) return char.ToUpperInvariant(label[0]) - 'A' + 1;
         if (Regex.IsMatch(label, @"^[가-하][.)]$"))
         {
@@ -1696,8 +1705,11 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     private static bool IsSingleParenRomanCandidate(string label) =>
         Regex.IsMatch(label ?? string.Empty, @"^\([ivxIVX]\)$");
 
-    private static bool IsMultiParenRoman(string label) =>
-        Regex.IsMatch(label ?? string.Empty, @"^\([IVXLCDMivxlcdm]{2,}\)$");
+    private static bool IsMultiParenRoman(string label)
+    {
+        if (string.IsNullOrEmpty(label) || !Regex.IsMatch(label, @"^\([IVXLCDMivxlcdm]{2,}\)$")) return false;
+        return RomanValue(label[1..^1]) > 0;
+    }
 
     private static bool IsContextualParenRoman(IReadOnlyList<NativePart> parts, int index)
     {

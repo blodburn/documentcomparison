@@ -156,12 +156,13 @@ internal static class NativeDocumentReader
         catch (DecoderFallbackException) { return false; }
     }
 
-    private sealed record NumberLevel(int Start, string Format, string Pattern, int RestartAfterLevel);
-    private sealed record NumberInstance(int AbstractId, Dictionary<int, int> StartOverrides,
+    internal sealed record NumberLevel(int Start, string Format, string Pattern, int RestartAfterLevel);
+    internal sealed record NumberInstance(int AbstractId, Dictionary<int, int> StartOverrides,
         Dictionary<int, NumberLevel> LevelOverrides);
-    private sealed record StyleNumber(string? BasedOn, int? NumId, int Level);
+    internal sealed record StyleNumber(string? BasedOn, int? NumId, int Level);
+    internal sealed record ParagraphNumberInfo(string Label, int? NumId, int Level);
 
-    private sealed class NumberingContext
+    internal sealed class NumberingContext
     {
         public Dictionary<int, Dictionary<int, NumberLevel>> Abstracts { get; } = new();
         public Dictionary<int, NumberInstance> Instances { get; } = new();
@@ -209,10 +210,10 @@ internal static class NativeDocumentReader
             }
             else if (block.Name == w + "tbl")
             {
-                foreach (var row in block.Elements(w + "tr"))
+                foreach (var row in EnumerateTransparentChildren(block, w + "tr", w))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    var cells = row.Elements(w + "tc")
+                    var cells = EnumerateTransparentChildren(row, w + "tc", w)
                         .Select(tc => string.Join("\n", tc.Descendants(w + "p")
                             .Select(VisibleParagraph)
                             .Where(x => x.Length > 0)))
@@ -249,6 +250,23 @@ internal static class NativeDocumentReader
         }
     }
 
+    internal static IEnumerable<XElement> EnumerateTransparentChildren(XElement container, XName target, XNamespace w)
+    {
+        foreach (var child in container.Elements())
+        {
+            if (child.Name == target) { yield return child; continue; }
+            if (child.Name == w + "sdt")
+            {
+                var content = child.Element(w + "sdtContent");
+                if (content is not null)
+                    foreach (var nested in EnumerateTransparentChildren(content, target, w)) yield return nested;
+                continue;
+            }
+            if (child.Name == w + "customXml")
+                foreach (var nested in EnumerateTransparentChildren(child, target, w)) yield return nested;
+        }
+    }
+
     private static XDocument? LoadXmlPart(ZipArchive archive, string name, long maxUncompressedBytes = 32L * 1024 * 1024)
     {
         var entry = archive.GetEntry(name);
@@ -259,7 +277,7 @@ internal static class NativeDocumentReader
         return XDocument.Load(stream, LoadOptions.PreserveWhitespace);
     }
 
-    private static NumberingContext BuildNumberingContext(ZipArchive archive, XNamespace w)
+    internal static NumberingContext BuildNumberingContext(ZipArchive archive, XNamespace w)
     {
         var ctx = new NumberingContext();
         var numbering = LoadXmlPart(archive, "word/numbering.xml");
@@ -353,20 +371,20 @@ internal static class NativeDocumentReader
         return (nid, level);
     }
 
-    private static string NumberLabel(XElement paragraph, NumberingContext ctx, XNamespace w)
+    internal static ParagraphNumberInfo NumberInfo(XElement paragraph, NumberingContext ctx, XNamespace w)
     {
         var got = ParagraphNumPr(paragraph, ctx, w);
-        if (got is null || got.Value.NumId == 0) return string.Empty;
+        if (got is null || got.Value.NumId == 0) return new ParagraphNumberInfo(string.Empty, null, 0);
         var (numId, level) = got.Value;
         if (!ctx.Instances.TryGetValue(numId, out var instance) ||
-            !ctx.Abstracts.TryGetValue(instance.AbstractId, out var levels)) return string.Empty;
+            !ctx.Abstracts.TryGetValue(instance.AbstractId, out var levels))
+            return new ParagraphNumberInfo(string.Empty, numId, level);
         NumberLevel? EffectiveLevel(int lv) => instance.LevelOverrides.TryGetValue(lv, out var od)
             ? od : levels.TryGetValue(lv, out var bd) ? bd : null;
-        var def = EffectiveLevel(level); if (def is null) return string.Empty;
+        var def = EffectiveLevel(level);
+        if (def is null) return new ParagraphNumberInfo(string.Empty, numId, level);
 
         if (!ctx.Counters.TryGetValue(numId, out var counters)) ctx.Counters[numId] = counters = new();
-        // Respect lvlRestart.  Removal cascades through ordinary hierarchical levels, while a
-        // restart value of 0 (-1 internally) preserves the deeper counter across parent changes.
         var changed = new HashSet<int> { level };
         var progress = true;
         while (progress)
@@ -382,14 +400,18 @@ internal static class NativeDocumentReader
         var start = instance.StartOverrides.TryGetValue(level, out var ov) ? ov : def.Start;
         counters[level] = counters.TryGetValue(level, out var cur) ? cur + 1 : start;
 
-        return System.Text.RegularExpressions.Regex.Replace(def.Pattern, @"%(\d+)", m =>
+        var label = System.Text.RegularExpressions.Regex.Replace(def.Pattern, @"%(\d+)", m =>
         {
             var lv = int.Parse(m.Groups[1].Value) - 1;
             var ld = EffectiveLevel(lv);
             var value = counters.TryGetValue(lv, out var v) ? v : (ld?.Start ?? 1);
             return FormatNumber(value, ld?.Format ?? "decimal");
         }).Trim();
+        return new ParagraphNumberInfo(label, numId, level);
     }
+
+    internal static string NumberLabel(XElement paragraph, NumberingContext ctx, XNamespace w) =>
+        NumberInfo(paragraph, ctx, w).Label;
 
     private static string FormatNumber(int n, string format)
     {

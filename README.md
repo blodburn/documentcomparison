@@ -9,16 +9,16 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.20.14**
+**V5.20.15**
 
-- Preserve revised DOCX structure in-place while tracking body text changes; table row/cell insertions and deletions are emitted as structural Word revisions instead of leaking deleted text into surviving cells.
-- Use one visible-text policy for reader and exporter, preventing hidden-run mismatches and duplicate textbox/drawing text extraction.
-- Guard existing Track Changes anywhere under `word/*.xml`, and stop Word export when header/footer/footnote/endnote text or part placement differs so ancillary changes are never silently omitted.
-- Add Roman `ARTICLE I` headings and contextual `(a)` / `(i)` list parsing, including flattened one-line list recovery.
-- Improve TXT decoding for BOM-less UTF-16 LE/BE, including pure Korean/CJK text, while preserving strict UTF-8/CP949/EUC-KR precedence.
-- Bound large generic-document candidate memory, add cancellation checks, and extend the allocation-free bit-parallel Indel path through 128 characters.
-- Separate comparison/export cancellation state and invalidate stale results immediately when an input document changes.
-- Add a repository regression suite covering 23 engine/export safety cases, including OpenXML validation, XLSX XML safety, Word table revisions, numbering restart/override, legal hierarchy, encoding, SDT/hidden/textbox behavior, and lineage regressions.
+- Reject all existing Word Track Changes classes before export, including property-format revisions such as `pPrChange`, `rPrChange`, `tblPrChange`, `trPrChange`, `tcPrChange`, `sectPrChange`, and `numberingChange`.
+- Read table rows/cells through transparent `w:sdt` and `w:customXml` wrappers so content-controlled table text is no longer omitted from comparison.
+- Preserve those SDT/customXml wrappers during in-place Word export and keep structural row/cell addressing valid through wrapped table structures.
+- Track automatic-numbering-only changes with valid Word `w:numberingChange` metadata while keeping B's numbering/formatting as the final state.
+- Tighten Roman article/item recognition to canonical Roman numerals and reject common Roman-letter word collisions such as `CIVIL`/`MIX`.
+- Fix SpreadsheetML rich-text property serialization order (`strike -> color -> underline`) for stricter XLSX consumers.
+- Replace the large Word paragraph-gap positional fallback with Hirschberg linear-space alignment, preserving similarity-based pairing without quadratic traceback memory.
+- Expand the repository regression suite to 30 cases, including property revisions, wrapped table SDT/customXml, numbering-only Word changes, Roman false positives, XLSX rich-text order, large-gap alignment, and in-place SDT export.
 
 ## Features
 
