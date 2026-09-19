@@ -12,7 +12,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         """^[\s\p{Cf}]*제\s*(\d+)\s*조(?:\s*의\s*(\d+))?\s*(?:\(([^\n)]{1,120})\))?\s*(.*)$""",
         RegexOptions.Compiled);
     private static readonly Regex EnglishArticle = new(
-        """^[\s\p{Cf}]*(?:Article|Section)\s+(\d+(?:[-.]\d+)*)\s*(?:[.:-])?\s*(.*)$""",
+        """^[\s\p{Cf}]*(?:Article|Section)\s+((?:\d+(?:[-.]\d+)*)|(?:[IVXLCDM]+))\s*(?:[.:-])?\s*(.*)$""",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex SectionHeading = new(
         """^[\s\p{Cf}]*(?:제\s*\d+\s*(?:장|절|관)\b.*|(?:Chapter|Part)\s+\d+(?:[-.]\d+)*\b.*)$""",
@@ -24,10 +24,10 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         """^[\s\p{Cf}]*(?:[•●▪◦·*]+\s*)?제\s*(?<num>\d+)\s*(?<level>장|절|관)\s*(?:\((?<p>[^)\n]*)\)|\[(?<b>[^]\n]*)\]|(?<title>.*?))\s*$""",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex ExplicitItem = new(
-        """^[ \t\p{Cf}]*(?<label>(?:[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|\(\d+\)|\d+[.)]|[가-하A-Za-z][.)]))(?<ws>[ \t]+)""",
+        """^[ \t\p{Cf}]*(?<label>(?:[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|\(\d+\)|\([A-Za-z]\)|\([IVXLCDMivxlcdm]{2,}\)|\d+[.)]|[가-하A-Za-z][.)]))(?<ws>[ \t]+)""",
         RegexOptions.Compiled | RegexOptions.Multiline | RegexOptions.CultureInvariant);
     private static readonly Regex StrongInlineEnglishArticle = new(
-        """(?<![A-Za-z0-9])(?:Article|Section)\s+\d+(?:[-.]\d+)*\s*(?:[.:-])?\s*\([^\n)]{1,180}[)}]""",
+        """(?<![A-Za-z0-9])(?:Article|Section)\s+(?:(?:\d+(?:[-.]\d+)*)|(?:[IVXLCDM]+))\s*(?:[.:-])?\s*\([^\n)]{1,180}[)}]""",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex StrongInlineKoreanArticle = new(
         """제\s*\d+\s*조(?:\s*의\s*\d+)?\s*\([^\n)]{1,180}[)}]""",
@@ -36,7 +36,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         "^\\s*[\\x22“‘]([^\\x22”’]{1,96})[\\x22”’]",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex EmbeddedExplicitItemCandidate = new(
-        @"(?m)(?<gap>^[ \t]*|[ \t]+)(?<label>(?:[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|\(\d+\)|\d+[.)]|[가-하A-Za-z][.)]))(?=[ \t]+)",
+        @"(?m)(?<gap>^[ \t]*|[ \t]+)(?<label>(?:[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|\(\d+\)|\([A-Za-z]\)|\([IVXLCDMivxlcdm]{2,}\)|\d+[.)]|[가-하A-Za-z][.)]))(?=[ \t]+)",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex KoreanLexToken = new(
         @"[가-힣A-Za-z]+|\d+(?:,\d{3})*(?:\.\d+)?%?", RegexOptions.Compiled | RegexOptions.CultureInvariant);
@@ -253,19 +253,21 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return true;
     }
 
+    private static int RomanValue(string value)
+    {
+        var s = (value ?? string.Empty).Trim().ToUpperInvariant();
+        if (s.Length == 0 || s.Any(ch => !"IVXLCDM".Contains(ch))) return 0;
+        static int V(char ch) => ch switch { 'I' => 1, 'V' => 5, 'X' => 10, 'L' => 50, 'C' => 100, 'D' => 500, 'M' => 1000, _ => 0 };
+        var total = 0; var prev = 0;
+        foreach (var ch in s.Reverse()) { var v = V(ch); if (v < prev) total -= v; else { total += v; prev = v; } }
+        return total;
+    }
+
     private static double? ArticleNumberValue(string value)
     {
         var s = (value ?? string.Empty).Trim();
         if (Regex.IsMatch(s, "^[IVXLCDM]+$", RegexOptions.IgnoreCase))
-        {
-            var vals = new Dictionary<char, int> { ['I']=1,['V']=5,['X']=10,['L']=50,['C']=100,['D']=500,['M']=1000 };
-            var total = 0; var prev = 0;
-            foreach (var ch in s.ToUpperInvariant().Reverse())
-            {
-                var v = vals[ch]; if (v < prev) total -= v; else { total += v; prev = v; }
-            }
-            return total;
-        }
+            return RomanValue(s);
         var m = Regex.Match(s, @"^(\d+)(?:[.-](\d+))?");
         if (!m.Success) return null;
         var a = double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);
@@ -556,7 +558,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
 
         // Paragraph/general fallback is intentionally separate, mirroring Python's fallback.
         if (articleA.Count == 0 || articleB.Count == 0)
-            return MatchGenericUnits(a, b);
+            return MatchGenericUnits(a, b, token);
 
         var n = articleA.Count;
         var m = articleB.Count;
@@ -618,6 +620,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         var residual = new List<(double Rank, int A, int B, double Sim)>();
         foreach (var bi in articleA)
         {
+            token.ThrowIfCancellationRequested();
             if (mapping.ContainsKey(bi)) continue;
             foreach (var oj in articleB)
             {
@@ -667,21 +670,79 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return mapping.Values.OrderBy(z => z.Base).ToList();
     }
 
-    private static List<UnitMatch> MatchGenericUnits(IReadOnlyList<NativeUnit> a, IReadOnlyList<NativeUnit> b)
+    private static List<UnitMatch> MatchGenericUnits(IReadOnlyList<NativeUnit> a, IReadOnlyList<NativeUnit> b, CancellationToken token)
     {
-        var candidates = new List<(double Rank, int A, int B, double Score)>();
-        for (var i = 0; i < a.Count; i++)
-        for (var j = 0; j < b.Count; j++)
+        double Candidate(int i, int j, out double score)
         {
-            var score = Similarity(a[i].Body, b[j].Body);
-            if (score < .48) continue;
+            score = Similarity(a[i].Body, b[j].Body);
+            if (score < .48) return double.NegativeInfinity;
             var proximity = 1.0 - Math.Min(Math.Abs(i - j) / (double)Math.Max(1, Math.Max(a.Count, b.Count)), 1.0);
-            candidates.Add((score + proximity * .015, i, j, score));
+            return score + proximity * .015;
         }
-        var usedA = new HashSet<int>(); var usedB = new HashSet<int>(); var result = new List<UnitMatch>();
-        foreach (var c in candidates.OrderByDescending(z => z.Rank))
-            if (usedA.Add(c.A) && usedB.Add(c.B)) result.Add(new UnitMatch(c.A, c.B, c.Score, "same"));
-        return result.OrderBy(z => z.Base).ToList();
+
+        // Keep the historical full-sort path for ordinary documents.  On very large generic
+        // documents, storing every >=.48 pair can itself become the OOM source.  The heap path
+        // below is equivalent to the same descending greedy rule: the global best remaining pair
+        // is always the maximum of each unmatched A row's current best unused-B candidate.
+        if ((long)a.Count * b.Count <= 1_000_000L)
+        {
+            var candidates = new List<(double Rank, int A, int B, double Score)>();
+            for (var i = 0; i < a.Count; i++)
+            {
+                if ((i & 7) == 0) token.ThrowIfCancellationRequested();
+                for (var j = 0; j < b.Count; j++)
+                {
+                    var rank = Candidate(i, j, out var score);
+                    if (!double.IsNegativeInfinity(rank)) candidates.Add((rank, i, j, score));
+                }
+            }
+            token.ThrowIfCancellationRequested();
+            var usedA = new HashSet<int>(); var usedB = new HashSet<int>(); var result = new List<UnitMatch>();
+            foreach (var c in candidates.OrderByDescending(z => z.Rank))
+                if (usedA.Add(c.A) && usedB.Add(c.B)) result.Add(new UnitMatch(c.A, c.B, c.Score, "same"));
+            return result.OrderBy(z => z.Base).ToList();
+        }
+
+        var usedLargeA = new bool[a.Count];
+        var usedLargeB = new bool[b.Count];
+        var queue = new PriorityQueue<(int A, int B, double Rank, double Score), (double NegRank, int A, int B)>();
+
+        bool TryBestForA(int ai, out (int A, int B, double Rank, double Score) best)
+        {
+            best = default;
+            var found = false; var bestRank = double.NegativeInfinity; var bestJ = -1; var bestScore = 0.0;
+            for (var j = 0; j < b.Count; j++)
+            {
+                if (usedLargeB[j]) continue;
+                if ((j & 255) == 0) token.ThrowIfCancellationRequested();
+                var rank = Candidate(ai, j, out var score);
+                if (rank > bestRank || (rank == bestRank && j < bestJ))
+                { bestRank = rank; bestJ = j; bestScore = score; found = !double.IsNegativeInfinity(rank); }
+            }
+            if (!found) return false;
+            best = (ai, bestJ, bestRank, bestScore); return true;
+        }
+
+        for (var i = 0; i < a.Count; i++)
+        {
+            if ((i & 7) == 0) token.ThrowIfCancellationRequested();
+            if (TryBestForA(i, out var best)) queue.Enqueue(best, (-best.Rank, best.A, best.B));
+        }
+
+        var largeResult = new List<UnitMatch>();
+        while (queue.TryDequeue(out var c, out _))
+        {
+            token.ThrowIfCancellationRequested();
+            if (usedLargeA[c.A]) continue;
+            if (usedLargeB[c.B])
+            {
+                if (TryBestForA(c.A, out var next)) queue.Enqueue(next, (-next.Rank, next.A, next.B));
+                continue;
+            }
+            usedLargeA[c.A] = true; usedLargeB[c.B] = true;
+            largeResult.Add(new UnitMatch(c.A, c.B, c.Score, "same"));
+        }
+        return largeResult.OrderBy(z => z.Base).ToList();
     }
 
     private static bool IsLegalArticle(NativeUnit u) =>
@@ -922,7 +983,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             var ap = oldParts[m.Old]; var bp = newParts[m.New];
             var parentMoved = !ParentsEquivalent(m.Old, m.New, oldNodes, newNodes, matched);
             var labelsDiffer = IsStructuralLabel(ap.Label) && IsStructuralLabel(bp.Label) && ap.Label != bp.Label;
-            var sameOrdinal = labelsDiffer && PartOrdinal(ap.Label) is int ao && PartOrdinal(bp.Label) is int bo && ao == bo;
+            var sameOrdinal = labelsDiffer && PartOrdinalAt(oldParts, m.Old) is int ao && PartOrdinalAt(newParts, m.New) is int bo && ao == bo;
             var levelChanged = oldNodes[m.Old].Level != newNodes[m.New].Level;
             var notationChanged = labelsDiffer && sameOrdinal;
             var labelMoved = labelsDiffer && !sameOrdinal;
@@ -1287,7 +1348,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         // only for a consecutive enumerator sequence (normally 1,2,3...) and therefore keeps
         // prose references such as "Article 5 (1)" intact.
         var chars = text.ToCharArray();
-        var candidates = new List<(int Boundary, int GapLength, int LineStart, bool AtLineStart, string Family, int Ordinal)>();
+        var candidates = new List<(int Boundary, int GapLength, int LineStart, bool AtLineStart, string Label, string Family, int Ordinal)>();
 
         static (string Family, int Ordinal)? EnumeratorKey(string label)
         {
@@ -1300,6 +1361,14 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             if (label.Length >= 3 && label[0] == '(' && label[^1] == ')' &&
                 int.TryParse(label[1..^1], NumberStyles.None, CultureInfo.InvariantCulture, out var pn))
                 return ("paren-number", pn);
+            if (label.Length == 3 && label[0] == '(' && char.IsAsciiLetter(label[1]) && label[2] == ')')
+                return ("paren-alpha", char.ToUpperInvariant(label[1]) - 'A' + 1);
+            if (label.Length >= 4 && label[0] == '(' && label[^1] == ')' &&
+                label[1..^1].All(ch => "IVXLCDMivxlcdm".Contains(ch)))
+            {
+                var rv = RomanValue(label[1..^1]);
+                if (rv > 0) return ("paren-roman", rv);
+            }
             if (char.IsDigit(label[0]))
             {
                 var digits = new string(label.TakeWhile(char.IsDigit).ToArray());
@@ -1326,7 +1395,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             var lineStart = text.LastIndexOf('\n', Math.Max(0, m.Index - 1)) + 1;
             var atLineStart = gap.Index == lineStart;
             var boundary = atLineStart || gap.Length == 0 ? -1 : gap.Index + gap.Length - 1;
-            candidates.Add((boundary, gap.Length, lineStart, atLineStart, key.Value.Family, key.Value.Ordinal));
+            candidates.Add((boundary, gap.Length, lineStart, atLineStart, label, key.Value.Family, key.Value.Ordinal));
 
             // Preserve the mature Python behavior: 2+ spaces are already a strong structural boundary.
             if (!atLineStart && gap.Length >= 2 && boundary >= 0)
@@ -1336,6 +1405,23 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         foreach (var lineGroup in candidates.GroupBy(x => x.LineStart))
         {
             var items = lineGroup.OrderBy(x => x.Boundary < 0 ? x.LineStart : x.Boundary).ToList();
+            // A single (i)/(v)/(x) is alphabetic by default.  Promote it to Roman only when an
+            // adjacent multi-character Roman marker proves a Roman sequence, e.g. (i),(ii),(iii).
+            for (var x = 0; x < items.Count; x++)
+            {
+                var item = items[x];
+                if (item.Family != "paren-alpha" || item.Label.Length != 3 ||
+                    !"ivxIVX".Contains(item.Label[1])) continue;
+                var rv = RomanValue(item.Label[1].ToString());
+                bool RomanNeighbor(int y)
+                {
+                    if (y < 0 || y >= items.Count) return false;
+                    var other = items[y];
+                    return other.Family == "paren-roman" && Math.Abs(other.Ordinal - rv) == 1;
+                }
+                if (RomanNeighbor(x - 1) || RomanNeighbor(x + 1))
+                    items[x] = item with { Family = "paren-roman", Ordinal = rv };
+            }
             for (var i = 0; i < items.Count;)
             {
                 var j = i + 1;
@@ -1494,10 +1580,10 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             // Treat the sibling sequence as stronger structure evidence than the glyph family.
             foreach (var i in Enumerable.Range(0, a.Count).Where(i => !usedA.Contains(i) && nodesA[i].Level == level && IsStructuralLabel(a[i].Label)))
             {
-                var ordinal = PartOrdinal(a[i].Label); if (ordinal is null) continue;
+                var ordinal = PartOrdinalAt(a, i); if (ordinal is null) continue;
                 var candidates = Enumerable.Range(0, b.Count)
                     .Where(j => !usedB.Contains(j) && nodesB[j].Level == level && IsStructuralLabel(b[j].Label) &&
-                                PartOrdinal(b[j].Label) == ordinal && a[i].Label != b[j].Label &&
+                                PartOrdinalAt(b, j) == ordinal && a[i].Label != b[j].Label &&
                                 ParentsEquivalent(i, j, nodesA, nodesB, result))
                     .Select(j => (J: j, S: PartSimilarity(a[i], b[j]), C: Containment(a[i].Core, b[j].Core),
                                   Shape: OrdinalSiblingShapeEquivalent(i, j, a, b, nodesA, nodesB),
@@ -1532,7 +1618,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         {
             if (Math.Abs(nodesA[i].Level - nodesB[j].Level) != 1) continue;
             if (!CollapsedLevelParentsEquivalent(i, j, nodesA, nodesB, result)) continue;
-            var oa = PartOrdinal(a[i].Label); var ob = PartOrdinal(b[j].Label);
+            var oa = PartOrdinalAt(a, i); var ob = PartOrdinalAt(b, j);
             var score = PartSimilarity(a[i], b[j]); var contain = Containment(a[i].Core, b[j].Core);
             var sameOrdinal = oa.HasValue && ob.HasValue && oa.Value == ob.Value;
             var edge = HasStableEdgeContext(a[i].Core, b[j].Core);
@@ -1573,6 +1659,8 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         if(label=="본문"||label.Length==0) return "body";
         if(label.Length==1&&"①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳".Contains(label[0])) return "circled";
         if(Regex.IsMatch(label,@"^\(\d+\)$")) return "paren-number";
+        if(Regex.IsMatch(label,@"^\([A-Za-z]\)$")) return "paren-alpha";
+        if(Regex.IsMatch(label,@"^\([IVXLCDMivxlcdm]{2,}\)$")) return "paren-roman";
         if(Regex.IsMatch(label,@"^\d+[.)]$")) return "number";
         if(Regex.IsMatch(label,@"^[A-Za-z][.)]$")) return "alpha";
         if(Regex.IsMatch(label,@"^[가-하][.)]$")) return "korean";
@@ -1591,6 +1679,10 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         if (m.Success && int.TryParse(m.Groups[1].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var pn)) return pn;
         m = Regex.Match(label, @"^(\d+)[.)]$");
         if (m.Success && int.TryParse(m.Groups[1].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var n)) return n;
+        m = Regex.Match(label, @"^\(([A-Za-z])\)$");
+        if (m.Success) return char.ToUpperInvariant(m.Groups[1].Value[0]) - 'A' + 1;
+        m = Regex.Match(label, @"^\(([IVXLCDMivxlcdm]{2,})\)$");
+        if (m.Success) return RomanValue(m.Groups[1].Value);
         if (Regex.IsMatch(label, @"^[A-Za-z][.)]$")) return char.ToUpperInvariant(label[0]) - 'A' + 1;
         if (Regex.IsMatch(label, @"^[가-하][.)]$"))
         {
@@ -1601,20 +1693,66 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return null;
     }
 
+    private static bool IsSingleParenRomanCandidate(string label) =>
+        Regex.IsMatch(label ?? string.Empty, @"^\([ivxIVX]\)$");
+
+    private static bool IsMultiParenRoman(string label) =>
+        Regex.IsMatch(label ?? string.Empty, @"^\([IVXLCDMivxlcdm]{2,}\)$");
+
+    private static bool IsContextualParenRoman(IReadOnlyList<NativePart> parts, int index)
+    {
+        if (index < 0 || index >= parts.Count || !IsSingleParenRomanCandidate(parts[index].Label)) return false;
+        var value = RomanValue(parts[index].Label[1..^1]);
+        bool Neighbor(int j)
+        {
+            if (j < 0 || j >= parts.Count || !IsMultiParenRoman(parts[j].Label)) return false;
+            var other = RomanValue(parts[j].Label[1..^1]);
+            return Math.Abs(other - value) == 1;
+        }
+        return Neighbor(index - 1) || Neighbor(index + 1);
+    }
+
+    private static string PartFamilyAt(IReadOnlyList<NativePart> parts, int index)
+    {
+        var family = PartFamily(parts[index].Label);
+        return family == "paren-alpha" && IsContextualParenRoman(parts, index) ? "paren-roman" : family;
+    }
+
+    private static int? PartOrdinalAt(IReadOnlyList<NativePart> parts, int index)
+    {
+        if (index < 0 || index >= parts.Count) return null;
+        if (PartFamilyAt(parts, index) == "paren-roman")
+            return RomanValue(parts[index].Label[1..^1]);
+        return PartOrdinal(parts[index].Label);
+    }
+
     private static List<PartNode> BuildPartHierarchy(IReadOnlyList<NativePart> parts)
     {
-        var nodes=new List<PartNode>(parts.Count); var currentL1=-1; var currentL2=-1;
+        var nodes=new List<PartNode>(parts.Count); var currentL1=-1; var currentL2=-1; var currentL3=-1;
         for(var i=0;i<parts.Count;i++)
         {
-            var family=PartFamily(parts[i].Label); if(family=="body"){nodes.Add(new PartNode(i,0,-1,family));continue;}
+            var family=PartFamilyAt(parts, i); if(family=="body"){nodes.Add(new PartNode(i,0,-1,family));continue;}
             var level=1; var parent=-1;
-            if(family=="circled"){currentL1=i;currentL2=-1;}
+            if(family=="circled"){currentL1=i;currentL2=-1;currentL3=-1;}
             else if(family=="number")
-            { if(currentL1>=0&&nodes[currentL1].Family=="circled"){level=2;parent=currentL1;currentL2=i;} else {currentL1=i;currentL2=-1;} }
+            { if(currentL1>=0&&nodes[currentL1].Family=="circled"){level=2;parent=currentL1;currentL2=i;currentL3=-1;} else {currentL1=i;currentL2=-1;currentL3=-1;} }
             else if(family=="paren-number")
-            { if(currentL1>=0&&nodes[currentL1].Family is "number" or "circled"){level=2;parent=currentL1;currentL2=i;} else {currentL1=i;currentL2=-1;} }
-            else if(family is "alpha" or "korean")
-            { if(currentL2>=0&&nodes[currentL2].Family is "number" or "paren-number"){level=3;parent=currentL2;} else if(currentL1>=0&&nodes[currentL1].Family!=family){level=2;parent=currentL1;} else {currentL1=i;currentL2=-1;} }
+            { if(currentL1>=0&&nodes[currentL1].Family is "number" or "circled"){level=2;parent=currentL1;currentL2=i;currentL3=-1;} else {currentL1=i;currentL2=-1;currentL3=-1;} }
+            else if(family is "alpha" or "korean" or "paren-alpha")
+            {
+                if(currentL2>=0&&nodes[currentL2].Family is "number" or "paren-number")
+                { level=3;parent=currentL2;currentL3=i; }
+                else if(currentL1>=0&&nodes[currentL1].Family!=family)
+                { level=2;parent=currentL1;currentL2=i;currentL3=-1; }
+                else {currentL1=i;currentL2=-1;currentL3=-1;}
+            }
+            else if(family=="paren-roman")
+            {
+                if(currentL3>=0){level=4;parent=currentL3;}
+                else if(currentL2>=0){level=3;parent=currentL2;}
+                else if(currentL1>=0){level=2;parent=currentL1;}
+                else {currentL1=i;currentL2=-1;currentL3=-1;}
+            }
             else if(currentL1>=0){level=2;parent=currentL1;} else currentL1=i;
             nodes.Add(new PartNode(i,level,parent,family));
         }
@@ -1650,9 +1788,9 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     {
         var xa = na[ai]; var xb = nb[bj];
         var la = na.Where(x => x.Level == xa.Level && x.Parent == xa.Parent && IsStructuralLabel(a[x.Index].Label))
-            .Select(x => PartOrdinal(a[x.Index].Label)).ToList();
+            .Select(x => PartOrdinalAt(a, x.Index)).ToList();
         var lb = nb.Where(x => x.Level == xb.Level && x.Parent == xb.Parent && IsStructuralLabel(b[x.Index].Label))
-            .Select(x => PartOrdinal(b[x.Index].Label)).ToList();
+            .Select(x => PartOrdinalAt(b, x.Index)).ToList();
         return la.Count >= 2 && la.Count == lb.Count && la.All(x => x.HasValue) && lb.All(x => x.HasValue) &&
                la.Select(x => x!.Value).SequenceEqual(lb.Select(x => x!.Value));
     }
@@ -2148,6 +2286,27 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             }
             var lcs64 = BitOperations.PopCount(row64);
             return 2.0 * lcs64 / Math.Max(1, a.Length + b.Length);
+        }
+
+        if (b.Length <= 128)
+        {
+            var masks128 = new Dictionary<char, UInt128>();
+            for (var j = 0; j < b.Length; j++)
+            {
+                var bit = (UInt128)1 << j;
+                masks128[b[j]] = masks128.TryGetValue(b[j], out var cur) ? cur | bit : bit;
+            }
+            var row128 = (UInt128)0;
+            var all128 = b.Length == 128 ? UInt128.MaxValue : ((UInt128)1 << b.Length) - 1;
+            foreach (var ch in a)
+            {
+                var m = masks128.TryGetValue(ch, out var mask) ? mask : (UInt128)0;
+                var x = row128 | m;
+                var y = (row128 << 1) | 1;
+                row128 = x & ~(x - y) & all128;
+            }
+            var lcs128 = BitOperations.PopCount((ulong)row128) + BitOperations.PopCount((ulong)(row128 >> 64));
+            return 2.0 * lcs128 / Math.Max(1, a.Length + b.Length);
         }
 
         var masks = new Dictionary<char, BigInteger>();

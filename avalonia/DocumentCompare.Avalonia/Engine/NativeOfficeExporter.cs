@@ -159,7 +159,14 @@ internal static class NativeOfficeExporter
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath))!);
         var revisedIsDocx = Path.GetExtension(revisedPath).Equals(".docx", StringComparison.OrdinalIgnoreCase);
         if (revisedIsDocx)
+        {
+            if (string.Equals(Path.GetFullPath(revisedPath), Path.GetFullPath(outputPath), StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("최종 문서(B) 원본 파일 자체를 변경추적 출력으로 덮어쓸 수 없습니다. 다른 파일명으로 저장하세요.");
+            EnsureNoExistingTrackedRevisions(revisedPath);
+            if (Path.GetExtension(originalPath).Equals(".docx", StringComparison.OrdinalIgnoreCase))
+                EnsureAncillaryWordPartsEquivalent(originalPath, revisedPath);
             File.Copy(revisedPath, outputPath, overwrite: true);
+        }
         else
             CreateMinimalDocx(outputPath);
 
@@ -189,10 +196,10 @@ internal static class NativeOfficeExporter
         if (Path.GetExtension(originalPath).Equals(".docx", StringComparison.OrdinalIgnoreCase))
             originalParagraphs = ReadDocxParagraphSourcesFromPath(originalPath, w) ??
                                  oldText.Split('\n').Select(x => x.Trim()).Where(x => x.Length > 0)
-                                     .Select(x => new ParagraphSource(x, "body")).ToList();
+                                     .Select(x => new ParagraphSource(x, "body", new ParagraphAddress(-1, -1, -1, -1, -1))).ToList();
         else
             originalParagraphs = oldText.Split('\n').Select(x => x.Trim()).Where(x => x.Length > 0)
-                .Select(x => new ParagraphSource(x, "body")).ToList();
+                .Select(x => new ParagraphSource(x, "body", new ParagraphAddress(-1, -1, -1, -1, -1))).ToList();
 
         // Reuse the comparison result as high-confidence paragraph anchors.  This keeps Word
         // export on the same article/general-unit lineage as the on-screen comparison.  Exact
@@ -201,7 +208,41 @@ internal static class NativeOfficeExporter
             originalDocumentIndex, revisedDocumentIndex);
         var ops = AlignParagraphs(originalParagraphs, revisedParagraphs, preferred, token);
 
+        var matchedOld = ops.Where(x => x.Old >= 0 && x.New >= 0).Select(x => x.Old).ToHashSet();
+        var matchedNew = ops.Where(x => x.Old >= 0 && x.New >= 0).Select(x => x.New).ToHashSet();
+        var fullyInsertedRows = revisedParagraphs.Select((entry, index) => (entry, index))
+            .Where(x => x.entry.Row is not null)
+            .GroupBy(x => x.entry.Row!)
+            .Where(g => g.All(x => !matchedNew.Contains(x.index)))
+            .Select(g => g.Key).ToHashSet();
+        var fullyDeletedRows = originalParagraphs.Select((source, index) => (source, index))
+            .Where(x => x.source.Address.Table >= 0 && x.source.Address.Row >= 0)
+            .GroupBy(x => (x.source.Address.Table, x.source.Address.Row))
+            .Where(g => g.All(x => !matchedOld.Contains(x.index)))
+            .Select(g => g.Key).ToHashSet();
+        // Never trust raw table/row ordinals across A and B: deleting an earlier table shifts every
+        // later table index.  Map structures only through paragraphs that the comparison aligned.
+        var tableMap = BuildMatchedTableMap(originalParagraphs, revisedParagraphs, ops);
+        var rowMap = BuildMatchedRowMap(originalParagraphs, revisedParagraphs, ops);
+        var cellMap = BuildMatchedCellMap(originalParagraphs, revisedParagraphs, ops);
+        var fullyInsertedCells = revisedParagraphs.Select((entry, index) => (entry, index))
+            .Where(x => x.entry.Cell is not null && x.entry.Row is not null && !fullyInsertedRows.Contains(x.entry.Row))
+            .GroupBy(x => x.entry.Cell!)
+            .Where(g => g.All(x => !matchedNew.Contains(x.index)))
+            .Select(g => g.Key).ToHashSet();
+        var fullyDeletedCells = originalParagraphs.Select((source, index) => (source, index))
+            .Where(x => x.source.Address.Table >= 0 && x.source.Address.Row >= 0 && x.source.Address.Cell >= 0 &&
+                        !fullyDeletedRows.Contains((x.source.Address.Table, x.source.Address.Row)))
+            .GroupBy(x => (x.source.Address.Table, x.source.Address.Row, x.source.Address.Cell))
+            .Where(g => g.All(x => !matchedOld.Contains(x.index)))
+            .Select(g => g.Key).ToHashSet();
+
         var revisionId = NextRevisionId(document, w);
+        foreach (var row in fullyInsertedRows)
+            MarkTableRowRevision(row, inserted: true, author, ref revisionId, w);
+        foreach (var cell in fullyInsertedCells)
+            MarkTableCellRevision(cell, inserted: true, author, ref revisionId, w);
+
         var bCursor = 0;
         for (var k = 0; k < ops.Count;)
         {
@@ -217,7 +258,10 @@ internal static class NativeOfficeExporter
             }
             if (op.New >= 0)
             {
-                MarkWholeParagraphInserted(revisedParagraphs[op.New].Paragraph, author, ref revisionId, w);
+                var entry = revisedParagraphs[op.New];
+                if ((entry.Row is null || !fullyInsertedRows.Contains(entry.Row)) &&
+                    (entry.Cell is null || !fullyInsertedCells.Contains(entry.Cell)))
+                    MarkWholeParagraphInserted(entry.Paragraph, author, ref revisionId, w);
                 bCursor = Math.Max(bCursor, op.New + 1);
                 k++;
                 continue;
@@ -229,7 +273,8 @@ internal static class NativeOfficeExporter
                 deleted.Add(originalParagraphs[ops[k].Old]);
                 k++;
             }
-            InsertDeletedParagraphRange(body, revisedParagraphs, bCursor, deleted, author, ref revisionId, w);
+            InsertDeletedParagraphRange(body, revisedParagraphs, bCursor, deleted, fullyDeletedRows, fullyDeletedCells,
+                tableMap, rowMap, cellMap, author, ref revisionId, w);
         }
 
         ReplaceEntry(zip, "word/document.xml", document.ToString(SaveOptions.DisableFormatting));
@@ -261,9 +306,11 @@ internal static class NativeOfficeExporter
         if (section is not null) body.Add(section);
     }
 
-    private sealed record RunMap(XElement Run, int Start, int End, string Text, bool Simple);
-    private sealed record ParagraphSource(string Text, string ContainerKind);
-    private sealed record ParagraphEntry(XElement Paragraph, string Text, string ContainerKind, XElement TopLevelBlock);
+    private sealed record RunMap(XElement Run, int Start, int End, string Text);
+    private sealed record ParagraphAddress(int TopBlock, int Table, int Row, int Cell, int Paragraph);
+    private sealed record ParagraphSource(string Text, string ContainerKind, ParagraphAddress Address);
+    private sealed record ParagraphEntry(XElement Paragraph, string Text, string ContainerKind, XElement TopLevelBlock,
+        ParagraphAddress Address, XElement? Table, XElement? Row, XElement? Cell);
     private sealed record ParagraphOp(int Old, int New);
 
     private static string MemberAnchorText(MemberVm member)
@@ -424,6 +471,80 @@ internal static class NativeOfficeExporter
         return result;
     }
 
+    private static Dictionary<int, int> BuildMatchedTableMap(IReadOnlyList<ParagraphSource> oldParagraphs,
+        IReadOnlyList<ParagraphEntry> newParagraphs, IReadOnlyList<ParagraphOp> ops)
+    {
+        var votes = new Dictionary<(int OldTable, int NewTable), int>();
+        foreach (var op in ops.Where(x => x.Old >= 0 && x.New >= 0))
+        {
+            var oldTable = oldParagraphs[op.Old].Address.Table;
+            var newTable = newParagraphs[op.New].Address.Table;
+            if (oldTable < 0 || newTable < 0) continue;
+            var key = (oldTable, newTable);
+            votes[key] = votes.TryGetValue(key, out var count) ? count + 1 : 1;
+        }
+        var result = new Dictionary<int, int>();
+        var usedNew = new HashSet<int>();
+        foreach (var candidate in votes.OrderByDescending(x => x.Value)
+                     .ThenBy(x => x.Key.OldTable).ThenBy(x => x.Key.NewTable))
+        {
+            if (result.ContainsKey(candidate.Key.OldTable) || usedNew.Contains(candidate.Key.NewTable)) continue;
+            result[candidate.Key.OldTable] = candidate.Key.NewTable;
+            usedNew.Add(candidate.Key.NewTable);
+        }
+        return result;
+    }
+
+    private static Dictionary<(int Table, int Row), (int Table, int Row)> BuildMatchedRowMap(
+        IReadOnlyList<ParagraphSource> oldParagraphs, IReadOnlyList<ParagraphEntry> newParagraphs,
+        IReadOnlyList<ParagraphOp> ops)
+    {
+        var votes = new Dictionary<((int Table, int Row) Old, (int Table, int Row) New), int>();
+        foreach (var op in ops.Where(x => x.Old >= 0 && x.New >= 0))
+        {
+            var oa = oldParagraphs[op.Old].Address;
+            var nb = newParagraphs[op.New].Address;
+            if (oa.Table < 0 || oa.Row < 0 || nb.Table < 0 || nb.Row < 0) continue;
+            var key = ((oa.Table, oa.Row), (nb.Table, nb.Row));
+            votes[key] = votes.TryGetValue(key, out var count) ? count + 1 : 1;
+        }
+        var result = new Dictionary<(int Table, int Row), (int Table, int Row)>();
+        var usedNew = new HashSet<(int Table, int Row)>();
+        foreach (var candidate in votes.OrderByDescending(x => x.Value)
+                     .ThenBy(x => x.Key.Old.Table).ThenBy(x => x.Key.Old.Row))
+        {
+            if (result.ContainsKey(candidate.Key.Old) || usedNew.Contains(candidate.Key.New)) continue;
+            result[candidate.Key.Old] = candidate.Key.New;
+            usedNew.Add(candidate.Key.New);
+        }
+        return result;
+    }
+
+    private static Dictionary<(int Table, int Row, int Cell), (int Table, int Row, int Cell)> BuildMatchedCellMap(
+        IReadOnlyList<ParagraphSource> oldParagraphs, IReadOnlyList<ParagraphEntry> newParagraphs,
+        IReadOnlyList<ParagraphOp> ops)
+    {
+        var votes = new Dictionary<((int Table, int Row, int Cell) Old, (int Table, int Row, int Cell) New), int>();
+        foreach (var op in ops.Where(x => x.Old >= 0 && x.New >= 0))
+        {
+            var oa = oldParagraphs[op.Old].Address;
+            var nb = newParagraphs[op.New].Address;
+            if (oa.Table < 0 || oa.Row < 0 || oa.Cell < 0 || nb.Table < 0 || nb.Row < 0 || nb.Cell < 0) continue;
+            var key = ((oa.Table, oa.Row, oa.Cell), (nb.Table, nb.Row, nb.Cell));
+            votes[key] = votes.TryGetValue(key, out var count) ? count + 1 : 1;
+        }
+        var result = new Dictionary<(int Table, int Row, int Cell), (int Table, int Row, int Cell)>();
+        var usedNew = new HashSet<(int Table, int Row, int Cell)>();
+        foreach (var candidate in votes.OrderByDescending(x => x.Value)
+                     .ThenBy(x => x.Key.Old.Table).ThenBy(x => x.Key.Old.Row).ThenBy(x => x.Key.Old.Cell))
+        {
+            if (result.ContainsKey(candidate.Key.Old) || usedNew.Contains(candidate.Key.New)) continue;
+            result[candidate.Key.Old] = candidate.Key.New;
+            usedNew.Add(candidate.Key.New);
+        }
+        return result;
+    }
+
     private static List<XElement> BodyParagraphs(XElement body, XNamespace w) =>
         body.Descendants(w + "p")
             .Where(p => !p.Ancestors(w + "del").Any() && !p.Ancestors(w + "moveFrom").Any())
@@ -432,6 +553,7 @@ internal static class NativeOfficeExporter
     private static string ParagraphContainerKind(XElement paragraph, XElement body, XNamespace w)
     {
         if (paragraph.Ancestors(w + "tc").Any()) return "table";
+        if (paragraph.Ancestors(w + "txbxContent").Any()) return "textbox";
         if (paragraph.Ancestors(w + "sdt").Any()) return "sdt";
         if (paragraph.Parent == body) return "body";
         return "other";
@@ -444,10 +566,39 @@ internal static class NativeOfficeExporter
         return current.Parent == body ? current : paragraph;
     }
 
+    private static int RefIndex(IEnumerable<XElement> items, XElement target)
+    {
+        var i = 0;
+        foreach (var item in items) { if (ReferenceEquals(item, target)) return i; i++; }
+        return -1;
+    }
+
+    private static ParagraphAddress AddressOf(XElement paragraph, XElement body, XNamespace w)
+    {
+        var top = TopLevelBodyBlock(paragraph, body);
+        var topIndex = RefIndex(body.Elements(), top);
+        var table = paragraph.Ancestors(w + "tbl").FirstOrDefault();
+        if (table is null) return new ParagraphAddress(topIndex, -1, -1, -1, -1);
+        var tableIndex = RefIndex(body.Descendants(w + "tbl"), table);
+        var row = paragraph.Ancestors(w + "tr").FirstOrDefault();
+        var cell = paragraph.Ancestors(w + "tc").FirstOrDefault();
+        var rowIndex = row is null ? -1 : RefIndex(table.Elements(w + "tr"), row);
+        var cellIndex = row is null || cell is null ? -1 : RefIndex(row.Elements(w + "tc"), cell);
+        var paragraphIndex = cell is null ? -1 : RefIndex(
+            cell.Descendants(w + "p").Where(p => ReferenceEquals(p.Ancestors(w + "tc").FirstOrDefault(), cell)), paragraph);
+        return new ParagraphAddress(topIndex, tableIndex, rowIndex, cellIndex, paragraphIndex);
+    }
+
     private static List<ParagraphEntry> BodyParagraphEntries(XElement body, XNamespace w) =>
         BodyParagraphs(body, w)
-            .Select(p => new ParagraphEntry(p, ParagraphVisibleText(p, w), ParagraphContainerKind(p, body, w), TopLevelBodyBlock(p, body)))
-            .ToList();
+            .Select(p =>
+            {
+                var table = p.Ancestors(w + "tbl").FirstOrDefault();
+                var row = p.Ancestors(w + "tr").FirstOrDefault();
+                var cell = p.Ancestors(w + "tc").FirstOrDefault();
+                return new ParagraphEntry(p, ParagraphVisibleText(p, w), ParagraphContainerKind(p, body, w),
+                    TopLevelBodyBlock(p, body), AddressOf(p, body, w), table, row, cell);
+            }).ToList();
 
     private static List<ParagraphSource>? ReadDocxParagraphSourcesFromPath(string path, XNamespace w)
     {
@@ -458,52 +609,25 @@ internal static class NativeOfficeExporter
         using var input = entry.Open(); var doc = XDocument.Load(input, LoadOptions.PreserveWhitespace);
         var body = doc.Root?.Element(w + "body"); if (body is null) return null;
         return BodyParagraphs(body, w)
-            .Select(p => new ParagraphSource(ParagraphVisibleText(p, w), ParagraphContainerKind(p, body, w)))
+            .Select(p => new ParagraphSource(ParagraphVisibleText(p, w), ParagraphContainerKind(p, body, w), AddressOf(p, body, w)))
             .Where(x => !string.IsNullOrWhiteSpace(x.Text))
             .ToList();
     }
 
-    private static string ParagraphVisibleText(XElement paragraph, XNamespace w)
-    {
-        var sb = new StringBuilder();
-        foreach (var run in paragraph.Descendants(w + "r"))
-        {
-            if (run.Ancestors().Any(a => a.Name == w + "del" || a.Name == w + "moveFrom")) continue;
-            foreach (var node in run.Elements())
-            {
-                if (node.Name == w + "t") sb.Append(node.Value);
-                else if (node.Name == w + "tab") sb.Append('\t');
-                else if (node.Name == w + "br" || node.Name == w + "cr") sb.Append('\n');
-            }
-        }
-        return sb.ToString();
-    }
+    private static string ParagraphVisibleText(XElement paragraph, XNamespace w) =>
+        NativeDocumentReader.ParagraphVisibleText(paragraph, w);
 
     private static List<RunMap> BuildRunMap(XElement paragraph, XNamespace w)
     {
         var result = new List<RunMap>(); var pos = 0;
-        foreach (var run in paragraph.Descendants(w + "r").ToList())
+        foreach (var run in NativeDocumentReader.VisibleRunsInParagraph(paragraph, w).ToList())
         {
-            if (run.Ancestors().Any(a => a.Name == w + "del" || a.Name == w + "moveFrom")) continue;
-            var text = RunVisibleText(run, w);
+            var text = NativeDocumentReader.RunVisibleText(run, w);
             if (text.Length == 0) continue;
-            var simple = run.Elements().All(x => x.Name == w + "rPr" || x.Name == w + "t");
-            result.Add(new RunMap(run, pos, pos + text.Length, text, simple));
+            result.Add(new RunMap(run, pos, pos + text.Length, text));
             pos += text.Length;
         }
         return result;
-    }
-
-    private static string RunVisibleText(XElement run, XNamespace w)
-    {
-        var sb = new StringBuilder();
-        foreach (var node in run.Descendants())
-        {
-            if (node.Name == w + "t") sb.Append(node.Value);
-            else if (node.Name == w + "tab") sb.Append('\t');
-            else if (node.Name == w + "br" || node.Name == w + "cr") sb.Append('\n');
-        }
-        return sb.ToString();
     }
 
     private static XElement RunFragment(XElement sourceRun, string text, XNamespace w, bool deleted = false)
@@ -707,61 +831,283 @@ internal static class NativeOfficeExporter
         MarkParagraphMarkRevision(paragraph, inserted: true, author, ref id, w);
     }
 
+    private static void MarkTableRowRevision(XElement row, bool inserted, string author, ref int id, XNamespace w)
+    {
+        var trPr = row.Element(w + "trPr");
+        if (trPr is null) { trPr = new XElement(w + "trPr"); row.AddFirst(trPr); }
+        var kind = inserted ? w + "ins" : w + "del";
+        if (trPr.Element(kind) is not null) return;
+        var revision = new XElement(kind, RevisionAttrs(w, id++, author));
+        var before = trPr.Element(w + "trPrChange");
+        if (before is null) trPr.Add(revision); else before.AddBeforeSelf(revision);
+    }
+
+    private static void MarkTableCellRevision(XElement cell, bool inserted, string author, ref int id, XNamespace w)
+    {
+        var tcPr = cell.Element(w + "tcPr");
+        if (tcPr is null) { tcPr = new XElement(w + "tcPr"); cell.AddFirst(tcPr); }
+        var kind = inserted ? w + "cellIns" : w + "cellDel";
+        if (tcPr.Element(kind) is not null) return;
+        var revision = new XElement(kind, RevisionAttrs(w, id++, author));
+        // cellIns/cellDel are late tcPr children; keep tcPrChange last when present.
+        var before = tcPr.Element(w + "tcPrChange");
+        if (before is null) tcPr.Add(revision); else before.AddBeforeSelf(revision);
+    }
+
+    private static void InsertDeletedTableCell(IReadOnlyList<ParagraphEntry> revisedParagraphs,
+        IReadOnlyList<ParagraphSource> sources,
+        IReadOnlyDictionary<(int Table, int Row), (int Table, int Row)> rowMap,
+        IReadOnlyDictionary<(int Table, int Row, int Cell), (int Table, int Row, int Cell)> cellMap,
+        string author, ref int id, XNamespace w)
+    {
+        if (sources.Count == 0) return;
+        var key = sources[0].Address;
+        if (!rowMap.TryGetValue((key.Table, key.Row), out var revisedRow)) return;
+        var row = revisedParagraphs.FirstOrDefault(x => x.Address.Table == revisedRow.Table &&
+            x.Address.Row == revisedRow.Row && x.Row is not null)?.Row;
+        if (row is null) return;
+        var cells = row.Elements(w + "tc").ToList();
+
+        XElement? before = null; XElement? after = null;
+        var mappedAfter = cellMap.Where(x => x.Key.Table == key.Table && x.Key.Row == key.Row && x.Key.Cell > key.Cell)
+            .OrderBy(x => x.Key.Cell).Select(x => x.Value).FirstOrDefault();
+        if (mappedAfter != default)
+            before = revisedParagraphs.FirstOrDefault(x => x.Address.Table == mappedAfter.Table && x.Address.Row == mappedAfter.Row &&
+                x.Address.Cell == mappedAfter.Cell && x.Cell is not null)?.Cell;
+        var mappedBefore = cellMap.Where(x => x.Key.Table == key.Table && x.Key.Row == key.Row && x.Key.Cell < key.Cell)
+            .OrderByDescending(x => x.Key.Cell).Select(x => x.Value).FirstOrDefault();
+        if (mappedBefore != default)
+            after = revisedParagraphs.FirstOrDefault(x => x.Address.Table == mappedBefore.Table && x.Address.Row == mappedBefore.Row &&
+                x.Address.Cell == mappedBefore.Cell && x.Cell is not null)?.Cell;
+
+        var template = before ?? after ?? (cells.Count == 0 ? null : cells[Math.Clamp(key.Cell, 0, cells.Count - 1)]);
+        var cell = new XElement(w + "tc");
+        var tcPr = template?.Element(w + "tcPr"); if (tcPr is not null) cell.Add(new XElement(tcPr));
+        MarkTableCellRevision(cell, inserted: false, author, ref id, w);
+        var pPr = template?.Descendants(w + "p").FirstOrDefault()?.Element(w + "pPr");
+        foreach (var source in sources.OrderBy(x => x.Address.Paragraph))
+            cell.Add(PlainParagraph(source.Text, pPr is null ? null : new XElement(pPr)));
+        if (!cell.Elements(w + "p").Any()) cell.Add(new XElement(w + "p"));
+
+        if (before is not null) before.AddBeforeSelf(cell);
+        else if (after is not null) after.AddAfterSelf(cell);
+        else if (cells.Count == 0) row.Add(cell);
+        else if (key.Cell >= 0 && key.Cell < cells.Count) cells[key.Cell].AddBeforeSelf(cell);
+        else cells[^1].AddAfterSelf(cell);
+    }
+
+    private static void InsertDeletedTableRow(IReadOnlyList<ParagraphEntry> revisedParagraphs,
+        IReadOnlyList<ParagraphSource> sources, IReadOnlyDictionary<int, int> tableMap,
+        string author, ref int id, XNamespace w)
+    {
+        if (sources.Count == 0) return;
+        var key = sources[0].Address;
+        if (!tableMap.TryGetValue(key.Table, out var revisedTableIndex)) return;
+        var table = revisedParagraphs.FirstOrDefault(x => x.Address.Table == revisedTableIndex && x.Table is not null)?.Table;
+        if (table is null) return;
+
+        var existingRows = table.Elements(w + "tr").ToList();
+        XElement? templateRow = existingRows.Count == 0 ? null : existingRows[Math.Clamp(key.Row, 0, existingRows.Count - 1)];
+        var templateCells = templateRow?.Elements(w + "tc").ToList() ?? new List<XElement>();
+        var maxCell = Math.Max(0, sources.Max(x => x.Address.Cell));
+        var row = new XElement(w + "tr");
+        MarkTableRowRevision(row, inserted: false, author, ref id, w);
+        for (var c = 0; c <= maxCell; c++)
+        {
+            var tc = new XElement(w + "tc");
+            var templateCell = templateCells.Count == 0 ? null : templateCells[Math.Min(c, templateCells.Count - 1)];
+            var tcPr = templateCell?.Element(w + "tcPr"); if (tcPr is not null) tc.Add(new XElement(tcPr));
+            var cellSources = sources.Where(x => x.Address.Cell == c).OrderBy(x => x.Address.Paragraph).ToList();
+            if (cellSources.Count == 0) tc.Add(new XElement(w + "p"));
+            else
+            {
+                var pPr = templateCell?.Descendants(w + "p").FirstOrDefault()?.Element(w + "pPr");
+                foreach (var source in cellSources)
+                    tc.Add(PlainParagraph(source.Text, pPr is null ? null : new XElement(pPr)));
+            }
+            row.Add(tc);
+        }
+
+        existingRows = table.Elements(w + "tr").ToList();
+        if (existingRows.Count == 0) table.Add(row);
+        else if (key.Row >= 0 && key.Row < existingRows.Count) existingRows[key.Row].AddBeforeSelf(row);
+        else existingRows[^1].AddAfterSelf(row);
+    }
+
+    private static bool TryInsertDeletedTableParagraph(IReadOnlyList<ParagraphEntry> revisedParagraphs,
+        ParagraphSource source,
+        IReadOnlyDictionary<(int Table, int Row, int Cell), (int Table, int Row, int Cell)> cellMap,
+        string author, ref int id, XNamespace w)
+    {
+        if (source.Address.Table < 0 || source.Address.Row < 0 || source.Address.Cell < 0) return false;
+        if (!cellMap.TryGetValue((source.Address.Table, source.Address.Row, source.Address.Cell), out var revisedCell)) return false;
+        var sameCell = revisedParagraphs
+            .Where(x => x.Address.Table == revisedCell.Table && x.Address.Row == revisedCell.Row &&
+                        x.Address.Cell == revisedCell.Cell && x.Cell is not null)
+            .OrderBy(x => x.Address.Paragraph).ToList();
+        if (sameCell.Count == 0) return false;
+        var target = sameCell.FirstOrDefault(x => x.Address.Paragraph >= source.Address.Paragraph) ?? sameCell[^1];
+        var pPr = target.Paragraph.Element(w + "pPr");
+        var deleted = DeletedParagraph(source.Text, author, ref id, pPr is null ? null : new XElement(pPr));
+        if (target.Address.Paragraph >= source.Address.Paragraph) target.Paragraph.AddBeforeSelf(deleted);
+        else target.Paragraph.AddAfterSelf(deleted);
+        return true;
+    }
+
     private static void InsertDeletedParagraphRange(XElement body, IReadOnlyList<ParagraphEntry> revisedParagraphs,
-        int nextBIndex, IReadOnlyList<ParagraphSource> deletedSources, string author, ref int id, XNamespace w)
+        int nextBIndex, IReadOnlyList<ParagraphSource> deletedSources, IReadOnlySet<(int Table, int Row)> fullyDeletedRows,
+        IReadOnlySet<(int Table, int Row, int Cell)> fullyDeletedCells,
+        IReadOnlyDictionary<int, int> tableMap,
+        IReadOnlyDictionary<(int Table, int Row), (int Table, int Row)> rowMap,
+        IReadOnlyDictionary<(int Table, int Row, int Cell), (int Table, int Row, int Cell)> cellMap,
+        string author, ref int id, XNamespace w)
     {
         if (deletedSources.Count == 0) return;
 
-        // No visible B paragraph: retain B's blank/layout paragraphs and place tracked deletions at
-        // the end of body, immediately before sectPr.
+        var i = 0;
+        XElement? fallbackAfterCursor = null;
+        XElement? fallbackAfterBoundary = null;
+        while (i < deletedSources.Count)
+        {
+            var source = deletedSources[i];
+            var key = (source.Address.Table, source.Address.Row);
+            if (source.ContainerKind == "table" && fullyDeletedRows.Contains(key))
+            {
+                var group = new List<ParagraphSource>();
+                while (i < deletedSources.Count && deletedSources[i].Address.Table == key.Table && deletedSources[i].Address.Row == key.Row)
+                    group.Add(deletedSources[i++]);
+                var before = id;
+                InsertDeletedTableRow(revisedParagraphs, group, tableMap, author, ref id, w);
+                if (id != before) continue;
+                // If the corresponding B table no longer exists, fall through to safe top-level
+                // deleted paragraphs rather than injecting content into an unrelated surviving cell.
+                foreach (var item in group)
+                    InsertDeletedBodyFallback(body, revisedParagraphs, nextBIndex, item, author, ref id, w,
+                        ref fallbackAfterCursor, ref fallbackAfterBoundary);
+                continue;
+            }
+            var cellKey = (source.Address.Table, source.Address.Row, source.Address.Cell);
+            if (source.ContainerKind == "table" && fullyDeletedCells.Contains(cellKey))
+            {
+                var group = new List<ParagraphSource>();
+                while (i < deletedSources.Count && deletedSources[i].Address.Table == cellKey.Table &&
+                       deletedSources[i].Address.Row == cellKey.Row && deletedSources[i].Address.Cell == cellKey.Cell)
+                    group.Add(deletedSources[i++]);
+                var before = id;
+                InsertDeletedTableCell(revisedParagraphs, group, rowMap, cellMap, author, ref id, w);
+                if (id != before) continue;
+                foreach (var item in group)
+                    InsertDeletedBodyFallback(body, revisedParagraphs, nextBIndex, item, author, ref id, w,
+                        ref fallbackAfterCursor, ref fallbackAfterBoundary);
+                continue;
+            }
+            if (source.ContainerKind == "table" && TryInsertDeletedTableParagraph(revisedParagraphs, source, cellMap, author, ref id, w))
+            { i++; continue; }
+            InsertDeletedBodyFallback(body, revisedParagraphs, nextBIndex, source, author, ref id, w,
+                ref fallbackAfterCursor, ref fallbackAfterBoundary);
+            i++;
+        }
+    }
+
+    private static void InsertDeletedBodyFallback(XElement body, IReadOnlyList<ParagraphEntry> revisedParagraphs,
+        int nextBIndex, ParagraphSource source, string author, ref int id, XNamespace w,
+        ref XElement? afterCursor, ref XElement? afterBoundary)
+    {
         if (revisedParagraphs.Count == 0)
         {
+            var deleted = DeletedParagraph(source.Text, author, ref id, null);
             var sectPr = body.Elements(w + "sectPr").LastOrDefault();
-            XElement? cursor = null;
-            foreach (var source in deletedSources)
-            {
-                var deleted = DeletedParagraph(source.Text, author, ref id, null);
-                if (cursor is not null) { cursor.AddAfterSelf(deleted); cursor = deleted; }
-                else if (sectPr is not null) { sectPr.AddBeforeSelf(deleted); cursor = deleted; }
-                else { body.Add(deleted); cursor = deleted; }
-            }
+            if (afterCursor is not null) afterCursor.AddAfterSelf(deleted);
+            else if (sectPr is null) body.Add(deleted); else sectPr.AddBeforeSelf(deleted);
+            afterCursor = deleted; afterBoundary = body;
             return;
         }
-
         var pastEnd = nextBIndex >= revisedParagraphs.Count;
         var anchor = revisedParagraphs[pastEnd ? revisedParagraphs.Count - 1 : nextBIndex];
-        XElement? afterCursor = null;
-        XElement? afterBoundary = null;
-
-        foreach (var source in deletedSources)
+        var styleSource = anchor.Paragraph.Element(w + "pPr");
+        var deletedP = DeletedParagraph(source.Text, author, ref id, styleSource is null ? null : new XElement(styleSource));
+        // Never inject a fallback deletion into a table/textbox/SDT merely because it is the
+        // nearest visible paragraph; use the top-level B block as the safe structural boundary.
+        var boundary = anchor.TopLevelBlock;
+        if (!pastEnd)
         {
-            var styleSource = anchor.Paragraph.Element(w + "pPr");
-            var deleted = DeletedParagraph(source.Text, author, ref id, styleSource is null ? null : new XElement(styleSource));
+            boundary.AddBeforeSelf(deletedP); // repeated AddBeforeSelf preserves source order
+            return;
+        }
+        if (afterCursor is not null && ReferenceEquals(afterBoundary, boundary))
+            afterCursor.AddAfterSelf(deletedP);
+        else
+            boundary.AddAfterSelf(deletedP);
+        afterCursor = deletedP;
+        afterBoundary = boundary;
+    }
 
-            // Only insert inside table/SDT when both source and B anchor are the same structural
-            // family. Otherwise use the top-level B block boundary so a deleted body paragraph can
-            // never be accidentally injected into a table cell or content control.
-            var sameNestedFamily = source.ContainerKind == anchor.ContainerKind &&
-                                   source.ContainerKind is "table" or "sdt" &&
-                                   anchor.Paragraph.Parent is not null;
-            var boundary = sameNestedFamily ? anchor.Paragraph : anchor.TopLevelBlock;
+    private static bool HasTrackedRevision(XDocument doc, XNamespace w) =>
+        doc.Descendants().Any(x => x.Name == w + "ins" || x.Name == w + "del" ||
+                                   x.Name == w + "moveFrom" || x.Name == w + "moveTo" ||
+                                   x.Name == w + "moveFromRangeStart" || x.Name == w + "moveToRangeStart" ||
+                                   x.Name == w + "moveFromRangeEnd" || x.Name == w + "moveToRangeEnd" ||
+                                   x.Name == w + "cellIns" || x.Name == w + "cellDel");
 
-            if (!pastEnd)
+    private static void EnsureNoExistingTrackedRevisions(string revisedPath)
+    {
+        using var fs = new FileStream(revisedPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var zip = new ZipArchive(fs, ZipArchiveMode.Read);
+        XNamespace w = W;
+        foreach (var entry in zip.Entries.Where(e => e.FullName.StartsWith("word/", StringComparison.OrdinalIgnoreCase) &&
+                                                     e.FullName.EndsWith(".xml", StringComparison.OrdinalIgnoreCase)))
+        {
+            if (entry.Length > 64L * 1024 * 1024)
+                throw new InvalidDataException($"DOCX 내부 XML이 너무 큽니다: {entry.FullName} ({entry.Length:N0} bytes)");
+            XDocument doc;
+            using (var input = entry.Open()) doc = XDocument.Load(input, LoadOptions.PreserveWhitespace);
+            if (HasTrackedRevision(doc, w))
+                throw new InvalidOperationException($"최종 문서(B)의 {entry.FullName}에 기존 Word 변경추적이 남아 있습니다. 기존 변경사항을 모두 수락/거부한 사본을 B로 사용한 뒤 다시 내보내세요.");
+        }
+    }
+
+    private static string AncillaryPartKind(string name)
+    {
+        var file = Path.GetFileName(name).ToLowerInvariant();
+        if (file.StartsWith("header", StringComparison.Ordinal) && file.EndsWith(".xml", StringComparison.Ordinal)) return "header";
+        if (file.StartsWith("footer", StringComparison.Ordinal) && file.EndsWith(".xml", StringComparison.Ordinal)) return "footer";
+        if (file == "footnotes.xml") return "footnotes";
+        if (file == "endnotes.xml") return "endnotes";
+        return string.Empty;
+    }
+
+    private static Dictionary<string, string> ReadAncillaryVisibleText(string path)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var zip = new ZipArchive(fs, ZipArchiveMode.Read);
+        XNamespace w = W;
+        foreach (var entry in zip.Entries)
+        {
+            var kind = AncillaryPartKind(entry.FullName); if (kind.Length == 0) continue;
+            if (entry.Length > 32L * 1024 * 1024)
+                throw new InvalidDataException($"DOCX 부속 XML이 너무 큽니다: {entry.FullName} ({entry.Length:N0} bytes)");
+            XDocument doc; using (var input = entry.Open()) doc = XDocument.Load(input, LoadOptions.PreserveWhitespace);
+            result[entry.FullName] = string.Join("\n", doc.Descendants(w + "p")
+                .Select(p => NativeDocumentReader.ParagraphVisibleText(p, w))
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Select(NativeComparisonEngine.Normalize));
+        }
+        return result;
+    }
+
+    private static void EnsureAncillaryWordPartsEquivalent(string originalPath, string revisedPath)
+    {
+        var a = ReadAncillaryVisibleText(originalPath);
+        var b = ReadAncillaryVisibleText(revisedPath);
+        foreach (var part in a.Keys.Union(b.Keys, StringComparer.OrdinalIgnoreCase))
+        {
+            var av = a.TryGetValue(part, out var at) ? at : string.Empty;
+            var bv = b.TryGetValue(part, out var bt) ? bt : string.Empty;
+            if (!string.Equals(av, bv, StringComparison.Ordinal))
             {
-                boundary.AddBeforeSelf(deleted); // repeated AddBeforeSelf preserves forward order
-            }
-            else if (afterCursor is not null && ReferenceEquals(afterBoundary, boundary))
-            {
-                afterCursor.AddAfterSelf(deleted);
-                afterCursor = deleted;
-            }
-            else
-            {
-                // Structural boundary changed (for example table -> body). Start a new cursor at
-                // that boundary rather than carrying an in-table cursor into the body.
-                boundary.AddAfterSelf(deleted);
-                afterBoundary = boundary;
-                afterCursor = deleted;
+                var kind = AncillaryPartKind(part);
+                throw new InvalidOperationException($"A와 B의 Word {kind} 내용/위치가 서로 다릅니다 ({part}). 현재 변경추적 내보내기는 본문 XML을 기준으로 하므로, {kind} 변경을 누락한 불완전한 파일 생성을 막기 위해 저장을 중단했습니다.");
             }
         }
     }
@@ -773,8 +1119,6 @@ internal static class NativeOfficeExporter
             if (int.TryParse(e.Attribute(w + "id")?.Value, out var id)) max = Math.Max(max, id);
         return max + 1;
     }
-
-    private static string ParagraphText(XElement paragraph, XNamespace w) => ParagraphVisibleText(paragraph, w).Trim();
 
     private static XElement PlainParagraph(string text, XElement? properties)
     {

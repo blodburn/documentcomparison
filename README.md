@@ -9,15 +9,16 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.20.13**
+**V5.20.14**
 
-- Recover single-space flattened legal enumerator sequences such as `(1) ... (2) ... (3) ...`.
-- Keep isolated in-sentence enumerator references intact and support A./B. item sequences.
-- Fixed numbered legal clauses flattened by Word so 1./2./3./4. are compared item-by-item.
-- Restored Python article-sequence filtering and same-number lineage bias to prevent downstream Article drift.
-- Matched the native C# comparison engine more closely to Python 5.19.4.4 behavior.
-- Fixed article renumbering/lineage, numbered-list matching, sentence-boundary anchors, and Korean morphology grouping.
-- Improved DOCX visible-text parsing and automatic numbering reconstruction.
+- Preserve revised DOCX structure in-place while tracking body text changes; table row/cell insertions and deletions are emitted as structural Word revisions instead of leaking deleted text into surviving cells.
+- Use one visible-text policy for reader and exporter, preventing hidden-run mismatches and duplicate textbox/drawing text extraction.
+- Guard existing Track Changes anywhere under `word/*.xml`, and stop Word export when header/footer/footnote/endnote text or part placement differs so ancillary changes are never silently omitted.
+- Add Roman `ARTICLE I` headings and contextual `(a)` / `(i)` list parsing, including flattened one-line list recovery.
+- Improve TXT decoding for BOM-less UTF-16 LE/BE, including pure Korean/CJK text, while preserving strict UTF-8/CP949/EUC-KR precedence.
+- Bound large generic-document candidate memory, add cancellation checks, and extend the allocation-free bit-parallel Indel path through 128 characters.
+- Separate comparison/export cancellation state and invalidate stale results immediately when an input document changes.
+- Add a repository regression suite covering 23 engine/export safety cases, including OpenXML validation, XLSX XML safety, Word table revisions, numbering restart/override, legal hierarchy, encoding, SDT/hidden/textbox behavior, and lineage regressions.
 
 ## Features
 
@@ -89,3 +90,13 @@ CHECK_AVALONIA_BUILD.cmd                                             Avalonia/C#
 Copyright © 2026 blodburn. All rights reserved.
 
 This software and its source code are proprietary. Public availability of this repository does not grant an open-source license or any right to reuse, modify, redistribute, sublicense, sell, or create derivative works. See `LICENSE` for the complete notice.
+
+## Regression tests
+
+Run the native comparison/export regression suite after engine or OpenXML changes:
+
+```text
+dotnet run --project tests/DocumentCompare.Regression/DocumentCompare.Regression.csproj -c Release
+```
+
+On Windows, `RUN_REGRESSION_TESTS.cmd` runs the same suite. It covers legal article lineage and item notation, DOCX visible-text consistency, table row track changes, textbox extraction, existing-revision safeguards, BOM-less UTF-16 input, Roman article headings, and OpenXML validation.

@@ -18,6 +18,7 @@ public partial class MainWindow : Window
 {
     private readonly IComparisonEngine _engine = new NativeComparisonEngine();
     private CancellationTokenSource? _operationCts;
+    private CancellationTokenSource? _exportCts;
     private ComparisonResultVm? _result;
     private readonly ObservableCollection<ComparisonRowVm> _visibleRows = new();
     private readonly string?[] _selectedPaths = new string?[3];
@@ -166,7 +167,7 @@ public partial class MainWindow : Window
 
     private void ApplyLanguage()
     {
-        Title = L("문서 비교기 V5.20.13", "Document Compare V5.20.13");
+        Title = L("문서 비교기 V5.20.14", "Document Compare V5.20.14");
         AppTitleText.Text = L("문서 비교기", "Document Compare");
         CompareButton.Content = L("비교 시작", "Compare");
         CancelButton.Content = L("취소", "Cancel");
@@ -260,6 +261,19 @@ public partial class MainWindow : Window
         SetDocumentPath(docIndex, path, L($"문서 {label} 배치 완료", $"Document {label} loaded"));
     }
 
+    private void InvalidateComparisonResult()
+    {
+        _result = null;
+        _lastPaths = Array.Empty<string>();
+        _documentRows.Clear();
+        _changeRows.Clear();
+        _visibleRows.Clear();
+        _searchIndex.Clear();
+        ResultBody.IsVisible = false;
+        ExcelButton.IsEnabled = false;
+        WordButton.IsEnabled = false;
+    }
+
     private void SetDocumentPath(int docIndex, string path, string statusPrefix)
     {
         if (!IsSupported(path))
@@ -267,6 +281,8 @@ public partial class MainWindow : Window
             StatusText.Text = L("DOCX 또는 TXT 파일만 사용할 수 있습니다.", "Only DOCX or TXT files are supported.");
             return;
         }
+        if (!string.Equals(_selectedPaths[docIndex], path, StringComparison.OrdinalIgnoreCase))
+            InvalidateComparisonResult();
         _selectedPaths[docIndex] = path;
         UpdateHeaderLabels();
         UpdateBaseRadios();
@@ -360,7 +376,9 @@ public partial class MainWindow : Window
         var mode = CurrentMode();
         var includeAc = paths.Length == 3 && CompareACBox.IsChecked == true;
         var includePunctuation = PunctuationBox.IsChecked != false;
+        InvalidateComparisonResult();
         _operationCts?.Cancel();
+        _operationCts?.Dispose();
         _operationCts = new CancellationTokenSource();
         SetBusy(true, L("비교 중... 0%", "Comparing... 0%"));
         CompareProgress.Value = 0;
@@ -535,6 +553,7 @@ public partial class MainWindow : Window
     private void Cancel_Click(object? sender, RoutedEventArgs e)
     {
         _operationCts?.Cancel();
+        _exportCts?.Cancel();
         _engine.AbortCurrentOperation();
         StatusText.Text = L("취소 중...", "Canceling...");
     }
@@ -587,14 +606,24 @@ public partial class MainWindow : Window
         if (_result is null || _lastPaths.Length < 2) return;
         var save = await PickSavePathAsync(L("Excel 비교 결과 저장", "Save Excel comparison"), L("문서비교.xlsx", "DocumentComparison.xlsx"), L("Excel 파일", "Excel file"), "*.xlsx");
         if (save is null) return;
+        _exportCts?.Cancel();
+        _exportCts?.Dispose();
+        var exportCts = new CancellationTokenSource();
+        _exportCts = exportCts;
         SetBusy(true, L("Excel 생성 중...", "Creating Excel file..."));
         try
         {
-            await _engine.ExportExcelAsync(_result, save, _operationCts?.Token ?? CancellationToken.None);
+            await _engine.ExportExcelAsync(_result, save, exportCts.Token);
             StatusText.Text = L("Excel 저장 완료: ", "Excel saved: ") + save;
         }
+        catch (OperationCanceledException) { StatusText.Text = L("Excel 저장이 취소되었습니다.", "Excel export canceled."); }
         catch (Exception ex) { StatusText.Text = L("Excel 저장 실패: ", "Excel save failed: ") + CompactError(ex); }
-        finally { SetBusy(false); }
+        finally
+        {
+            if (ReferenceEquals(_exportCts, exportCts)) _exportCts = null;
+            exportCts.Dispose();
+            SetBusy(false);
+        }
     }
 
     private async void Word_Click(object? sender, RoutedEventArgs e)
@@ -609,17 +638,27 @@ public partial class MainWindow : Window
         var defaultName = $"{Path.GetFileNameWithoutExtension(original)}_to_{Path.GetFileNameWithoutExtension(revised)}_Tracked.docx";
         var save = await PickSavePathAsync(L("Word 변경추적 문서 저장", "Save Word tracked-changes document"), defaultName, L("Word 문서", "Word document"), "*.docx");
         if (save is null) return;
+        _exportCts?.Cancel();
+        _exportCts?.Dispose();
+        var exportCts = new CancellationTokenSource();
+        _exportCts = exportCts;
         SetBusy(true, L("Word 변경추적 문서 생성 중...", "Creating Word tracked-changes document..."));
         try
         {
             await _engine.ExportWordAsync(
                 original, revised, save, Path.GetFileNameWithoutExtension(revised),
-                _lastIncludePunctuation, _operationCts?.Token ?? CancellationToken.None,
+                _lastIncludePunctuation, exportCts.Token,
                 _result, pair.Value.Original, pair.Value.Revised);
             StatusText.Text = L($"Word 저장 완료 · 변경 전 {Path.GetFileName(original)} → 최종 {Path.GetFileName(revised)}", $"Word saved · Original {Path.GetFileName(original)} → Revised {Path.GetFileName(revised)}");
         }
+        catch (OperationCanceledException) { StatusText.Text = L("Word 저장이 취소되었습니다.", "Word export canceled."); }
         catch (Exception ex) { StatusText.Text = L("Word 저장 실패: ", "Word save failed: ") + CompactError(ex); }
-        finally { SetBusy(false); }
+        finally
+        {
+            if (ReferenceEquals(_exportCts, exportCts)) _exportCts = null;
+            exportCts.Dispose();
+            SetBusy(false);
+        }
     }
 
     private (int Original, int Revised)? DefaultWordPair()

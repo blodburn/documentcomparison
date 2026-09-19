@@ -36,6 +36,7 @@ internal static class NativeDocumentReader
     {
         var bytes = File.ReadAllBytes(path);
         if (TryDecodeBom(bytes, out var bomText)) return NormalizeNewlines(bomText);
+        if (TryDecodeBomlessUtf16(bytes, out var utf16Text)) return NormalizeNewlines(utf16Text);
 
         foreach (var encoding in StrictTextEncodings())
         {
@@ -43,7 +44,13 @@ internal static class NativeDocumentReader
             catch (DecoderFallbackException) { }
         }
 
-        // Last-resort replacement fallback only after strict UTF-8 / CP949 / EUC-KR all fail.
+        // Pure CJK UTF-16 without a BOM can contain almost no NUL bytes, so the fast lane-bias
+        // heuristic above cannot identify it.  Only after every normal text encoding failed,
+        // compare strict LE/BE UTF-16 candidates by textual-script plausibility.
+        if (TryDecodeBomlessUtf16ByTextPlausibility(bytes, out var cjkUtf16Text))
+            return NormalizeNewlines(cjkUtf16Text);
+
+        // Last-resort replacement fallback only after strict UTF-8 / CP949 / EUC-KR / UTF-16 fail.
         return NormalizeNewlines(Encoding.UTF8.GetString(bytes));
     }
 
@@ -65,6 +72,88 @@ internal static class NativeDocumentReader
         }
         catch (DecoderFallbackException) { }
         return false;
+    }
+
+    private static bool TryDecodeBomlessUtf16(byte[] bytes, out string text)
+    {
+        text = string.Empty;
+        if (bytes.Length < 4 || (bytes.Length & 1) != 0) return false;
+        var pairs = Math.Min(bytes.Length / 2, 4096);
+        var evenZero = 0; var oddZero = 0;
+        for (var i = 0; i < pairs; i++)
+        {
+            if (bytes[i * 2] == 0) evenZero++;
+            if (bytes[i * 2 + 1] == 0) oddZero++;
+        }
+        var evenRatio = evenZero / (double)pairs;
+        var oddRatio = oddZero / (double)pairs;
+        bool little;
+        // UTF-16 text does not guarantee that the opposite byte lane is zero-free (for example
+        // U+AE00 has a 0x00 low byte in LE).  Detect a strong lane bias rather than requiring an
+        // unrealistically clean lane.
+        if (oddRatio >= .25 && oddRatio - evenRatio >= .20 && oddRatio >= evenRatio * 2.0) little = true;
+        else if (evenRatio >= .25 && evenRatio - oddRatio >= .20 && evenRatio >= oddRatio * 2.0) little = false;
+        else return false;
+        try
+        {
+            text = new UnicodeEncoding(bigEndian: !little, byteOrderMark: false, throwOnInvalidBytes: true)
+                .GetString(bytes);
+            return !text.Contains('\uFFFD');
+        }
+        catch (DecoderFallbackException) { text = string.Empty; return false; }
+    }
+
+    private static double TextPlausibility(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return double.NegativeInfinity;
+        double score = 0;
+        var count = 0;
+        foreach (var rune in text.EnumerateRunes())
+        {
+            count++;
+            var v = rune.Value;
+            if (v is '\t' or '\n' or '\r' || v == 0x20) { score += 2.5; continue; }
+            if (v < 0x20 || v is 0xFFFE or 0xFFFF) { score -= 12; continue; }
+            if (v is >= 0x21 and <= 0x7E) { score += 3.5; continue; }
+            if (v is >= 0xAC00 and <= 0xD7A3 || v is >= 0x1100 and <= 0x11FF || v is >= 0x3130 and <= 0x318F)
+            { score += 6.0; continue; }
+            if (v is >= 0x4E00 and <= 0x9FFF || v is >= 0x3400 and <= 0x4DBF)
+            { score += 5.0; continue; }
+            if (v is >= 0x3040 and <= 0x30FF) { score += 5.0; continue; }
+            if (v is >= 0x00A0 and <= 0x024F || v is >= 0x2000 and <= 0x206F)
+            { score += 2.5; continue; }
+            var category = Rune.GetUnicodeCategory(rune);
+            if (category is UnicodeCategory.UppercaseLetter or UnicodeCategory.LowercaseLetter or
+                UnicodeCategory.TitlecaseLetter or UnicodeCategory.OtherLetter or
+                UnicodeCategory.DecimalDigitNumber or UnicodeCategory.LetterNumber)
+                score += 0.8;
+            else if (category is UnicodeCategory.Control or UnicodeCategory.Format or UnicodeCategory.Surrogate or
+                     UnicodeCategory.PrivateUse or UnicodeCategory.OtherNotAssigned)
+                score -= 8.0;
+            else score -= 0.5;
+        }
+        return score / Math.Max(1, count);
+    }
+
+    private static bool TryDecodeBomlessUtf16ByTextPlausibility(byte[] bytes, out string text)
+    {
+        text = string.Empty;
+        if (bytes.Length < 4 || (bytes.Length & 1) != 0) return false;
+        try
+        {
+            var le = new UnicodeEncoding(false, false, true).GetString(bytes);
+            var be = new UnicodeEncoding(true, false, true).GetString(bytes);
+            var leScore = TextPlausibility(le);
+            var beScore = TextPlausibility(be);
+            var best = Math.Max(leScore, beScore);
+            var margin = Math.Abs(leScore - beScore);
+            // This path runs only after all supported single-byte/UTF-8 decoders failed.  Still
+            // require a strongly text-like result and a clear byte-order winner.
+            if (best < 2.2 || margin < 0.75) return false;
+            text = leScore > beScore ? le : be;
+            return true;
+        }
+        catch (DecoderFallbackException) { return false; }
     }
 
     private sealed record NumberLevel(int Start, string Format, string Pattern, int RestartAfterLevel);
@@ -108,6 +197,15 @@ internal static class NativeDocumentReader
             {
                 var text = VisibleParagraph(block);
                 if (text.Length > 0) lines.Add(text);
+                // Textbox paragraphs are nested under a drawing inside the owner paragraph.
+                // Read them once as their own logical paragraphs; the owner's direct-run scan
+                // deliberately excludes them to prevent Alpha+BOX+BOX style duplication.
+                foreach (var textBoxParagraph in block.Descendants(w + "txbxContent")
+                             .SelectMany(x => x.Descendants(w + "p")))
+                {
+                    var nested = VisibleParagraph(textBoxParagraph);
+                    if (nested.Length > 0) lines.Add(nested);
+                }
             }
             else if (block.Name == w + "tbl")
             {
@@ -335,28 +433,47 @@ internal static class NativeDocumentReader
         return start == 0 && end == value.Length ? value : value[start..end];
     }
 
-    private static string ParagraphText(XElement paragraph, XNamespace w)
+    internal static bool IsVisibleRun(XElement run, XNamespace w)
     {
-        var sb = new StringBuilder();
-        // Follow the current/visible Word text only.  Directly walking every descendant used
-        // to pull deleted Track-Changes text and content-control backing values such as
-        // "selected"/date metadata into the comparison document.
+        if (run.Ancestors().Any(a => a.Name == w + "del" || a.Name == w + "moveFrom" || a.Name == w + "sdtPr"))
+            return false;
+        var rPr = run.Element(w + "rPr");
+        return rPr?.Element(w + "vanish") is null && rPr?.Element(w + "webHidden") is null;
+    }
+
+    internal static IEnumerable<XElement> VisibleRunsInParagraph(XElement paragraph, XNamespace w)
+    {
         foreach (var run in paragraph.Descendants(w + "r"))
         {
-            if (run.Ancestors().Any(a => a.Name == w + "del" || a.Name == w + "moveFrom" || a.Name == w + "sdtPr"))
-                continue;
-            var rPr = run.Element(w + "rPr");
-            if (rPr?.Element(w + "vanish") is not null || rPr?.Element(w + "webHidden") is not null)
-                continue;
-            foreach (var node in run.Descendants())
-            {
-                if (node.Name == w + "t") sb.Append(node.Value);
-                else if (node.Name == w + "tab") sb.Append('\t');
-                else if (node.Name == w + "br" || node.Name == w + "cr") sb.Append('\n');
-            }
+            // A run in a textbox/drawing has its own nested w:p.  It must be consumed by that
+            // paragraph, not again by the outer paragraph that owns the drawing.
+            if (!ReferenceEquals(run.Ancestors(w + "p").FirstOrDefault(), paragraph)) continue;
+            if (IsVisibleRun(run, w)) yield return run;
+        }
+    }
+
+    internal static string RunVisibleText(XElement run, XNamespace w)
+    {
+        var sb = new StringBuilder();
+        // Direct run children only. Descendants would pull nested textbox text into the owner run.
+        foreach (var node in run.Elements())
+        {
+            if (node.Name == w + "t") sb.Append(node.Value);
+            else if (node.Name == w + "tab") sb.Append('\t');
+            else if (node.Name == w + "br" || node.Name == w + "cr") sb.Append('\n');
         }
         return sb.ToString();
     }
+
+    internal static string ParagraphVisibleText(XElement paragraph, XNamespace w)
+    {
+        var sb = new StringBuilder();
+        foreach (var run in VisibleRunsInParagraph(paragraph, w))
+            sb.Append(RunVisibleText(run, w));
+        return sb.ToString();
+    }
+
+    private static string ParagraphText(XElement paragraph, XNamespace w) => ParagraphVisibleText(paragraph, w);
 
     internal static string NormalizeNewlines(string value) =>
         (value ?? string.Empty).Replace("\r\n", "\n").Replace('\r', '\n');
