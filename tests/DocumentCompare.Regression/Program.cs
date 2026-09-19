@@ -213,15 +213,26 @@ await eng.ExportWordAsync(numA,numB,numOut,"T",true,default,numCmp,0,1);var numD
 Check(numChange is not null&&numChange.Attribute(w+"original")?.Value=="1.","number-only change did not emit w:numberingChange with original label");
 using(var wd=WordprocessingDocument.Open(numOut,false)){var errors=new OpenXmlValidator().Validate(wd.MainDocumentPart!.Document).ToList();Check(errors.Count==0,"numberingChange OpenXML invalid: "+string.Join(" | ",errors.Take(5).Select(e=>e.Description)));}
 Console.WriteLine("PASS WORD NUMBERING CHANGE TRACKING");
+// 26b. Numbering insertion/removal on an existing paragraph must be tracked and schema-valid.
+var numPlain=Path.Combine(dir,"numberPlain.docx");Make(numPlain,P("Same item"));
+var numAdded=Path.Combine(dir,"numberAddedOut.docx");var addCmp=await eng.CompareAsync(new[]{numPlain,numB},0,"general",true,true);await eng.ExportWordAsync(numPlain,numB,numAdded,"T",true,default,addCmp,0,1);var addDoc=Doc(numAdded);Check(addDoc.Descendants(w+"numPr").Any(np=>np.Element(w+"ins") is not null),"numbering insertion lacked numPr/w:ins");
+using(var wd=WordprocessingDocument.Open(numAdded,false)){var errors=new OpenXmlValidator().Validate(wd.MainDocumentPart!.Document).ToList();Check(errors.Count==0,"numbering insertion OpenXML invalid: "+string.Join(" | ",errors.Take(5).Select(e=>e.Description)));}
+var numRemoved=Path.Combine(dir,"numberRemovedOut.docx");var removeCmp=await eng.CompareAsync(new[]{numA,numPlain},0,"general",true,true);await eng.ExportWordAsync(numA,numPlain,numRemoved,"T",true,default,removeCmp,0,1);var removeDoc=Doc(numRemoved);var removedChange=removeDoc.Descendants(w+"numberingChange").SingleOrDefault();Check(removedChange is not null&&removedChange.Attribute(w+"original")?.Value=="1.","numbering removal lacked numberingChange original label");
+using(var wd=WordprocessingDocument.Open(numRemoved,false)){var errors=new OpenXmlValidator().Validate(wd.MainDocumentPart!.Document).ToList();Check(errors.Count==0,"numbering removal OpenXML invalid: "+string.Join(" | ",errors.Take(5).Select(e=>e.Description)));}
+Console.WriteLine("PASS WORD NUMBERING INSERT/REMOVE");
 
 // 27. Roman article parser must accept canonical numerals but reject ordinary Roman-letter words.
 var parseUnits=typeof(NativeComparisonEngine).GetMethod("ParseUnits",BindingFlags.Static|BindingFlags.NonPublic)!;
-var falseRomans=(System.Collections.IEnumerable)parseUnits.Invoke(null,new object[]{"Article CIVIL Rights\nBody one\nArticle MIX Terms\nBody two","auto"})!;
+var falseRomans=(System.Collections.IEnumerable)parseUnits.Invoke(null,new object[]{"Article CIVIL Rights\nBody one\nArticle IIV Terms\nBody two\nArticle VX End\nBody three","auto"})!;
 var falseNums=new List<string>();foreach(var u in falseRomans){var number=(string)u!.GetType().GetProperty("Number")!.GetValue(u)!;if(number.Length>0)falseNums.Add(number);}
-Check(!falseNums.Contains("CIVIL")&&!falseNums.Contains("MIX"),"ordinary Roman-letter words became article numbers: "+string.Join(",",falseNums));
-var trueRomans=(System.Collections.IEnumerable)parseUnits.Invoke(null,new object[]{"ARTICLE IV TERM\nAlpha\nARTICLE IX END\nBeta","auto"})!;var trueNums=new List<string>();foreach(var u in trueRomans){var number=(string)u!.GetType().GetProperty("Number")!.GetValue(u)!;if(number.Length>0)trueNums.Add(number);}
-Check(trueNums.Contains("IV")&&trueNums.Contains("IX"),"canonical Roman articles stopped parsing: "+string.Join(",",trueNums));
+Check(!falseNums.Contains("CIVIL")&&!falseNums.Contains("IIV")&&!falseNums.Contains("VX"),"non-canonical Roman text became article numbers: "+string.Join(",",falseNums));
+var trueRomans=(System.Collections.IEnumerable)parseUnits.Invoke(null,new object[]{"ARTICLE IV TERM\nAlpha\nARTICLE IX END\nBeta\nARTICLE MIX HIGH NUMBER\nGamma","auto"})!;var trueNums=new List<string>();foreach(var u in trueRomans){var number=(string)u!.GetType().GetProperty("Number")!.GetValue(u)!;if(number.Length>0)trueNums.Add(number);}
+Check(trueNums.Contains("IV")&&trueNums.Contains("IX")&&trueNums.Contains("MIX"),"canonical Roman articles stopped parsing: "+string.Join(",",trueNums));
 Console.WriteLine("PASS CANONICAL ROMAN ARTICLE FILTER");
+var genericRoman=(System.Collections.IEnumerable)parseUnits.Invoke(null,new object[]{"IIV Invalid heading\nBody\nIX Valid heading\nBody","general"})!;
+var genericNums=new List<string>();foreach(var u in genericRoman){var number=(string)u!.GetType().GetProperty("Number")!.GetValue(u)!;if(number.Length>0)genericNums.Add(number);}
+Check(!genericNums.Contains("IIV")&&genericNums.Contains("IX"),"generic heading Roman validation regressed: "+string.Join(",",genericNums));
+Console.WriteLine("PASS GENERIC ROMAN HEADING VALIDATION");
 
 // 28. SpreadsheetML rich text properties use deterministic strike -> color -> underline order.
 using(var z=ZipFile.OpenRead(xo)){using var sr=new StreamReader(z.GetEntry("xl/worksheets/sheet1.xml")!.Open());var xml=sr.ReadToEnd();Check(!xml.Contains("<rPr><u val=\"single\"/><color"),"insert rPr regressed to underline-before-color");Check(!xml.Contains("<rPr><strike/><u val=\"single\"/><color"),"both rPr regressed to underline-before-color");Check(xml.Contains("<rPr><color rgb=\"FF1565C0\"/><u val=\"single\"/></rPr>"),"insert color->underline order missing");}

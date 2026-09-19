@@ -8,7 +8,7 @@ namespace DocumentCompare.Avalonia.Engine;
 
 public sealed class NativeComparisonEngine : IComparisonEngine
 {
-    private const string RomanNumberPattern = @"(?!(?:MIX)\b)(?=[IVXLCDM]+\b)M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})";
+    private const string RomanNumberPattern = @"(?=[IVXLCDM]+\b)M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})";
     private static readonly Regex RomanCanonical = new("^(?:" + RomanNumberPattern + ")$",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex KoreanArticle = new(
@@ -433,12 +433,16 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     {
         var s = (line ?? string.Empty).Trim();
         if (s.Length == 0 || s.Length > 180) return null;
-        var numbered = Regex.Match(s, @"^\s*((?:\d+(?:\.\d+){0,5})|(?:[IVXLCDM]+)|(?:[A-Z]))[.)]?\s+(.{1,140})$", RegexOptions.IgnoreCase);
+        var numbered = Regex.Match(s, @"^\s*((?:\d+(?:\.\d+){0,5})|(?:[A-Za-z]+))[.)]?\s+(.{1,140})$");
         if (numbered.Success)
         {
+            var marker = numbered.Groups[1].Value;
+            var numeric = char.IsDigit(marker[0]);
+            var singleLetter = marker.Length == 1 && char.IsUpper(marker[0]);
+            var roman = marker.Length > 0 && marker.All(ch => "IVXLCDMivxlcdm".Contains(ch)) && RomanValue(marker) > 0;
             var title = numbered.Groups[2].Value.Trim();
-            if (title.Length <= 110 && !Regex.IsMatch(title, @"[.!?;]\s*$"))
-                return (numbered.Groups[1].Value, s);
+            if ((numeric || singleLetter || roman) && title.Length <= 110 && !Regex.IsMatch(title, @"[.!?;]\s*$"))
+                return (marker, s);
         }
 
         var words = Regex.Matches(s, "[A-Za-z가-힣0-9]+").Cast<Match>().Select(m => m.Value).ToList();

@@ -336,6 +336,12 @@ internal static class NativeOfficeExporter
         return string.Empty;
     }
 
+    private static string LogicalParagraphText(ParagraphSource source) =>
+        string.IsNullOrWhiteSpace(source.Numbering.Label) ? source.Text : (source.Numbering.Label + " " + source.Text).Trim();
+
+    private static string LogicalParagraphText(ParagraphEntry entry) =>
+        string.IsNullOrWhiteSpace(entry.Numbering.Label) ? entry.Text : (entry.Numbering.Label + " " + entry.Text).Trim();
+
     private static int FindParagraphByText<T>(IReadOnlyList<T> items, Func<T, string> textSelector, string text,
         HashSet<int> used, int preferredAfter)
     {
@@ -392,8 +398,8 @@ internal static class NativeOfficeExporter
             if (om is null || nm is null) continue;
             var ot = MemberAnchorText(om); var nt = MemberAnchorText(nm);
             if (ot.Length == 0 || nt.Length == 0) continue;
-            var oi = FindParagraphByText(oldParagraphs, x => x.Text, ot, usedOld, oldHint);
-            var ni = FindParagraphByText(newParagraphs, x => x.Text, nt, usedNew, newHint);
+            var oi = FindParagraphByText(oldParagraphs, LogicalParagraphText, ot, usedOld, oldHint);
+            var ni = FindParagraphByText(newParagraphs, LogicalParagraphText, nt, usedNew, newHint);
             if (oi < 0 || ni < 0) continue;
             raw.Add((oi, ni));
             oldHint = oi + 1; newHint = ni + 1;
@@ -503,8 +509,8 @@ internal static class NativeOfficeExporter
     private static List<ParagraphOp> AlignParagraphs(IReadOnlyList<ParagraphSource> a, IReadOnlyList<ParagraphEntry> b,
         IReadOnlyList<(int Old, int New)> preferred, CancellationToken token)
     {
-        var oldKeys = a.Select(x => NativeComparisonEngine.Normalize(x.Text)).ToArray();
-        var newKeys = b.Select(x => NativeComparisonEngine.Normalize(x.Text)).ToArray();
+        var oldKeys = a.Select(x => NativeComparisonEngine.Normalize(LogicalParagraphText(x))).ToArray();
+        var newKeys = b.Select(x => NativeComparisonEngine.Normalize(LogicalParagraphText(x))).ToArray();
         var exact = Lcs(oldKeys, newKeys);
         var forced = preferred.OrderBy(x => x.Old).ThenBy(x => x.New).ToList();
         var anchors = new List<(int Old, int New)> { (-1, -1) };
