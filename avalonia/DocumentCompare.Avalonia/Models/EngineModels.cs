@@ -129,10 +129,18 @@ public sealed class ComparisonRowVm
     }
 }
 
+public sealed class SourceFileStateVm
+{
+    public string Path { get; init; } = "";
+    public long Length { get; init; }
+    public long LastWriteTimeUtcTicks { get; init; }
+}
+
 public sealed class ComparisonResultVm
 {
     public List<string> Names { get; init; } = new();
     public int BaseIndex { get; init; }
     public List<ComparisonRowVm> Rows { get; init; } = new();
     public List<int> UnitCounts { get; init; } = new();
+    public List<SourceFileStateVm> SourceFiles { get; init; } = new();
 }

@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
@@ -165,12 +166,16 @@ internal static class NativeOfficeExporter
         string author, bool includePunctuation, CancellationToken token, ComparisonResultVm? comparisonResult,
         int originalDocumentIndex, int revisedDocumentIndex)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath))!);
+        var outputFullPath = Path.GetFullPath(outputPath);
+        var originalFullPath = Path.GetFullPath(originalPath);
+        var revisedFullPath = Path.GetFullPath(revisedPath);
+        if (string.Equals(originalFullPath, outputFullPath, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(revisedFullPath, outputFullPath, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("입력 원본 문서(A/B) 자체를 변경추적 출력으로 덮어쓸 수 없습니다. 다른 파일명으로 저장하세요.");
+        Directory.CreateDirectory(Path.GetDirectoryName(outputFullPath)!);
         var revisedIsDocx = Path.GetExtension(revisedPath).Equals(".docx", StringComparison.OrdinalIgnoreCase);
         if (revisedIsDocx)
         {
-            if (string.Equals(Path.GetFullPath(revisedPath), Path.GetFullPath(outputPath), StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException("최종 문서(B) 원본 파일 자체를 변경추적 출력으로 덮어쓸 수 없습니다. 다른 파일명으로 저장하세요.");
             EnsureNoExistingTrackedRevisions(revisedPath);
             if (Path.GetExtension(originalPath).Equals(".docx", StringComparison.OrdinalIgnoreCase))
                 EnsureAncillaryWordPartsEquivalent(originalPath, revisedPath);
@@ -235,6 +240,7 @@ internal static class NativeOfficeExporter
         // below is permitted only through an already matched containing cell.
         var rowMap = BuildMatchedRowMap(originalParagraphs, revisedParagraphs, ops);
         var cellMap = BuildMatchedCellMap(originalParagraphs, revisedParagraphs, ops);
+        var paragraphMap = BuildMatchedParagraphMap(originalParagraphs, revisedParagraphs, ops);
         var tableMap = BuildMatchedTableMap(originalParagraphs, revisedParagraphs, ops, cellMap);
         var fullyInsertedCells = revisedParagraphs.Select((entry, index) => (entry, index))
             .Where(x => x.entry.Cell is not null && x.entry.Row is not null && !fullyInsertedRows.Contains(x.entry.Row))
@@ -288,7 +294,7 @@ internal static class NativeOfficeExporter
                 k++;
             }
             InsertDeletedParagraphRange(body, revisedParagraphs, bCursor, deleted, fullyDeletedRows, fullyDeletedCells,
-                tableMap, rowMap, cellMap, author, ref revisionId, w);
+                tableMap, rowMap, cellMap, paragraphMap, author, ref revisionId, w);
         }
 
         ReplaceEntry(zip, "word/document.xml", document.ToString(SaveOptions.DisableFormatting));
@@ -589,11 +595,10 @@ internal static class NativeOfficeExporter
                 .Where(a => a.ParentTable == newParentCell.Table && a.ParentRow == newParentCell.Row &&
                             a.ParentCell == newParentCell.Cell)
                 .GroupBy(a => a.Table).Select(g => g.First()).ToList();
-            if (oldSiblings != newSiblingAddresses.Count) continue;
+            if (oldSiblings != newSiblingAddresses.Count || oldSiblings != 1) continue;
 
-            var candidate = newSiblingAddresses.SingleOrDefault(a =>
-                a.NestedTableOrdinal == oldAddress.NestedTableOrdinal);
-            if (candidate is null || usedNew.Contains(candidate.Table)) continue;
+            var candidate = newSiblingAddresses[0];
+            if (usedNew.Contains(candidate.Table)) continue;
             result[oldTable] = candidate.Table;
             usedNew.Add(candidate.Table);
         }
@@ -646,6 +651,23 @@ internal static class NativeOfficeExporter
             if (result.ContainsKey(candidate.Key.Old) || usedNew.Contains(candidate.Key.New)) continue;
             result[candidate.Key.Old] = candidate.Key.New;
             usedNew.Add(candidate.Key.New);
+        }
+        return result;
+    }
+
+    private static Dictionary<ParagraphAddress, ParagraphAddress> BuildMatchedParagraphMap(
+        IReadOnlyList<ParagraphSource> oldParagraphs, IReadOnlyList<ParagraphEntry> newParagraphs,
+        IReadOnlyList<ParagraphOp> ops)
+    {
+        var result = new Dictionary<ParagraphAddress, ParagraphAddress>();
+        foreach (var op in ops.Where(x => x.Old >= 0 && x.New >= 0))
+        {
+            var oldAddress = oldParagraphs[op.Old].Address;
+            var newAddress = newParagraphs[op.New].Address;
+            if (oldAddress.Table < 0 || oldAddress.Row < 0 || oldAddress.Cell < 0 ||
+                newAddress.Table < 0 || newAddress.Row < 0 || newAddress.Cell < 0)
+                continue;
+            result[oldAddress] = newAddress;
         }
         return result;
     }
@@ -1058,16 +1080,18 @@ internal static class NativeOfficeExporter
         var cells = RowCells(row, w);
 
         XElement? before = null; XElement? after = null;
-        var mappedAfter = cellMap.Where(x => x.Key.Table == key.Table && x.Key.Row == key.Row && x.Key.Cell > key.Cell)
-            .OrderBy(x => x.Key.Cell).Select(x => x.Value).FirstOrDefault();
-        if (mappedAfter != default)
-            before = revisedParagraphs.FirstOrDefault(x => x.Address.Table == mappedAfter.Table && x.Address.Row == mappedAfter.Row &&
-                x.Address.Cell == mappedAfter.Cell && x.Cell is not null)?.Cell;
-        var mappedBefore = cellMap.Where(x => x.Key.Table == key.Table && x.Key.Row == key.Row && x.Key.Cell < key.Cell)
-            .OrderByDescending(x => x.Key.Cell).Select(x => x.Value).FirstOrDefault();
-        if (mappedBefore != default)
-            after = revisedParagraphs.FirstOrDefault(x => x.Address.Table == mappedBefore.Table && x.Address.Row == mappedBefore.Row &&
-                x.Address.Cell == mappedBefore.Cell && x.Cell is not null)?.Cell;
+        var mappedAfter = cellMap.Where(x => x.Key.Table == key.Table && x.Key.Row == key.Row && x.Key.Cell > key.Cell &&
+                                           x.Value.Table == revisedRow.Table && x.Value.Row == revisedRow.Row)
+            .OrderBy(x => x.Key.Cell).Select(x => ((int Table, int Row, int Cell)?)x.Value).FirstOrDefault();
+        if (mappedAfter is { } afterAddress)
+            before = revisedParagraphs.FirstOrDefault(x => x.Address.Table == afterAddress.Table && x.Address.Row == afterAddress.Row &&
+                x.Address.Cell == afterAddress.Cell && x.Cell is not null)?.Cell;
+        var mappedBefore = cellMap.Where(x => x.Key.Table == key.Table && x.Key.Row == key.Row && x.Key.Cell < key.Cell &&
+                                            x.Value.Table == revisedRow.Table && x.Value.Row == revisedRow.Row)
+            .OrderByDescending(x => x.Key.Cell).Select(x => ((int Table, int Row, int Cell)?)x.Value).FirstOrDefault();
+        if (mappedBefore is { } beforeAddress)
+            after = revisedParagraphs.FirstOrDefault(x => x.Address.Table == beforeAddress.Table && x.Address.Row == beforeAddress.Row &&
+                x.Address.Cell == beforeAddress.Cell && x.Cell is not null)?.Cell;
 
         var template = before ?? after ?? (cells.Count == 0 ? null : cells[Math.Clamp(key.Cell, 0, cells.Count - 1)]);
         var cell = new XElement(w + "tc");
@@ -1087,6 +1111,7 @@ internal static class NativeOfficeExporter
 
     private static void InsertDeletedTableRow(IReadOnlyList<ParagraphEntry> revisedParagraphs,
         IReadOnlyList<ParagraphSource> sources, IReadOnlyDictionary<int, int> tableMap,
+        IReadOnlyDictionary<(int Table, int Row), (int Table, int Row)> rowMap,
         string author, ref int id, XNamespace w)
     {
         if (sources.Count == 0) return;
@@ -1095,8 +1120,23 @@ internal static class NativeOfficeExporter
         var table = revisedParagraphs.FirstOrDefault(x => x.Address.Table == revisedTableIndex && x.Table is not null)?.Table;
         if (table is null) return;
 
+        XElement? before = null; XElement? after = null;
+        var mappedAfter = rowMap.Where(x => x.Key.Table == key.Table && x.Key.Row > key.Row &&
+                                          x.Value.Table == revisedTableIndex)
+            .OrderBy(x => x.Key.Row).Select(x => ((int Table, int Row)?)x.Value).FirstOrDefault();
+        if (mappedAfter is { } afterAddress)
+            before = revisedParagraphs.FirstOrDefault(x => x.Address.Table == afterAddress.Table &&
+                x.Address.Row == afterAddress.Row && x.Row is not null)?.Row;
+        var mappedBefore = rowMap.Where(x => x.Key.Table == key.Table && x.Key.Row < key.Row &&
+                                           x.Value.Table == revisedTableIndex)
+            .OrderByDescending(x => x.Key.Row).Select(x => ((int Table, int Row)?)x.Value).FirstOrDefault();
+        if (mappedBefore is { } beforeAddress)
+            after = revisedParagraphs.FirstOrDefault(x => x.Address.Table == beforeAddress.Table &&
+                x.Address.Row == beforeAddress.Row && x.Row is not null)?.Row;
+
         var existingRows = TableRows(table, w);
-        XElement? templateRow = existingRows.Count == 0 ? null : existingRows[Math.Clamp(key.Row, 0, existingRows.Count - 1)];
+        XElement? templateRow = before ?? after ??
+            (existingRows.Count == 0 ? null : existingRows[Math.Clamp(key.Row, 0, existingRows.Count - 1)]);
         var templateCells = templateRow is null ? new List<XElement>() : RowCells(templateRow, w);
         var maxCell = Math.Max(0, sources.Max(x => x.Address.Cell));
         var row = new XElement(w + "tr");
@@ -1118,7 +1158,9 @@ internal static class NativeOfficeExporter
         }
 
         existingRows = TableRows(table, w);
-        if (existingRows.Count == 0) table.Add(row);
+        if (before is not null) StructuralChildBoundary(before, table).AddBeforeSelf(row);
+        else if (after is not null) StructuralChildBoundary(after, table).AddAfterSelf(row);
+        else if (existingRows.Count == 0) table.Add(row);
         else if (key.Row >= 0 && key.Row < existingRows.Count) StructuralChildBoundary(existingRows[key.Row], table).AddBeforeSelf(row);
         else StructuralChildBoundary(existingRows[^1], table).AddAfterSelf(row);
     }
@@ -1126,6 +1168,7 @@ internal static class NativeOfficeExporter
     private static bool TryInsertDeletedTableParagraph(IReadOnlyList<ParagraphEntry> revisedParagraphs,
         ParagraphSource source,
         IReadOnlyDictionary<(int Table, int Row, int Cell), (int Table, int Row, int Cell)> cellMap,
+        IReadOnlyDictionary<ParagraphAddress, ParagraphAddress> paragraphMap,
         string author, ref int id, XNamespace w)
     {
         if (source.Address.Table < 0 || source.Address.Row < 0 || source.Address.Cell < 0) return false;
@@ -1135,10 +1178,28 @@ internal static class NativeOfficeExporter
                         x.Address.Cell == revisedCell.Cell && x.Cell is not null)
             .OrderBy(x => x.Address.Paragraph).ToList();
         if (sameCell.Count == 0) return false;
-        var target = sameCell.FirstOrDefault(x => x.Address.Paragraph >= source.Address.Paragraph) ?? sameCell[^1];
+
+        ParagraphEntry? before = null; ParagraphEntry? after = null;
+        var mappedAfter = paragraphMap
+            .Where(x => x.Key.Table == source.Address.Table && x.Key.Row == source.Address.Row &&
+                        x.Key.Cell == source.Address.Cell && x.Key.Paragraph > source.Address.Paragraph)
+            .OrderBy(x => x.Key.Paragraph).Select(x => (ParagraphAddress?)x.Value).FirstOrDefault();
+        if (mappedAfter is not null)
+            before = sameCell.FirstOrDefault(x => x.Address == mappedAfter);
+        var mappedBefore = paragraphMap
+            .Where(x => x.Key.Table == source.Address.Table && x.Key.Row == source.Address.Row &&
+                        x.Key.Cell == source.Address.Cell && x.Key.Paragraph < source.Address.Paragraph)
+            .OrderByDescending(x => x.Key.Paragraph).Select(x => (ParagraphAddress?)x.Value).FirstOrDefault();
+        if (mappedBefore is not null)
+            after = sameCell.FirstOrDefault(x => x.Address == mappedBefore);
+
+        var target = before ?? after ??
+            sameCell.FirstOrDefault(x => x.Address.Paragraph >= source.Address.Paragraph) ?? sameCell[^1];
         var pPr = target.Paragraph.Element(w + "pPr");
         var deleted = DeletedParagraph(source.Text, author, ref id, pPr is null ? null : new XElement(pPr));
-        if (target.Address.Paragraph >= source.Address.Paragraph) target.Paragraph.AddBeforeSelf(deleted);
+        if (before is not null) before.Paragraph.AddBeforeSelf(deleted);
+        else if (after is not null) after.Paragraph.AddAfterSelf(deleted);
+        else if (target.Address.Paragraph >= source.Address.Paragraph) target.Paragraph.AddBeforeSelf(deleted);
         else target.Paragraph.AddAfterSelf(deleted);
         return true;
     }
@@ -1149,6 +1210,7 @@ internal static class NativeOfficeExporter
         IReadOnlyDictionary<int, int> tableMap,
         IReadOnlyDictionary<(int Table, int Row), (int Table, int Row)> rowMap,
         IReadOnlyDictionary<(int Table, int Row, int Cell), (int Table, int Row, int Cell)> cellMap,
+        IReadOnlyDictionary<ParagraphAddress, ParagraphAddress> paragraphMap,
         string author, ref int id, XNamespace w)
     {
         if (deletedSources.Count == 0) return;
@@ -1166,7 +1228,7 @@ internal static class NativeOfficeExporter
                 while (i < deletedSources.Count && deletedSources[i].Address.Table == key.Table && deletedSources[i].Address.Row == key.Row)
                     group.Add(deletedSources[i++]);
                 var before = id;
-                InsertDeletedTableRow(revisedParagraphs, group, tableMap, author, ref id, w);
+                InsertDeletedTableRow(revisedParagraphs, group, tableMap, rowMap, author, ref id, w);
                 if (id != before) continue;
                 // If the corresponding B table no longer exists, fall through to safe top-level
                 // deleted paragraphs rather than injecting content into an unrelated surviving cell.
@@ -1190,7 +1252,7 @@ internal static class NativeOfficeExporter
                         ref fallbackAfterCursor, ref fallbackAfterBoundary);
                 continue;
             }
-            if (source.ContainerKind == "table" && TryInsertDeletedTableParagraph(revisedParagraphs, source, cellMap, author, ref id, w))
+            if (source.ContainerKind == "table" && TryInsertDeletedTableParagraph(revisedParagraphs, source, cellMap, paragraphMap, author, ref id, w))
             { i++; continue; }
             InsertDeletedBodyFallback(body, revisedParagraphs, nextBIndex, source, author, ref id, w,
                 ref fallbackAfterCursor, ref fallbackAfterBoundary);
@@ -1267,7 +1329,123 @@ internal static class NativeOfficeExporter
         return string.Empty;
     }
 
-    private static Dictionary<string, string> ReadAncillaryVisibleText(string path)
+    private static string RelationshipPartName(string partName)
+    {
+        var slash = partName.LastIndexOf('/');
+        var dir = slash >= 0 ? partName[..(slash + 1)] : string.Empty;
+        var file = slash >= 0 ? partName[(slash + 1)..] : partName;
+        return dir + "_rels/" + file + ".rels";
+    }
+
+    private static string ResolvePackageTarget(string sourcePartName, string target)
+    {
+        target = Uri.UnescapeDataString((target ?? string.Empty).Replace('\\', '/'));
+        var pieces = new List<string>();
+        if (!target.StartsWith('/'))
+        {
+            var slash = sourcePartName.LastIndexOf('/');
+            if (slash >= 0)
+                pieces.AddRange(sourcePartName[..slash].Split('/', StringSplitOptions.RemoveEmptyEntries));
+        }
+        foreach (var piece in target.TrimStart('/').Split('/', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (piece == ".") continue;
+            if (piece == "..")
+            {
+                if (pieces.Count > 0) pieces.RemoveAt(pieces.Count - 1);
+                continue;
+            }
+            pieces.Add(piece);
+        }
+        return string.Join("/", pieces);
+    }
+
+    private static string EntrySha256(ZipArchiveEntry entry)
+    {
+        if (entry.Length > 128L * 1024 * 1024)
+            throw new InvalidDataException($"DOCX 관계 대상이 너무 큽니다: {entry.FullName} ({entry.Length:N0} bytes)");
+        using var stream = entry.Open();
+        return Convert.ToHexString(SHA256.HashData(stream));
+    }
+
+    private static Dictionary<string, string> ReadPartRelationshipSignatures(
+        ZipArchive zip, string sourcePartName)
+    {
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        var relEntry = zip.GetEntry(RelationshipPartName(sourcePartName));
+        if (relEntry is null) return result;
+        if (relEntry.Length > 8L * 1024 * 1024)
+            throw new InvalidDataException($"DOCX 관계 XML이 너무 큽니다: {relEntry.FullName} ({relEntry.Length:N0} bytes)");
+        XNamespace pr = "http://schemas.openxmlformats.org/package/2006/relationships";
+        XDocument rels; using (var input = relEntry.Open()) rels = XDocument.Load(input, LoadOptions.PreserveWhitespace);
+        foreach (var rel in rels.Root?.Elements(pr + "Relationship") ?? Enumerable.Empty<XElement>())
+        {
+            var id = rel.Attribute("Id")?.Value;
+            if (string.IsNullOrEmpty(id)) continue;
+            var type = rel.Attribute("Type")?.Value ?? string.Empty;
+            var target = rel.Attribute("Target")?.Value ?? string.Empty;
+            var mode = rel.Attribute("TargetMode")?.Value ?? string.Empty;
+            if (mode.Equals("External", StringComparison.OrdinalIgnoreCase))
+            {
+                result[id] = $"external|{type}|{target}";
+                continue;
+            }
+            var resolved = ResolvePackageTarget(sourcePartName, target);
+            var targetEntry = zip.GetEntry(resolved);
+            result[id] = targetEntry is null
+                ? $"missing|{type}|{resolved}"
+                : $"internal|{type}|{EntrySha256(targetEntry)}";
+        }
+        return result;
+    }
+
+    private static string AncillaryPartSemanticSignature(
+        ZipArchive zip, ZipArchiveEntry entry, XDocument doc, XNamespace w)
+    {
+        var relationships = ReadPartRelationshipSignatures(zip, entry.FullName);
+        var sb = new StringBuilder();
+
+        static bool IgnorableIdentityAttribute(XAttribute attribute)
+        {
+            if (attribute.Name.NamespaceName == W && attribute.Name.LocalName.StartsWith("rsid", StringComparison.Ordinal))
+                return true;
+            if (attribute.Name.NamespaceName == "http://schemas.microsoft.com/office/word/2010/wordml" &&
+                attribute.Name.LocalName is "paraId" or "textId")
+                return true;
+            return false;
+        }
+
+        void AppendElement(XElement element)
+        {
+            sb.Append("E{").Append(element.Name.NamespaceName).Append('}').Append(element.Name.LocalName).Append('[');
+            foreach (var attribute in element.Attributes()
+                         .Where(a => !a.IsNamespaceDeclaration && !IgnorableIdentityAttribute(a))
+                         .OrderBy(a => a.Name.NamespaceName, StringComparer.Ordinal)
+                         .ThenBy(a => a.Name.LocalName, StringComparer.Ordinal))
+            {
+                var value = attribute.Value;
+                if (attribute.Name.NamespaceName == R)
+                    value = relationships.TryGetValue(value, out var resolved) ? resolved : "missing-rel|" + value;
+                sb.Append('{').Append(attribute.Name.NamespaceName).Append('}').Append(attribute.Name.LocalName)
+                    .Append('=').Append(value.Length).Append(':').Append(value).Append(';');
+            }
+            sb.Append(']');
+            foreach (var node in element.Nodes())
+            {
+                if (node is XElement child) AppendElement(child);
+                else if (node is XText text &&
+                         (!string.IsNullOrWhiteSpace(text.Value) ||
+                          element.Name == w + "t" || element.Name == w + "delText" || element.Name == w + "instrText"))
+                    sb.Append("T").Append(text.Value.Length).Append(':').Append(text.Value).Append(';');
+            }
+            sb.Append("/E;");
+        }
+
+        if (doc.Root is not null) AppendElement(doc.Root);
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sb.ToString())));
+    }
+
+    private static Dictionary<string, string> ReadAncillarySemanticSignatures(string path)
     {
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
@@ -1279,18 +1457,62 @@ internal static class NativeOfficeExporter
             if (entry.Length > 32L * 1024 * 1024)
                 throw new InvalidDataException($"DOCX 부속 XML이 너무 큽니다: {entry.FullName} ({entry.Length:N0} bytes)");
             XDocument doc; using (var input = entry.Open()) doc = XDocument.Load(input, LoadOptions.PreserveWhitespace);
-            result[entry.FullName] = string.Join("\n", doc.Descendants(w + "p")
-                .Select(p => NativeDocumentReader.ParagraphVisibleText(p, w))
-                .Where(x => !string.IsNullOrWhiteSpace(x))
-                .Select(NativeComparisonEngine.Normalize));
+            result[entry.FullName] = AncillaryPartSemanticSignature(zip, entry, doc, w);
         }
         return result;
     }
 
+    private static string ReadMainDocumentAncillaryReferenceSignature(string path)
+    {
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var zip = new ZipArchive(fs, ZipArchiveMode.Read);
+        var documentEntry = zip.GetEntry("word/document.xml");
+        if (documentEntry is null) return string.Empty;
+        XNamespace w = W;
+        XDocument doc; using (var input = documentEntry.Open()) doc = XDocument.Load(input, LoadOptions.PreserveWhitespace);
+
+        var relationshipTargets = new Dictionary<string, string>(StringComparer.Ordinal);
+        var relEntry = zip.GetEntry("word/_rels/document.xml.rels");
+        if (relEntry is not null)
+        {
+            XNamespace pr = "http://schemas.openxmlformats.org/package/2006/relationships";
+            XDocument rels; using (var input = relEntry.Open()) rels = XDocument.Load(input, LoadOptions.PreserveWhitespace);
+            foreach (var rel in rels.Root?.Elements(pr + "Relationship") ?? Enumerable.Empty<XElement>())
+            {
+                var id = rel.Attribute("Id")?.Value;
+                if (string.IsNullOrEmpty(id)) continue;
+                var target = rel.Attribute("Target")?.Value ?? string.Empty;
+                var mode = rel.Attribute("TargetMode")?.Value ?? string.Empty;
+                relationshipTargets[id] = mode.Equals("External", StringComparison.OrdinalIgnoreCase)
+                    ? "external:" + target
+                    : ResolvePackageTarget("word/document.xml", target);
+            }
+        }
+
+        var tokens = new List<string>();
+        foreach (var element in doc.Descendants())
+        {
+            if (element.Name == w + "headerReference" || element.Name == w + "footerReference")
+            {
+                var id = element.Attribute(XName.Get("id", R))?.Value ?? string.Empty;
+                var target = relationshipTargets.TryGetValue(id, out var resolved) ? resolved : "missing:" + id;
+                tokens.Add($"{element.Name.LocalName}|{element.Attribute(w + "type")?.Value ?? string.Empty}|{target}");
+            }
+            else if (element.Name == w + "footnoteReference" || element.Name == w + "endnoteReference")
+                tokens.Add($"{element.Name.LocalName}|{element.Attribute(w + "id")?.Value ?? string.Empty}");
+        }
+        return string.Join("\n", tokens);
+    }
+
     private static void EnsureAncillaryWordPartsEquivalent(string originalPath, string revisedPath)
     {
-        var a = ReadAncillaryVisibleText(originalPath);
-        var b = ReadAncillaryVisibleText(revisedPath);
+        var aRefs = ReadMainDocumentAncillaryReferenceSignature(originalPath);
+        var bRefs = ReadMainDocumentAncillaryReferenceSignature(revisedPath);
+        if (!string.Equals(aRefs, bRefs, StringComparison.Ordinal))
+            throw new InvalidOperationException("A와 B의 Word header/footer/footnote/endnote 참조 위치가 서로 다릅니다. 현재 변경추적 내보내기는 본문 XML을 기준으로 하므로, 부속 파트 변경을 누락한 불완전한 파일 생성을 막기 위해 저장을 중단했습니다.");
+
+        var a = ReadAncillarySemanticSignatures(originalPath);
+        var b = ReadAncillarySemanticSignatures(revisedPath);
         foreach (var part in a.Keys.Union(b.Keys, StringComparer.OrdinalIgnoreCase))
         {
             var av = a.TryGetValue(part, out var at) ? at : string.Empty;

@@ -60,6 +60,39 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     private readonly object _cancelLock = new();
     private CancellationTokenSource? _activeOperation;
 
+    private static SourceFileStateVm CaptureSourceFileState(string path)
+    {
+        var fullPath = Path.GetFullPath(path);
+        var info = new FileInfo(fullPath);
+        info.Refresh();
+        if (!info.Exists) throw new FileNotFoundException("입력 파일을 찾을 수 없습니다.", fullPath);
+        return new SourceFileStateVm
+        {
+            Path = fullPath,
+            Length = info.Length,
+            LastWriteTimeUtcTicks = info.LastWriteTimeUtc.Ticks
+        };
+    }
+
+    private static bool SameSourceFileState(SourceFileStateVm a, SourceFileStateVm b) =>
+        string.Equals(a.Path, b.Path, StringComparison.OrdinalIgnoreCase) &&
+        a.Length == b.Length && a.LastWriteTimeUtcTicks == b.LastWriteTimeUtcTicks;
+
+    private static void EnsureSourceFilesUnchanged(ComparisonResultVm result, params int[] indices)
+    {
+        if (result.SourceFiles.Count == 0) return;
+        var check = indices.Length == 0 ? Enumerable.Range(0, result.SourceFiles.Count) : indices.Distinct();
+        foreach (var index in check)
+        {
+            if (index < 0 || index >= result.SourceFiles.Count)
+                throw new InvalidOperationException("비교 결과의 입력 파일 정보가 현재 내보내기 대상과 일치하지 않습니다.");
+            var expected = result.SourceFiles[index];
+            var current = CaptureSourceFileState(expected.Path);
+            if (!SameSourceFileState(expected, current))
+                throw new InvalidOperationException($"비교 후 입력 파일이 변경되었습니다: {Path.GetFileName(expected.Path)}. 다시 비교한 뒤 내보내세요.");
+        }
+    }
+
     public async Task<ComparisonResultVm> CompareAsync(
         IReadOnlyList<string> paths, int baseIndex, string mode, bool includeAC, bool includePunctuation,
         CancellationToken cancellationToken = default, IProgress<int>? progress = null)
@@ -71,10 +104,16 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         {
             var names = paths.Select(x => Path.GetFileName(x) ?? string.Empty).ToList();
             var texts = new List<string>(paths.Count);
+            var sourceFiles = new List<SourceFileStateVm>(paths.Count);
             for (var i = 0; i < paths.Count; i++)
             {
                 linked.Token.ThrowIfCancellationRequested();
+                var before = CaptureSourceFileState(paths[i]);
                 texts.Add(await NativeDocumentReader.ReadAsync(paths[i], linked.Token));
+                var after = CaptureSourceFileState(paths[i]);
+                if (!SameSourceFileState(before, after))
+                    throw new InvalidOperationException($"비교 중 입력 파일이 변경되었습니다: {Path.GetFileName(paths[i])}. 다시 비교하세요.");
+                sourceFiles.Add(after);
                 progress?.Report(5 + (i + 1) * 15 / paths.Count);
             }
 
@@ -97,13 +136,20 @@ public sealed class NativeComparisonEngine : IComparisonEngine
                 if ((i & 7) == 0) progress?.Report(45 + (int)(50.0 * (i + 1) / Math.Max(1, aligned.Count)));
             }
             ApplySectionHeaders(rows, paths.Count);
+            for (var i = 0; i < sourceFiles.Count; i++)
+            {
+                var current = CaptureSourceFileState(sourceFiles[i].Path);
+                if (!SameSourceFileState(sourceFiles[i], current))
+                    throw new InvalidOperationException($"비교 중 입력 파일이 변경되었습니다: {Path.GetFileName(sourceFiles[i].Path)}. 다시 비교하세요.");
+            }
             progress?.Report(100);
             return new ComparisonResultVm
             {
                 Names = names,
                 BaseIndex = baseIndex,
                 Rows = rows,
-                UnitCounts = docs.Select(x => x.Count).ToList()
+                UnitCounts = docs.Select(x => x.Count).ToList(),
+                SourceFiles = sourceFiles
             };
         }
         finally
@@ -112,14 +158,31 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         }
     }
 
-    public Task ExportExcelAsync(ComparisonResultVm result, string outputPath, CancellationToken cancellationToken = default) =>
-        NativeOfficeExporter.WriteXlsxAsync(result, outputPath, cancellationToken);
+    public Task ExportExcelAsync(ComparisonResultVm result, string outputPath, CancellationToken cancellationToken = default)
+    {
+        EnsureSourceFilesUnchanged(result);
+        return NativeOfficeExporter.WriteXlsxAsync(result, outputPath, cancellationToken);
+    }
 
     public Task ExportWordAsync(string originalPath, string revisedPath, string outputPath, string author, bool includePunctuation,
         CancellationToken cancellationToken = default, ComparisonResultVm? comparisonResult = null,
-        int originalDocumentIndex = -1, int revisedDocumentIndex = -1) =>
-        NativeOfficeExporter.WriteTrackedDocxAsync(originalPath, revisedPath, outputPath, author, includePunctuation,
+        int originalDocumentIndex = -1, int revisedDocumentIndex = -1)
+    {
+        if (comparisonResult is not null)
+        {
+            EnsureSourceFilesUnchanged(comparisonResult, originalDocumentIndex, revisedDocumentIndex);
+            if (originalDocumentIndex >= 0 && originalDocumentIndex < comparisonResult.SourceFiles.Count &&
+                !string.Equals(Path.GetFullPath(originalPath), comparisonResult.SourceFiles[originalDocumentIndex].Path,
+                    StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("비교 결과와 Word 변경 전 문서가 일치하지 않습니다. 다시 비교하세요.");
+            if (revisedDocumentIndex >= 0 && revisedDocumentIndex < comparisonResult.SourceFiles.Count &&
+                !string.Equals(Path.GetFullPath(revisedPath), comparisonResult.SourceFiles[revisedDocumentIndex].Path,
+                    StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("비교 결과와 Word 최종 문서가 일치하지 않습니다. 다시 비교하세요.");
+        }
+        return NativeOfficeExporter.WriteTrackedDocxAsync(originalPath, revisedPath, outputPath, author, includePunctuation,
             cancellationToken, comparisonResult, originalDocumentIndex, revisedDocumentIndex);
+    }
 
     public Task PingAsync(CancellationToken cancellationToken = default)
     {
@@ -536,6 +599,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             {
                 var merge = pending.FirstOrDefault(r =>
                 {
+                    if (r[x.Doc] is not null) return false;
                     var ex = r.FirstOrDefault(u => u is not null);
                     return ex is not null && UnitLineageSimilarity(ex, x.Unit) >= .84;
                 });
@@ -564,6 +628,26 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         var articleA = Enumerable.Range(0, a.Count).Where(i => IsLegalArticle(a[i])).ToList();
         var articleB = Enumerable.Range(0, b.Count).Where(i => IsLegalArticle(b[i])).ToList();
 
+        var repeatedBodiesA = articleA.Select(i => LineageNormalize(a[i].Body)).Where(x => x.Length > 0)
+            .GroupBy(x => x, StringComparer.Ordinal).Where(g => g.Count() > 1).Select(g => g.Key).ToHashSet(StringComparer.Ordinal);
+        var repeatedBodiesB = articleB.Select(i => LineageNormalize(b[i].Body)).Where(x => x.Length > 0)
+            .GroupBy(x => x, StringComparer.Ordinal).Where(g => g.Count() > 1).Select(g => g.Key).ToHashSet(StringComparer.Ordinal);
+
+        (double Sim, double Title, double Body, bool AmbiguousRepeatedBody) Evidence(int ai, int bj)
+        {
+            var ua = a[ai]; var ub = b[bj];
+            var tr = TitleSimilarity(ua, ub);
+            var br = BodySimilarity(ua, ub);
+            var sim = UnitLineageSimilarity(ua, ub);
+            var bodyKeyA = LineageNormalize(ua.Body); var bodyKeyB = LineageNormalize(ub.Body);
+            var repeated = bodyKeyA.Length > 0 && bodyKeyA == bodyKeyB &&
+                           (repeatedBodiesA.Contains(bodyKeyA) || repeatedBodiesB.Contains(bodyKeyB));
+            var titleConflict = ua.Title.Length > 0 && ub.Title.Length > 0 && tr < .35;
+            var ambiguous = repeated && br >= .88 && titleConflict;
+            if (ambiguous) sim = Math.Min(sim, .42);
+            return (sim, tr, br, ambiguous);
+        }
+
         // Paragraph/general fallback is intentionally separate, mirroring Python's fallback.
         if (articleA.Count == 0 || articleB.Count == 0)
             return MatchGenericUnits(a, b, token);
@@ -584,7 +668,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             current[0] = prior[0] + gap; prev[i, 0] = D;
             for (var j = 1; j <= m; j++)
             {
-                var sim = UnitLineageSimilarity(a[articleA[i - 1]], b[articleB[j - 1]]);
+                var sim = Evidence(articleA[i - 1], articleB[j - 1]).Sim;
                 var matchCost = sim >= .43 ? .94 * (1.0 - sim) : 1.08;
                 if (string.Equals(a[articleA[i - 1]].Number, b[articleB[j - 1]].Number, StringComparison.OrdinalIgnoreCase))
                     matchCost -= .015;
@@ -615,7 +699,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         {
             if (op.Op != M) continue;
             var bi = articleA[op.A]; var oj = articleB[op.B];
-            var sim = UnitLineageSimilarity(a[bi], b[oj]);
+            var sim = Evidence(bi, oj).Sim;
             if (sim < .43) continue;
             var mode = string.Equals(a[bi].Number, b[oj].Number, StringComparison.OrdinalIgnoreCase) ? "same" : "renumbered";
             mapping[bi] = new UnitMatch(bi, oj, sim, mode);
@@ -633,10 +717,10 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             foreach (var oj in articleB)
             {
                 if (usedB.Contains(oj)) continue;
-                var sim = UnitLineageSimilarity(a[bi], b[oj]);
-                var tr = TitleSimilarity(a[bi], b[oj]);
-                var br = BodySimilarity(a[bi], b[oj]);
-                if (sim >= .70 || tr >= .82 || (tr >= .68 && br >= .48) || br >= .84)
+                var evidence = Evidence(bi, oj);
+                var sim = evidence.Sim; var tr = evidence.Title; var br = evidence.Body;
+                if (sim >= .70 || tr >= .82 || (tr >= .68 && br >= .48) ||
+                    (!evidence.AmbiguousRepeatedBody && br >= .84))
                     residual.Add((sim + .10 * tr + .04 * br, bi, oj, sim));
             }
         }
@@ -1531,15 +1615,19 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         if (oneSided)
         {
             // The article lineage has already been established. If only one side changes from
-            // prose to an explicit list (or the reverse), keep the unique prose body paired even
-            // when it was heavily rewritten. Explicit items stay unmatched and are reported as
-            // structural additions/deletions instead of being folded into the body replacement.
+            // prose to an explicit list (or the reverse), only keep the unique prose bodies paired
+            // when they remain plausibly related, matching Python 5.19.4.4. Explicit items stay
+            // unmatched and are reported as structural additions/deletions.
             var oldBodies = Enumerable.Range(0, a.Count).Where(i => a[i].Label == "본문").ToList();
             var newBodies = Enumerable.Range(0, b.Count).Where(i => b[i].Label == "본문").ToList();
             if (oldBodies.Count == 1 && newBodies.Count == 1)
             {
-                var score = PartSimilarity(a[oldBodies[0]], b[newBodies[0]]);
-                return new List<PartMatch> { new(oldBodies[0], newBodies[0], Math.Max(score, .50)) };
+                var oldBody = a[oldBodies[0]];
+                var newBody = b[newBodies[0]];
+                var score = PartSimilarity(oldBody, newBody);
+                var exact = Normalize(oldBody.Core) == Normalize(newBody.Core);
+                if (score >= .32 || exact)
+                    return new List<PartMatch> { new(oldBodies[0], newBodies[0], Math.Max(score, .50)) };
             }
             return new List<PartMatch>();
         }

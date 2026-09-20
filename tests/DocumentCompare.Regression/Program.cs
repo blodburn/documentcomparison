@@ -108,6 +108,7 @@ Console.WriteLine("PASS TABLE CELL INSERT/DELETE");
 
 // 15. Revisions hidden in ancillary Word parts and untracked ancillary text differences must not be silently preserved.
 static void AddWordXml(string path,string name,string xml){using var fs=new FileStream(path,FileMode.Open,FileAccess.ReadWrite,FileShare.None);using var z=new ZipArchive(fs,ZipArchiveMode.Update);z.GetEntry(name)?.Delete();Put(z,name,xml);}
+static void AddWordBytes(string path,string name,byte[] bytes){using var fs=new FileStream(path,FileMode.Open,FileAccess.ReadWrite,FileShare.None);using var z=new ZipArchive(fs,ZipArchiveMode.Update);z.GetEntry(name)?.Delete();var e=z.CreateEntry(name);using var stream=e.Open();stream.Write(bytes);}
 var hra=Path.Combine(dir,"headerRevA.docx");var hrb=Path.Combine(dir,"headerRevB.docx");var hro=Path.Combine(dir,"headerRevOut.docx");Make(hra,P("Body"));Make(hrb,P("Body"));
 AddWordXml(hrb,"word/header1.xml","<w:hdr xmlns:w=\""+W+"\"><w:p><w:ins w:id=\"9\" w:author=\"Old\"><w:r><w:t>OLD HEADER REV</w:t></w:r></w:ins></w:p></w:hdr>");
 var headerRevisionBlocked=false;try{await eng.ExportWordAsync(hra,hrb,hro,"T",true);}catch(InvalidOperationException ex){headerRevisionBlocked=ex.Message.Contains("header1.xml")&&ex.Message.Contains("기존 Word 변경추적");}Check(headerRevisionBlocked,"header tracked revision was not rejected");
@@ -353,5 +354,123 @@ var deletedWrappedCell=cellWrapDelDoc.Descendants(w+"tc").SingleOrDefault(tc=>tc
 Check(deletedWrappedCell?.Element(w+"tcPr")?.Element(w+"cellDel") is not null,"customXml wrapped deleted cell was not reconstructed with cellDel");
 using(var wd=WordprocessingDocument.Open(cellWrapDelO,false)){var errors=new OpenXmlValidator().Validate(wd.MainDocumentPart!.Document).ToList();Check(errors.Count==0,"wrapped cell deletion OpenXML invalid: "+string.Join(" | ",errors.Take(5).Select(e=>e.Description)));}
 Console.WriteLine("PASS WRAPPED TABLE CELL REVISION EXPORT");
+
+
+// 36. Deleted table rows must be positioned by matched surviving row lineage, not raw A row ordinals.
+var rowPosA=Path.Combine(dir,"rowPosA.docx");var rowPosB=Path.Combine(dir,"rowPosB.docx");var rowPosO=Path.Combine(dir,"rowPosOut.docx");
+Make(rowPosA,Tbl1(Row1("KEEP_1")+Row1("DELETE_MIDDLE")+Row1("KEEP_3")));
+Make(rowPosB,Tbl1(Row1("NEW_HEAD")+Row1("KEEP_1")+Row1("KEEP_3")));
+await eng.ExportWordAsync(rowPosA,rowPosB,rowPosO,"T",true);var rowPosDoc=Doc(rowPosO);
+var rowPosRows=rowPosDoc.Descendants(w+"tbl").First().Descendants(w+"tr").ToList();
+var rowPosTexts=rowPosRows.Select(r=>string.Concat(r.Descendants(w+"t").Select(x=>x.Value))+string.Concat(r.Descendants(w+"delText").Select(x=>x.Value))).ToList();
+Check(rowPosTexts.SequenceEqual(new[]{"NEW_HEAD","KEEP_1","DELETE_MIDDLE","KEEP_3"}),"deleted row raw-index placement regressed: "+string.Join(" | ",rowPosTexts));
+Check(rowPosRows[2].Element(w+"trPr")?.Element(w+"del") is not null,"middle deleted row lacks trPr/del");
+using(var wd=WordprocessingDocument.Open(rowPosO,false)){var errors=new OpenXmlValidator().Validate(wd.MainDocumentPart!.Document).ToList();Check(errors.Count==0,"row lineage placement OpenXML invalid: "+string.Join(" | ",errors.Take(5).Select(e=>e.Description)));}
+Console.WriteLine("PASS DELETED ROW LINEAGE POSITION");
+
+// 37. Deleted paragraphs inside a matched table cell must use matched paragraph neighbors, not raw paragraph ordinals.
+string MultiPCell(params string[] values)=>"<w:tc>"+string.Concat(values.Select(P))+"</w:tc>";
+var paraPosA=Path.Combine(dir,"paraPosA.docx");var paraPosB=Path.Combine(dir,"paraPosB.docx");var paraPosO=Path.Combine(dir,"paraPosOut.docx");
+Make(paraPosA,Tbl1(RowCells1(MultiPCell("KEEP_P1","DELETE_P2","KEEP_P3"))));
+Make(paraPosB,Tbl1(RowCells1(MultiPCell("NEW_P0","KEEP_P1","KEEP_P3"))));
+await eng.ExportWordAsync(paraPosA,paraPosB,paraPosO,"T",true);var paraPosDoc=Doc(paraPosO);
+var paraCell=paraPosDoc.Descendants(w+"tc").First();
+var paraPosTexts=paraCell.Elements(w+"p").Select(p=>string.Concat(p.Descendants(w+"t").Select(x=>x.Value))+string.Concat(p.Descendants(w+"delText").Select(x=>x.Value))).ToList();
+Check(paraPosTexts.SequenceEqual(new[]{"NEW_P0","KEEP_P1","DELETE_P2","KEEP_P3"}),"deleted paragraph raw-index placement regressed: "+string.Join(" | ",paraPosTexts));
+using(var wd=WordprocessingDocument.Open(paraPosO,false)){var errors=new OpenXmlValidator().Validate(wd.MainDocumentPart!.Document).ToList();Check(errors.Count==0,"paragraph lineage placement OpenXML invalid: "+string.Join(" | ",errors.Take(5).Select(e=>e.Description)));}
+Console.WriteLine("PASS DELETED TABLE PARAGRAPH LINEAGE POSITION");
+
+
+// 38. Ancillary Word guards must detect non-text relationship payload changes (e.g. header logo/image).
+var imgHdrA=Path.Combine(dir,"headerImageA.docx");var imgHdrB=Path.Combine(dir,"headerImageB.docx");var imgHdrO=Path.Combine(dir,"headerImageOut.docx");
+Make(imgHdrA,P("Body"));Make(imgHdrB,P("Body"));
+var headerWithImage="<w:hdr xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:p><w:r><w:t>SAME HEADER</w:t></w:r><w:r><w:drawing><w:object r:id=\"rIdImg\"/></w:drawing></w:r></w:p></w:hdr>";
+var headerRels="<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rIdImg\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"media/header-logo.bin\"/></Relationships>";
+foreach(var path in new[]{imgHdrA,imgHdrB}){AddWordXml(path,"word/header1.xml",headerWithImage);AddWordXml(path,"word/_rels/header1.xml.rels",headerRels);}
+AddWordBytes(imgHdrA,"word/media/header-logo.bin",Encoding.UTF8.GetBytes("IMAGE_A_BYTES"));
+AddWordBytes(imgHdrB,"word/media/header-logo.bin",Encoding.UTF8.GetBytes("IMAGE_B_BYTES"));
+var headerImageBlocked=false;try{await eng.ExportWordAsync(imgHdrA,imgHdrB,imgHdrO,"T",true);}catch(InvalidOperationException ex){headerImageBlocked=ex.Message.Contains("header")&&ex.Message.Contains("서로 다릅니다");}
+Check(headerImageBlocked,"header image/media difference was silently omitted");
+Console.WriteLine("PASS ANCILLARY RELATIONSHIP PAYLOAD GUARD");
+
+
+// 39. Multiple similar additions from the same document and same gap must not overwrite each other.
+var multiAddA=Path.Combine(dir,"multiAddA.txt");var multiAddB=Path.Combine(dir,"multiAddB.txt");
+File.WriteAllText(multiAddA,"Article 1 (Stable)\nOne.\nArticle 4 (End)\nFour.",new UTF8Encoding(false));
+File.WriteAllText(multiAddB,"Article 1 (Stable)\nOne.\nArticle 2 (Added)\nRepeated new clause.\nArticle 3 (Added)\nRepeated new clause.\nArticle 4 (End)\nFour.",new UTF8Encoding(false));
+var multiAddCmp=await eng.CompareAsync(new[]{multiAddA,multiAddB},0,"legal",true,true);
+var addedNumbers=multiAddCmp.Rows.Select(r=>r.Members[1]?.Number).Where(n=>n is "2" or "3").ToList();
+Check(addedNumbers.Count==2&&addedNumbers.Contains("2")&&addedNumbers.Contains("3"),"same-gap additions were overwritten: "+string.Join(",",addedNumbers));
+Console.WriteLine("PASS SAME-GAP MULTIPLE ADDITIONS");
+
+
+// 40. Multiple fully changed nested sibling tables are ambiguous: never pair them by local ordinal alone.
+string TwoNestedTables(string first,string second)=>"<w:tbl><w:tblPr/><w:tblGrid><w:gridCol/></w:tblGrid><w:tr><w:tc>"+P("OUTER_STABLE")+"<w:tbl><w:tblPr/><w:tblGrid><w:gridCol/></w:tblGrid><w:tr><w:tc>"+P(first)+"</w:tc></w:tr></w:tbl><w:tbl><w:tblPr/><w:tblGrid><w:gridCol/></w:tblGrid><w:tr><w:tc>"+P(second)+"</w:tc></w:tr></w:tbl>"+P("OUTER_END")+"</w:tc></w:tr></w:tbl>";
+var ambNestedA=Path.Combine(dir,"ambNestedA.docx");var ambNestedB=Path.Combine(dir,"ambNestedB.docx");var ambNestedO=Path.Combine(dir,"ambNestedOut.docx");
+Make(ambNestedA,TwoNestedTables("OLD_LEFT","OLD_RIGHT"));Make(ambNestedB,TwoNestedTables("NEW_LEFT","NEW_RIGHT"));
+await eng.ExportWordAsync(ambNestedA,ambNestedB,ambNestedO,"T",true);var ambNestedDoc=Doc(ambNestedO);
+var ambInnerTables=ambNestedDoc.Descendants(w+"tbl").Skip(1).ToList();
+Check(ambInnerTables.Count==2,"ambiguous nested-table count changed");
+Check(!ambInnerTables.Any(t=>t.Descendants(w+"t").Any(x=>x.Value.Contains("OLD_"))||t.Descendants(w+"delText").Any(x=>x.Value.Contains("OLD_"))),
+    "ambiguous nested siblings were guessed by ordinal and polluted with old content");
+Console.WriteLine("PASS AMBIGUOUS NESTED SIBLING SAFETY");
+
+
+// 41. Ancillary guards must also catch non-text structural/layout changes inside the same part.
+var hdrLayoutA=Path.Combine(dir,"headerLayoutA.docx");var hdrLayoutB=Path.Combine(dir,"headerLayoutB.docx");var hdrLayoutO=Path.Combine(dir,"headerLayoutOut.docx");
+Make(hdrLayoutA,P("Body"));Make(hdrLayoutB,P("Body"));
+AddWordXml(hdrLayoutA,"word/header1.xml","<w:hdr xmlns:w=\""+W+"\"><w:p><w:pPr><w:spacing w:before=\"0\"/></w:pPr><w:r><w:t>SAME HEADER</w:t></w:r></w:p></w:hdr>");
+AddWordXml(hdrLayoutB,"word/header1.xml","<w:hdr xmlns:w=\""+W+"\"><w:p><w:pPr><w:spacing w:before=\"120\"/></w:pPr><w:r><w:t>SAME HEADER</w:t></w:r></w:p></w:hdr>");
+var headerLayoutBlocked=false;try{await eng.ExportWordAsync(hdrLayoutA,hdrLayoutB,hdrLayoutO,"T",true);}catch(InvalidOperationException ex){headerLayoutBlocked=ex.Message.Contains("header")&&ex.Message.Contains("서로 다릅니다");}
+Check(headerLayoutBlocked,"header non-text layout difference was silently omitted");
+Console.WriteLine("PASS ANCILLARY STRUCTURE GUARD");
+
+
+// 42. Python 5.19.4.4 parity: one-sided list expansion must not force unrelated plain-body pairing.
+var matchPartsMethod=typeof(NativeComparisonEngine).GetMethod("MatchParts",BindingFlags.Static|BindingFlags.NonPublic)!;
+var oneSideOld=parse.Invoke(null,new object[]{"Legacy authentication requirement applies only to registered operators."})!;
+var oneSideNew=parse.Invoke(null,new object[]{"Unrelated marketing campaign preface for seasonal promotions.\n1. New benefit eligibility.\n2. New advertising schedule."})!;
+var oneSideMatches=(System.Collections.IEnumerable)matchPartsMethod.Invoke(null,new[]{oneSideOld,oneSideNew})!;
+var oneSideMatchCount=0;foreach(var _ in oneSideMatches)oneSideMatchCount++;
+Check(oneSideMatchCount==0,"unrelated one-sided plain body was force-paired instead of remaining delete/add");
+Console.WriteLine("PASS ONE-SIDED BODY PARITY");
+
+
+// 43. A comparison result must become unusable for export when an input file changes in place.
+var staleA=Path.Combine(dir,"staleA.txt");var staleB=Path.Combine(dir,"staleB.txt");var staleX=Path.Combine(dir,"stale.xlsx");
+File.WriteAllText(staleA,"Alpha stable.",new UTF8Encoding(false));File.WriteAllText(staleB,"Alpha revised.",new UTF8Encoding(false));
+var staleCmp=await eng.CompareAsync(new[]{staleA,staleB},0,"general",true,true);
+File.AppendAllText(staleB," changed after comparison",new UTF8Encoding(false));
+var staleBlocked=false;try{await eng.ExportExcelAsync(staleCmp,staleX);}catch(InvalidOperationException ex){staleBlocked=ex.Message.Contains("입력 파일이 변경");}
+Check(staleBlocked,"stale comparison result exported after an input file changed in place");
+Console.WriteLine("PASS INPUT FILE CHANGE INVALIDATION");
+
+
+// 44. Repeated generic body wording must not override distinct article-title lineage.
+var genericMoveA=Path.Combine(dir,"genericMoveA.docx");var genericMoveB=Path.Combine(dir,"genericMoveB.docx");
+Make(genericMoveA,P("Article 1 (Start)")+P("Stable start.")+
+    P("Article 2 (Payment Terms)")+P("The Company may provide the Service.")+
+    P("Article 3 (Privacy Protection)")+P("The Company may provide the Service.")+
+    P("Article 4 (End)")+P("Stable end."));
+Make(genericMoveB,P("Article 1 (Start)")+P("Stable start.")+
+    P("Article 2 (Privacy Protection)")+P("The Company may provide the Service.")+
+    P("Article 3 (Payment Terms)")+P("The Company may provide the Service.")+
+    P("Article 4 (End)")+P("Stable end."));
+var genericMoveCmp=await eng.CompareAsync(new[]{genericMoveA,genericMoveB},0,"legal",true,true);
+var paymentRow=genericMoveCmp.Rows.Single(r=>r.Members[0]?.Number=="2");
+var privacyRow=genericMoveCmp.Rows.Single(r=>r.Members[0]?.Number=="3");
+Check(paymentRow.Members[1]?.Number=="3"&&privacyRow.Members[1]?.Number=="2",
+    "repeated generic body text overrode title lineage: "+paymentRow.Members[1]?.Number+" / "+privacyRow.Members[1]?.Number);
+Console.WriteLine("PASS GENERIC WORDING LINEAGE GUARD");
+
+
+// 45. Word export must never overwrite either input document, including original A.
+var sameOutA=Path.Combine(dir,"sameOutputA.docx");var sameOutB=Path.Combine(dir,"sameOutputB.docx");
+Make(sameOutA,P("ORIGINAL_A"));Make(sameOutB,P("REVISED_B"));
+var sameOutBefore=File.ReadAllBytes(sameOutA);
+var overwriteABlocked=false;try{await eng.ExportWordAsync(sameOutA,sameOutB,sameOutA,"T",true);}catch(InvalidOperationException ex){overwriteABlocked=ex.Message.Contains("원본")||ex.Message.Contains("입력");}
+Check(overwriteABlocked,"Word export allowed outputPath to overwrite original A");
+Check(File.ReadAllBytes(sameOutA).SequenceEqual(sameOutBefore),"original A was modified before same-path export was rejected");
+Console.WriteLine("PASS WORD INPUT OVERWRITE GUARD");
 
 Console.WriteLine("ALL REGRESSIONS PASSED");
