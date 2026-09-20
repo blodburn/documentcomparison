@@ -199,7 +199,7 @@ Console.WriteLine("PASS PROPERTY REVISION GUARD");
 var rowSdt=Path.Combine(dir,"rowSdt.docx");var cellSdt=Path.Combine(dir,"cellSdt.docx");var customRow=Path.Combine(dir,"customRow.docx");
 Make(rowSdt,"<w:tbl><w:tblPr/><w:tblGrid><w:gridCol/></w:tblGrid><w:sdt><w:sdtPr/><w:sdtContent><w:tr><w:tc>"+P("SDT_ROW_CELL")+"</w:tc></w:tr></w:sdtContent></w:sdt></w:tbl>");
 Make(cellSdt,"<w:tbl><w:tblPr/><w:tblGrid><w:gridCol/></w:tblGrid><w:tr><w:sdt><w:sdtPr/><w:sdtContent><w:tc>"+P("SDT_CELL")+"</w:tc></w:sdtContent></w:sdt></w:tr></w:tbl>");
-Make(customRow,"<w:tbl><w:tblPr/><w:tblGrid><w:gridCol/></w:tblGrid><w:customXml w:uri=\"urn:test\" w:element=\"row\"><w:tr><w:tc>"+P("CUSTOM_ROW")+"</w:tc></w:tr></w:customXml></w:tbl>");
+Make(customRow,"<w:tbl><w:tblPr/><w:tblGrid><w:gridCol/></w:tblGrid><w:customXml><w:tr><w:tc>"+P("CUSTOM_ROW")+"</w:tc></w:tr></w:customXml></w:tbl>");
 Check((await Read(rowSdt)).Contains("SDT_ROW_CELL"),"row-level SDT table text disappeared");
 Check((await Read(cellSdt)).Contains("SDT_CELL"),"cell-level SDT table text disappeared");
 Check((await Read(customRow)).Contains("CUSTOM_ROW"),"customXml-wrapped table row disappeared");
@@ -254,5 +254,104 @@ Make(sdtExpA,SdtTable("Controlled old wording"));Make(sdtExpB,SdtTable("Controll
 Check(sdtOut.Descendants(w+"sdt").Any(),"row SDT wrapper was destroyed during export");Check(sdtOut.Descendants(w+"delText").Any(x=>x.Value.Contains("old")),"row SDT deletion missing");Check(sdtOut.Descendants(w+"ins").Descendants(w+"t").Any(x=>x.Value.Contains("new")),"row SDT insertion missing");
 using(var wd=WordprocessingDocument.Open(sdtExpO,false)){var errors=new OpenXmlValidator().Validate(wd.MainDocumentPart!.Document).ToList();Check(errors.Count==0,"SDT tracked export OpenXML invalid: "+string.Join(" | ",errors.Take(5).Select(e=>e.Description)));}
 Console.WriteLine("PASS SDT IN-PLACE WORD EXPORT");
+
+
+// 31. Repeated numbered paragraphs must anchor by logical label+body, so only the actually renumbered duplicate changes.
+static void MakeRepeatedNumbered(string path,int secondStart,string Wns)
+{
+    using var fs=new FileStream(path,FileMode.Create);using var z=new ZipArchive(fs,ZipArchiveMode.Create);
+    Put(z,"[Content_Types].xml","<?xml version=\"1.0\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/><Override PartName=\"/word/numbering.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml\"/></Types>");
+    Put(z,"_rels/.rels","<?xml version=\"1.0\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"word/document.xml\"/></Relationships>");
+    Put(z,"word/_rels/document.xml.rels","<?xml version=\"1.0\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rIdNum\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering\" Target=\"numbering.xml\"/></Relationships>");
+    string NP(int id)=>$"<w:p><w:pPr><w:numPr><w:ilvl w:val=\"0\"/><w:numId w:val=\"{id}\"/></w:numPr></w:pPr><w:r><w:t>Same item</w:t></w:r></w:p>";
+    Put(z,"word/document.xml","<?xml version=\"1.0\"?><w:document xmlns:w=\""+Wns+"\"><w:body>"+NP(1)+NP(2)+"<w:sectPr/></w:body></w:document>");
+    Put(z,"word/numbering.xml",$"<?xml version=\"1.0\"?><w:numbering xmlns:w=\"{Wns}\"><w:abstractNum w:abstractNumId=\"0\"><w:lvl w:ilvl=\"0\"><w:start w:val=\"1\"/><w:numFmt w:val=\"decimal\"/><w:lvlText w:val=\"%1.\"/></w:lvl></w:abstractNum><w:num w:numId=\"1\"><w:abstractNumId w:val=\"0\"/></w:num><w:num w:numId=\"2\"><w:abstractNumId w:val=\"0\"/><w:lvlOverride w:ilvl=\"0\"><w:startOverride w:val=\"{secondStart}\"/></w:lvlOverride></w:num></w:numbering>");
+}
+var repA=Path.Combine(dir,"repeatedNumberA.docx");var repB=Path.Combine(dir,"repeatedNumberB.docx");var repO=Path.Combine(dir,"repeatedNumberOut.docx");
+MakeRepeatedNumbered(repA,2,W);MakeRepeatedNumbered(repB,3,W);
+var repAText=await Read(repA);var repBText=await Read(repB);
+Check(repAText.Contains("1. Same item")&&repAText.Contains("2. Same item"),"repeated A numbering labels wrong: "+repAText);
+Check(repBText.Contains("1. Same item")&&repBText.Contains("3. Same item"),"repeated B numbering labels wrong: "+repBText);
+var repCmp=await eng.CompareAsync(new[]{repA,repB},0,"general",true,true);
+await eng.ExportWordAsync(repA,repB,repO,"T",true,default,repCmp,0,1);
+var repDoc=Doc(repO);var repParas=repDoc.Descendants(w+"p").Where(p=>p.Descendants(w+"t").Any(t=>t.Value=="Same item")).ToList();
+Check(repParas.Count==2,"repeated numbered paragraph count changed");
+Check(!repParas[0].Descendants(w+"numberingChange").Any(),"unchanged first duplicate received numberingChange");
+var repChange=repParas[1].Descendants(w+"numberingChange").SingleOrDefault();
+Check(repChange is not null&&repChange.Attribute(w+"original")?.Value=="2.","renumbered second duplicate was anchored to the wrong paragraph");
+using(var wd=WordprocessingDocument.Open(repO,false)){var errors=new OpenXmlValidator().Validate(wd.MainDocumentPart!.Document).ToList();Check(errors.Count==0,"repeated-number anchor OpenXML invalid: "+string.Join(" | ",errors.Take(5).Select(e=>e.Description)));}
+Console.WriteLine("PASS REPEATED NUMBERING LOGICAL ANCHOR");
+
+// 32. NextRevisionId must skip every revision id family, including property changes and table/numbering revisions.
+var exporterType=typeof(NativeComparisonEngine).Assembly.GetType("DocumentCompare.Avalonia.Engine.NativeOfficeExporter")!;
+var nextRevision=exporterType.GetMethod("NextRevisionId",BindingFlags.Static|BindingFlags.NonPublic)!;
+var revProbe=new XDocument(new XElement(w+"document",new XElement(w+"body",
+    new XElement(w+"ins",new XAttribute(w+"id","3")),
+    new XElement(w+"del",new XAttribute(w+"id","7")),
+    new XElement(w+"moveFrom",new XAttribute(w+"id","11")),
+    new XElement(w+"moveTo",new XAttribute(w+"id","13")),
+    new XElement(w+"cellIns",new XAttribute(w+"id","31")),
+    new XElement(w+"cellDel",new XAttribute(w+"id","37")),
+    new XElement(w+"numberingChange",new XAttribute(w+"id","41")),
+    new XElement(w+"rPrChange",new XAttribute(w+"id","52")),
+    new XElement(w+"pPrChange",new XAttribute(w+"id","55")))));
+var nextId=(int)nextRevision.Invoke(null,new object[]{revProbe,w})!;
+Check(nextId==56,"NextRevisionId failed to skip all existing revision ids: "+nextId);
+Console.WriteLine("PASS REVISION ID COLLISION SAFETY");
+
+// 33. SDT/customXml wrapped table rows must keep B wrappers on insertion, and deleted wrapped A rows must reappear as valid structural row deletions.
+string Tbl1(string rows)=>"<w:tbl><w:tblPr/><w:tblGrid><w:gridCol/></w:tblGrid>"+rows+"</w:tbl>";
+string Row1(string value)=>"<w:tr><w:tc>"+P(value)+"</w:tc></w:tr>";
+string SdtRow1(string value)=>"<w:sdt><w:sdtPr><w:tag w:val=\"row-sdt\"/></w:sdtPr><w:sdtContent>"+Row1(value)+"</w:sdtContent></w:sdt>";
+string CustomRow1(string value)=>"<w:customXml>"+Row1(value)+"</w:customXml>";
+var wrapInsA=Path.Combine(dir,"wrappedRowsInsA.docx");var wrapInsB=Path.Combine(dir,"wrappedRowsInsB.docx");var wrapInsO=Path.Combine(dir,"wrappedRowsInsOut.docx");
+Make(wrapInsA,Tbl1(Row1("KEEP")));Make(wrapInsB,Tbl1(Row1("KEEP")+SdtRow1("SDT_NEW")+CustomRow1("CUSTOM_NEW")));
+await eng.ExportWordAsync(wrapInsA,wrapInsB,wrapInsO,"T",true);var wrapInsDoc=Doc(wrapInsO);
+var sdtInsertedRow=wrapInsDoc.Descendants(w+"sdt").Descendants(w+"tr").Single(r=>r.Value.Contains("SDT_NEW"));
+var customInsertedRow=wrapInsDoc.Descendants(w+"customXml").Descendants(w+"tr").Single(r=>r.Value.Contains("CUSTOM_NEW"));
+Check(sdtInsertedRow.Element(w+"trPr")?.Element(w+"ins") is not null,"SDT wrapped inserted row lacks trPr/ins");
+Check(customInsertedRow.Element(w+"trPr")?.Element(w+"ins") is not null,"customXml wrapped inserted row lacks trPr/ins");
+using(var wd=WordprocessingDocument.Open(wrapInsO,false)){var errors=new OpenXmlValidator().Validate(wd.MainDocumentPart!.Document).ToList();Check(errors.Count==0,"wrapped row insertion OpenXML invalid: "+string.Join(" | ",errors.Take(5).Select(e=>e.Description)));}
+var wrapDelA=Path.Combine(dir,"wrappedRowsDelA.docx");var wrapDelB=Path.Combine(dir,"wrappedRowsDelB.docx");var wrapDelO=Path.Combine(dir,"wrappedRowsDelOut.docx");
+Make(wrapDelA,Tbl1(Row1("KEEP")+SdtRow1("SDT_OLD")+CustomRow1("CUSTOM_OLD")));Make(wrapDelB,Tbl1(Row1("KEEP")));
+await eng.ExportWordAsync(wrapDelA,wrapDelB,wrapDelO,"T",true);var wrapDelDoc=Doc(wrapDelO);
+var deletedRows=wrapDelDoc.Descendants(w+"tr").Where(r=>r.Element(w+"trPr")?.Element(w+"del") is not null).ToList();
+Check(deletedRows.Count>=2&&deletedRows.Any(r=>r.Value.Contains("SDT_OLD"))&&deletedRows.Any(r=>r.Value.Contains("CUSTOM_OLD")),"wrapped deleted rows were not reconstructed as row deletions");
+using(var wd=WordprocessingDocument.Open(wrapDelO,false)){var errors=new OpenXmlValidator().Validate(wd.MainDocumentPart!.Document).ToList();Check(errors.Count==0,"wrapped row deletion OpenXML invalid: "+string.Join(" | ",errors.Take(5).Select(e=>e.Description)));}
+Console.WriteLine("PASS WRAPPED TABLE ROW REVISION EXPORT");
+
+// 34. Nested-table text keeps document order, while Word export targets the inner table rather than corrupting outer-cell paragraphs.
+string NestedTable(string inner)=>"<w:tbl><w:tblPr/><w:tblGrid><w:gridCol/></w:tblGrid><w:tr><w:tc>"+P("OUTER_BEFORE")+"<w:tbl><w:tblPr/><w:tblGrid><w:gridCol/></w:tblGrid><w:tr><w:tc>"+P(inner)+"</w:tc></w:tr></w:tbl>"+P("OUTER_AFTER")+"</w:tc></w:tr></w:tbl>";
+var nestedA=Path.Combine(dir,"nestedA.docx");var nestedB=Path.Combine(dir,"nestedB.docx");var nestedO=Path.Combine(dir,"nestedOut.docx");
+Make(nestedA,NestedTable("INNER_OLD"));Make(nestedB,NestedTable("INNER_NEW"));
+var nestedText=await Read(nestedA);var beforePos=nestedText.IndexOf("OUTER_BEFORE",StringComparison.Ordinal);var innerPos=nestedText.IndexOf("INNER_OLD",StringComparison.Ordinal);var afterPos=nestedText.IndexOf("OUTER_AFTER",StringComparison.Ordinal);
+Check(beforePos>=0&&innerPos>beforePos&&afterPos>innerPos,"nested-table reader order regressed: "+nestedText);
+await eng.ExportWordAsync(nestedA,nestedB,nestedO,"T",true);var nestedDoc=Doc(nestedO);var nestedTables=nestedDoc.Descendants(w+"tbl").ToList();Check(nestedTables.Count==2,"nested table structure changed");
+var innerTable=nestedTables[1];var innerRows=innerTable.Descendants(w+"tr").ToList();
+Check(innerRows.Any(r=>r.Value.Contains("INNER_OLD")&&r.Element(w+"trPr")?.Element(w+"del") is not null),"inner-table deletion was not tracked as a deleted inner row");
+Check(innerRows.Any(r=>r.Value.Contains("INNER_NEW")&&r.Element(w+"trPr")?.Element(w+"ins") is not null),"inner-table insertion was not tracked as an inserted inner row");
+var outerBefore=nestedDoc.Descendants(w+"p").First(p=>p.Descendants(w+"t").Any(t=>t.Value=="OUTER_BEFORE"));var outerAfter=nestedDoc.Descendants(w+"p").First(p=>p.Descendants(w+"t").Any(t=>t.Value=="OUTER_AFTER"));
+Check(!outerBefore.Descendants(w+"ins").Any()&&!outerBefore.Descendants(w+"del").Any()&&!outerAfter.Descendants(w+"ins").Any()&&!outerAfter.Descendants(w+"del").Any(),"inner-table change polluted outer-cell paragraphs");
+using(var wd=WordprocessingDocument.Open(nestedO,false)){var errors=new OpenXmlValidator().Validate(wd.MainDocumentPart!.Document).ToList();Check(errors.Count==0,"nested-table export OpenXML invalid: "+string.Join(" | ",errors.Take(5).Select(e=>e.Description)));}
+Console.WriteLine("PASS NESTED TABLE EXPORT TARGETING");
+
+// 35. Cell-level SDT/customXml wrappers must likewise receive structural cell revisions without losing B wrappers.
+string Cell1(string value)=>"<w:tc>"+P(value)+"</w:tc>";
+string SdtCell1(string value)=>"<w:sdt><w:sdtPr/><w:sdtContent>"+Cell1(value)+"</w:sdtContent></w:sdt>";
+string CustomCell1(string value)=>"<w:customXml>"+Cell1(value)+"</w:customXml>";
+string RowCells1(string cells)=>"<w:tr>"+cells+"</w:tr>";
+var cellWrapInsA=Path.Combine(dir,"wrappedCellInsA.docx");var cellWrapInsB=Path.Combine(dir,"wrappedCellInsB.docx");var cellWrapInsO=Path.Combine(dir,"wrappedCellInsOut.docx");
+Make(cellWrapInsA,Tbl1(RowCells1(Cell1("KEEP"))));Make(cellWrapInsB,Tbl1(RowCells1(Cell1("KEEP")+SdtCell1("SDT_CELL_NEW"))));
+await eng.ExportWordAsync(cellWrapInsA,cellWrapInsB,cellWrapInsO,"T",true);var cellWrapInsDoc=Doc(cellWrapInsO);
+var sdtInsertedCell=cellWrapInsDoc.Descendants(w+"sdt").Descendants(w+"tc").Single(tc=>tc.Value.Contains("SDT_CELL_NEW"));
+Check(sdtInsertedCell.Element(w+"tcPr")?.Element(w+"cellIns") is not null,"SDT wrapped inserted cell lacks tcPr/cellIns");
+using(var wd=WordprocessingDocument.Open(cellWrapInsO,false)){var errors=new OpenXmlValidator().Validate(wd.MainDocumentPart!.Document).ToList();Check(errors.Count==0,"wrapped cell insertion OpenXML invalid: "+string.Join(" | ",errors.Take(5).Select(e=>e.Description)));}
+var cellWrapDelA=Path.Combine(dir,"wrappedCellDelA.docx");var cellWrapDelB=Path.Combine(dir,"wrappedCellDelB.docx");var cellWrapDelO=Path.Combine(dir,"wrappedCellDelOut.docx");
+Make(cellWrapDelA,Tbl1(RowCells1(Cell1("KEEP")+CustomCell1("CUSTOM_CELL_OLD"))));Make(cellWrapDelB,Tbl1(RowCells1(Cell1("KEEP"))));
+await eng.ExportWordAsync(cellWrapDelA,cellWrapDelB,cellWrapDelO,"T",true);var cellWrapDelDoc=Doc(cellWrapDelO);
+var deletedWrappedCell=cellWrapDelDoc.Descendants(w+"tc").SingleOrDefault(tc=>tc.Value.Contains("CUSTOM_CELL_OLD"));
+Check(deletedWrappedCell?.Element(w+"tcPr")?.Element(w+"cellDel") is not null,"customXml wrapped deleted cell was not reconstructed with cellDel");
+using(var wd=WordprocessingDocument.Open(cellWrapDelO,false)){var errors=new OpenXmlValidator().Validate(wd.MainDocumentPart!.Document).ToList();Check(errors.Count==0,"wrapped cell deletion OpenXML invalid: "+string.Join(" | ",errors.Take(5).Select(e=>e.Description)));}
+Console.WriteLine("PASS WRAPPED TABLE CELL REVISION EXPORT");
 
 Console.WriteLine("ALL REGRESSIONS PASSED");

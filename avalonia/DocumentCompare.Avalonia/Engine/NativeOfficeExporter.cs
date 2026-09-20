@@ -206,10 +206,10 @@ internal static class NativeOfficeExporter
         if (Path.GetExtension(originalPath).Equals(".docx", StringComparison.OrdinalIgnoreCase))
             originalParagraphs = ReadDocxParagraphSourcesFromPath(originalPath, w) ??
                                  oldText.Split('\n').Select(x => x.Trim()).Where(x => x.Length > 0)
-                                     .Select(x => new ParagraphSource(x, "body", new ParagraphAddress(-1, -1, -1, -1, -1), new NativeDocumentReader.ParagraphNumberInfo(string.Empty, null, 0))).ToList();
+                                     .Select(x => new ParagraphSource(x, "body", new ParagraphAddress(-1, -1, -1, -1, -1, -1, -1, -1, -1), new NativeDocumentReader.ParagraphNumberInfo(string.Empty, null, 0))).ToList();
         else
             originalParagraphs = oldText.Split('\n').Select(x => x.Trim()).Where(x => x.Length > 0)
-                .Select(x => new ParagraphSource(x, "body", new ParagraphAddress(-1, -1, -1, -1, -1), new NativeDocumentReader.ParagraphNumberInfo(string.Empty, null, 0))).ToList();
+                .Select(x => new ParagraphSource(x, "body", new ParagraphAddress(-1, -1, -1, -1, -1, -1, -1, -1, -1), new NativeDocumentReader.ParagraphNumberInfo(string.Empty, null, 0))).ToList();
 
         // Reuse the comparison result as high-confidence paragraph anchors.  This keeps Word
         // export on the same article/general-unit lineage as the on-screen comparison.  Exact
@@ -231,10 +231,11 @@ internal static class NativeOfficeExporter
             .Where(g => g.All(x => !matchedOld.Contains(x.index)))
             .Select(g => g.Key).ToHashSet();
         // Never trust raw table/row ordinals across A and B: deleting an earlier table shifts every
-        // later table index.  Map structures only through paragraphs that the comparison aligned.
-        var tableMap = BuildMatchedTableMap(originalParagraphs, revisedParagraphs, ops);
+        // later table index.  Base structural maps on aligned paragraphs; the nested-table fallback
+        // below is permitted only through an already matched containing cell.
         var rowMap = BuildMatchedRowMap(originalParagraphs, revisedParagraphs, ops);
         var cellMap = BuildMatchedCellMap(originalParagraphs, revisedParagraphs, ops);
+        var tableMap = BuildMatchedTableMap(originalParagraphs, revisedParagraphs, ops, cellMap);
         var fullyInsertedCells = revisedParagraphs.Select((entry, index) => (entry, index))
             .Where(x => x.entry.Cell is not null && x.entry.Row is not null && !fullyInsertedRows.Contains(x.entry.Row))
             .GroupBy(x => x.entry.Cell!)
@@ -320,7 +321,8 @@ internal static class NativeOfficeExporter
     }
 
     private sealed record RunMap(XElement Run, int Start, int End, string Text);
-    private sealed record ParagraphAddress(int TopBlock, int Table, int Row, int Cell, int Paragraph);
+    private sealed record ParagraphAddress(int TopBlock, int Table, int Row, int Cell, int Paragraph,
+        int ParentTable, int ParentRow, int ParentCell, int NestedTableOrdinal);
     private sealed record ParagraphSource(string Text, string ContainerKind, ParagraphAddress Address,
         NativeDocumentReader.ParagraphNumberInfo Numbering);
     private sealed record ParagraphEntry(XElement Paragraph, string Text, string ContainerKind, XElement TopLevelBlock,
@@ -539,7 +541,8 @@ internal static class NativeOfficeExporter
     }
 
     private static Dictionary<int, int> BuildMatchedTableMap(IReadOnlyList<ParagraphSource> oldParagraphs,
-        IReadOnlyList<ParagraphEntry> newParagraphs, IReadOnlyList<ParagraphOp> ops)
+        IReadOnlyList<ParagraphEntry> newParagraphs, IReadOnlyList<ParagraphOp> ops,
+        IReadOnlyDictionary<(int Table, int Row, int Cell), (int Table, int Row, int Cell)> cellMap)
     {
         var votes = new Dictionary<(int OldTable, int NewTable), int>();
         foreach (var op in ops.Where(x => x.Old >= 0 && x.New >= 0))
@@ -558,6 +561,41 @@ internal static class NativeOfficeExporter
             if (result.ContainsKey(candidate.Key.OldTable) || usedNew.Contains(candidate.Key.NewTable)) continue;
             result[candidate.Key.OldTable] = candidate.Key.NewTable;
             usedNew.Add(candidate.Key.NewTable);
+        }
+
+        // A nested table whose only row/cell changed completely may have no matched paragraph of
+        // its own, so the vote-only map above has no evidence for it.  In that case, inherit
+        // identity from a confidently matched containing cell, but only when the number of direct
+        // nested tables in that cell is unchanged.  This avoids reintroducing the old raw-index
+        // shift bug when a sibling table was actually inserted or deleted.
+        var oldTables = oldParagraphs.Where(x => x.Address.Table >= 0)
+            .GroupBy(x => x.Address.Table).ToDictionary(g => g.Key, g => g.First().Address);
+        var newTables = newParagraphs.Where(x => x.Address.Table >= 0)
+            .GroupBy(x => x.Address.Table).ToDictionary(g => g.Key, g => g.First().Address);
+        foreach (var (oldTable, oldAddress) in oldTables.OrderBy(x => x.Key))
+        {
+            if (result.ContainsKey(oldTable) || oldAddress.ParentTable < 0 ||
+                oldAddress.ParentRow < 0 || oldAddress.ParentCell < 0 || oldAddress.NestedTableOrdinal < 0)
+                continue;
+            if (!cellMap.TryGetValue((oldAddress.ParentTable, oldAddress.ParentRow, oldAddress.ParentCell),
+                    out var newParentCell))
+                continue;
+
+            var oldSiblings = oldTables.Values
+                .Where(a => a.ParentTable == oldAddress.ParentTable && a.ParentRow == oldAddress.ParentRow &&
+                            a.ParentCell == oldAddress.ParentCell)
+                .Select(a => a.Table).Distinct().Count();
+            var newSiblingAddresses = newTables.Values
+                .Where(a => a.ParentTable == newParentCell.Table && a.ParentRow == newParentCell.Row &&
+                            a.ParentCell == newParentCell.Cell)
+                .GroupBy(a => a.Table).Select(g => g.First()).ToList();
+            if (oldSiblings != newSiblingAddresses.Count) continue;
+
+            var candidate = newSiblingAddresses.SingleOrDefault(a =>
+                a.NestedTableOrdinal == oldAddress.NestedTableOrdinal);
+            if (candidate is null || usedNew.Contains(candidate.Table)) continue;
+            result[oldTable] = candidate.Table;
+            usedNew.Add(candidate.Table);
         }
         return result;
     }
@@ -658,15 +696,27 @@ internal static class NativeOfficeExporter
         var top = TopLevelBodyBlock(paragraph, body);
         var topIndex = RefIndex(body.Elements(), top);
         var table = paragraph.Ancestors(w + "tbl").FirstOrDefault();
-        if (table is null) return new ParagraphAddress(topIndex, -1, -1, -1, -1);
-        var tableIndex = RefIndex(body.Descendants(w + "tbl"), table);
+        if (table is null) return new ParagraphAddress(topIndex, -1, -1, -1, -1, -1, -1, -1, -1);
+        var tables = body.Descendants(w + "tbl").ToList();
+        var tableIndex = RefIndex(tables, table);
         var row = paragraph.Ancestors(w + "tr").FirstOrDefault();
         var cell = paragraph.Ancestors(w + "tc").FirstOrDefault();
         var rowIndex = row is null ? -1 : RefIndex(TableRows(table, w), row);
         var cellIndex = row is null || cell is null ? -1 : RefIndex(RowCells(row, w), cell);
         var paragraphIndex = cell is null ? -1 : RefIndex(
             cell.Descendants(w + "p").Where(p => ReferenceEquals(p.Ancestors(w + "tc").FirstOrDefault(), cell)), paragraph);
-        return new ParagraphAddress(topIndex, tableIndex, rowIndex, cellIndex, paragraphIndex);
+
+        var parentTable = table.Ancestors(w + "tbl").FirstOrDefault();
+        var parentCell = table.Ancestors(w + "tc").FirstOrDefault();
+        var parentRow = parentCell?.Ancestors(w + "tr").FirstOrDefault();
+        var parentTableIndex = parentTable is null ? -1 : RefIndex(tables, parentTable);
+        var parentRowIndex = parentTable is null || parentRow is null ? -1 : RefIndex(TableRows(parentTable, w), parentRow);
+        var parentCellIndex = parentRow is null || parentCell is null ? -1 : RefIndex(RowCells(parentRow, w), parentCell);
+        var nestedTableOrdinal = parentCell is null ? -1 : RefIndex(
+            parentCell.Descendants(w + "tbl")
+                .Where(t => ReferenceEquals(t.Ancestors(w + "tc").FirstOrDefault(), parentCell)), table);
+        return new ParagraphAddress(topIndex, tableIndex, rowIndex, cellIndex, paragraphIndex,
+            parentTableIndex, parentRowIndex, parentCellIndex, nestedTableOrdinal);
     }
 
     private static List<ParagraphEntry> BodyParagraphEntries(XElement body, XNamespace w,

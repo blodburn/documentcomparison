@@ -9,18 +9,19 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.20.16**
+**V5.20.17**
 
 - Reject all existing Word Track Changes classes before export, including property-format revisions such as `pPrChange`, `rPrChange`, `tblPrChange`, `trPrChange`, `tcPrChange`, `sectPrChange`, and `numberingChange`.
 - Read table rows/cells through transparent `w:sdt` and `w:customXml` wrappers so content-controlled table text is no longer omitted from comparison.
 - Preserve those SDT/customXml wrappers during in-place Word export and keep structural row/cell addressing valid through wrapped table structures.
+- Keep fully changed nested tables anchored inside their matched parent cell instead of leaking deleted content into the document body, without falling back to unsafe global table-index pairing.
 - Track automatic-numbering-only changes with valid Word `w:numberingChange` metadata while keeping B's numbering/formatting as the final state.
 - Tighten Roman article/item recognition to canonical Roman numerals without word-specific exceptions; invalid forms such as `CIVIL`, `IIV`, and `VX` are rejected while valid canonical forms remain supported.
 - Fix SpreadsheetML rich-text property serialization order (`strike -> color -> underline`) for stricter XLSX consumers.
 - Replace the large Word paragraph-gap positional fallback with Hirschberg linear-space alignment, preserving similarity-based pairing without quadratic traceback memory.
 - Reuse automatic-number labels in Word paragraph anchoring so repeated numbered clauses follow the same logical lineage as the on-screen comparison.
 - Add Word numbering insertion/removal regressions and canonical Roman validation for general-document headings.
-- Expand the repository regression suite beyond the V5.20.15 coverage, including numbering add/remove, canonical Roman generic headings, property revisions, wrapped table SDT/customXml, XLSX rich-text order, large-gap alignment, and in-place SDT export.
+- Expand the repository regression suite beyond the V5.20.15 coverage, including repeated-number anchors, revision-ID collision safety, wrapped row/cell structural revisions, nested-table export targeting, numbering add/remove, canonical Roman generic headings, property revisions, XLSX rich-text order, large-gap alignment, and in-place SDT export.
 
 ## Features
 
