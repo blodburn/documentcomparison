@@ -614,10 +614,19 @@ public sealed class NativeComparisonEngine : IComparisonEngine
                         TitleSimilarity(ex, x.Unit) < .35)
                         return false;
                     if (ex.Number.Length > 0 && x.Unit.Number.Length > 0 &&
-                        !string.Equals(ex.Number, x.Unit.Number, StringComparison.OrdinalIgnoreCase) &&
-                        (ex.Title.Length == 0 || x.Unit.Title.Length == 0 ||
-                         TitleSimilarity(ex, x.Unit) < .35))
-                        return false;
+                        !string.Equals(ex.Number, x.Unit.Number, StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (ex.Title.Length == 0 || x.Unit.Title.Length == 0 ||
+                            TitleSimilarity(ex, x.Unit) < .35)
+                            return false;
+                        if (IsLowInformationTitle(ex.Title) && IsLowInformationTitle(x.Unit.Title))
+                        {
+                            var exBody = LineageNormalize(ex.Body);
+                            var otherBody = LineageNormalize(x.Unit.Body);
+                            if (exBody.Length == 0 || exBody != otherBody)
+                                return false;
+                        }
+                    }
                     return true;
                 });
                 if (merge is null) { merge = new NativeUnit?[n]; pending.Add(merge); }
@@ -680,7 +689,10 @@ public sealed class NativeComparisonEngine : IComparisonEngine
                              ta == LineageNormalize(b[bj].Title) &&
                              articleA.Count(i => LineageNormalize(a[i].Title) == ta) == 1 &&
                              articleB.Count(j => LineageNormalize(b[j].Title) == ta) == 1;
-            if ((uniqueA && uniqueB) || exactTitle)
+            var lowInformationTitle = IsLowInformationTitle(a[ai].Title) && IsLowInformationTitle(b[bj].Title);
+            var sameNumber = string.Equals(a[ai].Number, b[bj].Number, StringComparison.OrdinalIgnoreCase);
+            var hasNonTitleSupport = sameNumber || BodySimilarity(a[ai], b[bj]) >= .72;
+            if (((uniqueA && uniqueB) || exactTitle) && (!lowInformationTitle || hasNonTitleSupport))
                 strongTitlePairs.Add((ai, bj, rankedB[0].S));
         }
         var strongA = strongTitlePairs.Select(x => x.A).ToHashSet();
@@ -689,9 +701,15 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         (double Sim, double Title, double Body, bool AmbiguousRepeatedBody) Evidence(int ai, int bj)
         {
             var ua = a[ai]; var ub = b[bj];
-            var tr = TitleScore(ai, bj);
+            var rawTr = TitleScore(ai, bj);
             var br = BodySimilarity(ua, ub);
+            var sameNumber = string.Equals(ua.Number, ub.Number, StringComparison.OrdinalIgnoreCase);
+            var weakGenericTitleOnly = rawTr >= .82 &&
+                                       IsLowInformationTitle(ua.Title) && IsLowInformationTitle(ub.Title) &&
+                                       !sameNumber && br < .72;
+            var tr = weakGenericTitleOnly ? Math.Min(rawTr, .34) : rawTr;
             var sim = UnitLineageSimilarity(ua, ub);
+            if (weakGenericTitleOnly) sim = Math.Min(sim, .42);
             var bodyKeyA = LineageNormalize(ua.Body); var bodyKeyB = LineageNormalize(ub.Body);
             var repeated = bodyKeyA.Length > 0 && bodyKeyA == bodyKeyB &&
                            (repeatedBodiesA.Contains(bodyKeyA) || repeatedBodiesB.Contains(bodyKeyB));
@@ -699,7 +717,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             var betterTitleElsewhere = titleConflict &&
                 ((bestTitleForA.TryGetValue(ai, out var bestA) && bestA >= .72 && bestA >= tr + .20) ||
                  (bestTitleForB.TryGetValue(bj, out var bestB) && bestB >= .72 && bestB >= tr + .20));
-            var ambiguous = titleConflict && br >= .84 && (repeated || betterTitleElsewhere);
+            var ambiguous = weakGenericTitleOnly || (titleConflict && br >= .84 && (repeated || betterTitleElsewhere));
             if (ambiguous) sim = Math.Min(sim, .42);
             return (sim, tr, br, ambiguous);
         }
@@ -934,6 +952,15 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         }
         return result;
     }
+
+    private static readonly HashSet<string> LowInformationTitleKeys = new(StringComparer.Ordinal)
+    {
+        "general", "generalprovisions", "other", "others", "miscellaneous", "miscellaneousprovisions",
+        "provisions", "supplementaryprovisions", "etc", "기타", "기타사항", "일반", "일반사항", "총칙", "부칙"
+    };
+
+    private static bool IsLowInformationTitle(string title) =>
+        LowInformationTitleKeys.Contains(LineageNormalize(title));
 
     private static string LineageNormalize(string value)
     {

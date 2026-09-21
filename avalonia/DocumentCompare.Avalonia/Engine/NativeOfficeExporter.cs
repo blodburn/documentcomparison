@@ -1536,23 +1536,10 @@ internal static class NativeOfficeExporter
         return result;
     }
 
-    private static string ParagraphSemanticLocator(IReadOnlyList<XElement> bodyParagraphs, XElement? paragraph, XNamespace w)
-    {
-        if (paragraph is null) return "none";
-        var index = RefIndex(bodyParagraphs, paragraph);
-        if (index < 0) return "outside";
-        var key = NativeComparisonEngine.Normalize(ParagraphVisibleText(paragraph, w));
-        var occurrence = 0;
-        for (var i = 0; i < index; i++)
-            if (NativeComparisonEngine.Normalize(ParagraphVisibleText(bodyParagraphs[i], w)) == key)
-                occurrence++;
-        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key)));
-        return hash + "#" + occurrence;
-    }
-
     private sealed record UnsupportedRelationshipRef(
         string ElementName, string AttributeName, string Resolved,
-        string AnchorKind, string AnchorText, string OwnerText, int OwnerOccurrence, string OutsideText,
+        string AnchorKind, string AnchorText, int AnchorOccurrence,
+        string OwnerText, int OwnerOccurrence, string OutsideText,
         string PreviousParagraph, string NextParagraph, string StructuralPath);
 
     private sealed record UnsupportedOtherRef(
@@ -1579,14 +1566,16 @@ internal static class NativeOfficeExporter
         return string.Join("/", parts);
     }
 
+    private const string EmptyParagraphContextToken = "";
+
     private static string ParagraphContextWindow(IReadOnlyList<XElement> paragraphs, int index, int step, XNamespace w)
     {
         if (index < 0) return string.Empty;
         var values = new List<string>();
-        for (var i = index + step; i >= 0 && i < paragraphs.Count && values.Count < 4; i += step)
+        for (var i = index + step; i >= 0 && i < paragraphs.Count && values.Count < 8; i += step)
         {
             var value = NativeComparisonEngine.Normalize(ParagraphVisibleText(paragraphs[i], w));
-            if (value.Length > 0) values.Add(value);
+            values.Add(value.Length == 0 ? EmptyParagraphContextToken : value);
         }
         return string.Join("", values);
     }
@@ -1594,8 +1583,10 @@ internal static class NativeOfficeExporter
     private static bool ContextOverlap(string a, string b)
     {
         if (a.Length == 0 || b.Length == 0) return false;
-        var right = b.Split('', StringSplitOptions.RemoveEmptyEntries).ToHashSet(StringComparer.Ordinal);
-        return a.Split('', StringSplitOptions.RemoveEmptyEntries).Any(right.Contains);
+        var right = b.Split('', StringSplitOptions.RemoveEmptyEntries)
+            .Where(x => x != EmptyParagraphContextToken).ToHashSet(StringComparer.Ordinal);
+        return a.Split('', StringSplitOptions.RemoveEmptyEntries)
+            .Where(x => x != EmptyParagraphContextToken).Any(right.Contains);
     }
 
     private static int ParagraphTextOccurrence(IReadOnlyList<XElement> paragraphs, int index, string ownerText, XNamespace w)
@@ -1608,11 +1599,58 @@ internal static class NativeOfficeExporter
         return occurrence;
     }
 
+    private static int AnchorTextOccurrence(XElement anchor, XElement? ownerParagraph, string anchorText, XNamespace w)
+    {
+        if (ownerParagraph is null || anchorText.Length == 0) return -1;
+        var prefix = new StringBuilder();
+        foreach (var run in NativeDocumentReader.VisibleRunsInParagraph(ownerParagraph, w))
+        {
+            if (run.AncestorsAndSelf().Any(x => ReferenceEquals(x, anchor))) break;
+            prefix.Append(NativeDocumentReader.RunVisibleText(run, w));
+        }
+        var normalizedPrefix = NativeComparisonEngine.Normalize(prefix.ToString());
+        var occurrence = 0;
+        var at = 0;
+        while ((at = normalizedPrefix.IndexOf(anchorText, at, StringComparison.Ordinal)) >= 0)
+        {
+            occurrence++;
+            at += Math.Max(1, anchorText.Length);
+        }
+        return occurrence;
+    }
+
     private static string OutsideAnchorText(string ownerText, string anchorText)
     {
         if (anchorText.Length == 0) return ownerText;
         var at = ownerText.IndexOf(anchorText, StringComparison.Ordinal);
         return at < 0 ? ownerText : ownerText.Remove(at, anchorText.Length);
+    }
+
+    private static (string Text, int Distance) NearestDistinctContext(string window, string ownerText)
+    {
+        if (window.Length == 0) return (string.Empty, -1);
+        var values = window.Split('', StringSplitOptions.RemoveEmptyEntries);
+        for (var i = 0; i < values.Length; i++)
+        {
+            var value = values[i] == EmptyParagraphContextToken ? string.Empty : values[i];
+            if (value.Length > 0 && !string.Equals(value, ownerText, StringComparison.Ordinal))
+                return (value, i + 1);
+        }
+        return (string.Empty, -1);
+    }
+
+    private static bool SameSemanticOwner(
+        string xText, int xOccurrence, string xPrevious, string xNext,
+        string yText, int yOccurrence, string yPrevious, string yNext)
+    {
+        if (!string.Equals(xText, yText, StringComparison.Ordinal)) return false;
+        if (xText.Length > 0 && xOccurrence == yOccurrence) return true;
+        var xp = NearestDistinctContext(xPrevious, xText);
+        var yp = NearestDistinctContext(yPrevious, yText);
+        if (xp.Distance > 0 && xp == yp) return true;
+        var xn = NearestDistinctContext(xNext, xText);
+        var yn = NearestDistinctContext(yNext, yText);
+        return xn.Distance > 0 && xn == yn;
     }
 
     private static XElement RelationshipAnchor(XElement element, XNamespace w)
@@ -1675,6 +1713,7 @@ internal static class NativeOfficeExporter
                     resolved,
                     anchor.Name.LocalName,
                     anchorText,
+                    AnchorTextOccurrence(anchor, ownerParagraph, anchorText, w),
                     ownerText,
                     ownerOccurrence,
                     OutsideAnchorText(ownerText, anchorText),
@@ -1728,13 +1767,16 @@ internal static class NativeOfficeExporter
                 ContextOverlap(x.NextParagraph, y.NextParagraph) ||
                 (x.PreviousParagraph.Length == 0 && x.NextParagraph.Length == 0 &&
                  y.PreviousParagraph.Length == 0 && y.NextParagraph.Length == 0);
-            var sameOwner = x.OwnerText == y.OwnerText && x.OwnerOccurrence == y.OwnerOccurrence;
+            var sameOwner = SameSemanticOwner(
+                x.OwnerText, x.OwnerOccurrence, x.PreviousParagraph, x.NextParagraph,
+                y.OwnerText, y.OwnerOccurrence, y.PreviousParagraph, y.NextParagraph);
 
             if (sameOwner)
             {
                 if (x.StructuralPath == y.StructuralPath)
                     continue;
-                if (x.AnchorKind == "hyperlink" && x.AnchorText.Length > 0 && x.AnchorText == y.AnchorText)
+                if (x.AnchorKind == "hyperlink" && x.AnchorText.Length > 0 &&
+                    x.AnchorText == y.AnchorText && x.AnchorOccurrence == y.AnchorOccurrence)
                     continue;
                 return false;
             }
@@ -1746,6 +1788,7 @@ internal static class NativeOfficeExporter
                 if (x.StructuralPath == y.StructuralPath && x.OutsideText == y.OutsideText)
                     continue;
                 if (x.AnchorText.Length > 0 && x.AnchorText == y.AnchorText &&
+                    x.AnchorOccurrence == y.AnchorOccurrence &&
                     (x.OutsideText.Length == 0 || y.OutsideText.Length == 0 ||
                      x.OutsideText.Contains(y.OutsideText, StringComparison.Ordinal) ||
                      y.OutsideText.Contains(x.OutsideText, StringComparison.Ordinal)))
@@ -1766,8 +1809,21 @@ internal static class NativeOfficeExporter
         for (var i = 0; i < a.Count; i++)
         {
             var x = a[i]; var y = b[i];
-            if (x.Kind != y.Kind || x.Value != y.Value || x.StructuralPath != y.StructuralPath ||
-                x.OwnerText != y.OwnerText || x.OwnerOccurrence != y.OwnerOccurrence)
+            if (x.Kind != y.Kind || x.Value != y.Value || x.StructuralPath != y.StructuralPath)
+                return false;
+            if (SameSemanticOwner(
+                    x.OwnerText, x.OwnerOccurrence, x.PreviousParagraph, x.NextParagraph,
+                    y.OwnerText, y.OwnerOccurrence, y.PreviousParagraph, y.NextParagraph))
+                continue;
+            var sameContext =
+                ContextOverlap(x.PreviousParagraph, y.PreviousParagraph) ||
+                ContextOverlap(x.NextParagraph, y.NextParagraph) ||
+                (x.PreviousParagraph.Length == 0 && x.NextParagraph.Length == 0 &&
+                 y.PreviousParagraph.Length == 0 && y.NextParagraph.Length == 0);
+            var ownerContainment = x.OwnerText.Length > 0 && y.OwnerText.Length > 0 &&
+                (x.OwnerText.Contains(y.OwnerText, StringComparison.Ordinal) ||
+                 y.OwnerText.Contains(x.OwnerText, StringComparison.Ordinal));
+            if (!sameContext || !ownerContainment)
                 return false;
         }
         return true;
@@ -1777,7 +1833,7 @@ internal static class NativeOfficeExporter
     {
         var snapshot = ReadMainDocumentUnsupportedContentSnapshot(path);
         var rels = snapshot.Relationships.Select(x =>
-            $"RELREF|{x.ElementName}|{x.AttributeName}|{x.Resolved}|{x.AnchorKind}|{x.AnchorText}|owner={x.OwnerText}#{x.OwnerOccurrence}|outside={x.OutsideText}|{x.StructuralPath}");
+            $"RELREF|{x.ElementName}|{x.AttributeName}|{x.Resolved}|{x.AnchorKind}|{x.AnchorText}#{x.AnchorOccurrence}|owner={x.OwnerText}#{x.OwnerOccurrence}|outside={x.OutsideText}|{x.StructuralPath}");
         var others = snapshot.FieldsAndSymbols.Select(x =>
             $"{x.Kind}|{x.Value}|owner={x.OwnerText}#{x.OwnerOccurrence}|{x.StructuralPath}");
         return string.Join("\n", rels.Concat(others));
@@ -1792,12 +1848,19 @@ internal static class NativeOfficeExporter
             throw new InvalidOperationException("A와 B의 Word 본문 관계/필드/기호 같은 비텍스트 내용이 서로 다릅니다. 현재 변경추적 엔진이 이 변경을 안전하게 표현하지 못하므로 저장을 중단했습니다.");
     }
 
-    private static string ReadMainDocumentAncillaryReferenceSignature(string path)
+    private sealed record AncillaryNoteRef(
+        string Kind, string Id, int LocalIndex,
+        string OwnerText, int OwnerOccurrence, string PreviousParagraph, string NextParagraph);
+
+    private sealed record MainAncillaryReferenceSnapshot(
+        List<string> SectionReferences, List<AncillaryNoteRef> NoteReferences);
+
+    private static MainAncillaryReferenceSnapshot ReadMainDocumentAncillaryReferenceSnapshot(string path)
     {
         using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
         using var zip = new ZipArchive(fs, ZipArchiveMode.Read);
         var documentEntry = zip.GetEntry("word/document.xml");
-        if (documentEntry is null) return string.Empty;
+        if (documentEntry is null) return new(new(), new());
         XNamespace w = W;
         XDocument doc; using (var input = documentEntry.Open()) doc = XDocument.Load(input, LoadOptions.PreserveWhitespace);
 
@@ -1819,7 +1882,8 @@ internal static class NativeOfficeExporter
             }
         }
 
-        var tokens = new List<string>();
+        var sectionTokens = new List<string>();
+        var noteRefs = new List<AncillaryNoteRef>();
         var body = doc.Root?.Element(w + "body");
         var bodyParagraphs = body is null ? new List<XElement>() : BodyParagraphs(body, w).ToList();
         var sectionProperties = doc.Descendants(w + "sectPr").ToList();
@@ -1831,26 +1895,66 @@ internal static class NativeOfficeExporter
                 var target = relationshipTargets.TryGetValue(id, out var resolved) ? resolved : "missing:" + id;
                 var sectPr = element.Ancestors(w + "sectPr").FirstOrDefault();
                 var sectionIndex = sectPr is null ? -1 : RefIndex(sectionProperties, sectPr);
-                tokens.Add($"{element.Name.LocalName}|section={sectionIndex}|{element.Attribute(w + "type")?.Value ?? string.Empty}|{target}");
+                sectionTokens.Add($"{element.Name.LocalName}|section={sectionIndex}|{element.Attribute(w + "type")?.Value ?? string.Empty}|{target}");
             }
             else if (element.Name == w + "footnoteReference" || element.Name == w + "endnoteReference")
             {
                 var ownerParagraph = element.Ancestors(w + "p").FirstOrDefault();
-                var paragraphLocator = ParagraphSemanticLocator(bodyParagraphs, ownerParagraph, w);
+                var paragraphIndex = ownerParagraph is null ? -1 : RefIndex(bodyParagraphs, ownerParagraph);
+                var ownerText = ownerParagraph is null
+                    ? string.Empty
+                    : NativeComparisonEngine.Normalize(ParagraphVisibleText(ownerParagraph, w));
+                var ownerOccurrence = ParagraphTextOccurrence(bodyParagraphs, paragraphIndex, ownerText, w);
+                var previousParagraph = ParagraphContextWindow(bodyParagraphs, paragraphIndex, -1, w);
+                var nextParagraph = ParagraphContextWindow(bodyParagraphs, paragraphIndex, 1, w);
                 var localIndex = ownerParagraph is null ? -1 : RefIndex(
                     ownerParagraph.Descendants(element.Name)
                         .Where(x => ReferenceEquals(x.Ancestors(w + "p").FirstOrDefault(), ownerParagraph)), element);
-                tokens.Add($"{element.Name.LocalName}|paragraph={paragraphLocator}|local={localIndex}|{element.Attribute(w + "id")?.Value ?? string.Empty}");
+                noteRefs.Add(new AncillaryNoteRef(
+                    element.Name.LocalName,
+                    element.Attribute(w + "id")?.Value ?? string.Empty,
+                    localIndex,
+                    ownerText,
+                    ownerOccurrence,
+                    previousParagraph,
+                    nextParagraph));
             }
         }
-        return string.Join("\n", tokens);
+        return new(sectionTokens, noteRefs);
+    }
+
+    private static bool AncillaryNoteRefsEquivalent(
+        IReadOnlyList<AncillaryNoteRef> a, IReadOnlyList<AncillaryNoteRef> b)
+    {
+        if (a.Count != b.Count) return false;
+        for (var i = 0; i < a.Count; i++)
+        {
+            var x = a[i]; var y = b[i];
+            if (x.Kind != y.Kind || x.Id != y.Id || x.LocalIndex != y.LocalIndex)
+                return false;
+            if (!SameSemanticOwner(
+                    x.OwnerText, x.OwnerOccurrence, x.PreviousParagraph, x.NextParagraph,
+                    y.OwnerText, y.OwnerOccurrence, y.PreviousParagraph, y.NextParagraph))
+                return false;
+        }
+        return true;
+    }
+
+    private static string ReadMainDocumentAncillaryReferenceSignature(string path)
+    {
+        var snapshot = ReadMainDocumentAncillaryReferenceSnapshot(path);
+        var notes = snapshot.NoteReferences.Select(x =>
+            $"{x.Kind}|{x.Id}|local={x.LocalIndex}|owner={x.OwnerText}#{x.OwnerOccurrence}");
+        return string.Join("
+", snapshot.SectionReferences.Concat(notes));
     }
 
     private static void EnsureAncillaryWordPartsEquivalent(string originalPath, string revisedPath)
     {
-        var aRefs = ReadMainDocumentAncillaryReferenceSignature(originalPath);
-        var bRefs = ReadMainDocumentAncillaryReferenceSignature(revisedPath);
-        if (!string.Equals(aRefs, bRefs, StringComparison.Ordinal))
+        var aRefs = ReadMainDocumentAncillaryReferenceSnapshot(originalPath);
+        var bRefs = ReadMainDocumentAncillaryReferenceSnapshot(revisedPath);
+        if (!aRefs.SectionReferences.SequenceEqual(bRefs.SectionReferences, StringComparer.Ordinal) ||
+            !AncillaryNoteRefsEquivalent(aRefs.NoteReferences, bRefs.NoteReferences))
             throw new InvalidOperationException("A와 B의 Word header/footer/footnote/endnote 참조 위치가 서로 다릅니다. 현재 변경추적 내보내기는 본문 XML을 기준으로 하므로, 부속 파트 변경을 누락한 불완전한 파일 생성을 막기 위해 저장을 중단했습니다.");
 
         var a = ReadAncillarySemanticSignatures(originalPath);

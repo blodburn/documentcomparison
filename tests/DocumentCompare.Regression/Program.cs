@@ -802,4 +802,148 @@ var fieldNearBlocked=false;try{await eng.ExportWordAsync(fieldNearA,fieldNearB,f
 Check(fieldNearBlocked,"field moved to nearby paragraph despite overlapping context");
 Console.WriteLine("PASS FIELD NEARBY-MOVE GUARD");
 
+
+// 76. A low-information exact title alone must not force lineage across unrelated bodies.
+var genericTitleA=Path.Combine(dir,"genericTitleA.txt");var genericTitleB=Path.Combine(dir,"genericTitleB.txt");
+File.WriteAllText(genericTitleA,
+    "Article 1 (Start)\nStable start.\nArticle 2 (General)\nOld licensing obligations apply only to legacy desktop software.\nArticle 3 (Payment Terms)\nPayment shall be made monthly.",
+    new UTF8Encoding(false));
+File.WriteAllText(genericTitleB,
+    "Article 1 (Start)\nStable start.\nArticle 2 (Privacy Protection)\nPersonal information shall be protected.\nArticle 3 (Payment Terms)\nPayment shall be made monthly.\nArticle 4 (General)\nNew mobile advertising rules apply to anonymous analytics.",
+    new UTF8Encoding(false));
+var genericTitleCmp=await eng.CompareAsync(new[]{genericTitleA,genericTitleB},0,"legal",true,true);
+var oldGeneral=genericTitleCmp.Rows.Single(r=>r.Members[0]?.Number=="2");
+Check(oldGeneral.Members[1]?.Title!="General",
+    "generic exact title alone forced unrelated Article 2 General -> Article 4 General lineage");
+Console.WriteLine("PASS GENERIC TITLE ANCHOR SAFETY");
+
+// 77. Inserting an identical ordinary paragraph before the same field owner must not create a false block.
+var fieldDupA=Path.Combine(dir,"fieldDupA.docx");var fieldDupB=Path.Combine(dir,"fieldDupB.docx");var fieldDupO=Path.Combine(dir,"fieldDupOut.docx");
+Make(fieldDupA,
+    P("Repeat")+
+    "<w:p><w:r><w:instrText>PAGE</w:instrText></w:r><w:r><w:t>Repeat</w:t></w:r></w:p>"+
+    P("Stable tail"));
+Make(fieldDupB,
+    P("Repeat")+P("Repeat")+
+    "<w:p><w:r><w:instrText>PAGE</w:instrText></w:r><w:r><w:t>Repeat</w:t></w:r></w:p>"+
+    P("Stable tail"));
+await eng.ExportWordAsync(fieldDupA,fieldDupB,fieldDupO,"T",true);
+Check(File.Exists(fieldDupO),"identical paragraph insertion before unchanged field owner was falsely blocked");
+Console.WriteLine("PASS FIELD DUPLICATE-PARAGRAPH SHIFT");
+
+
+// 78. An image-only relationship moved between different empty-text paragraphs must be blocked.
+var imageEmptyA=Path.Combine(dir,"imageEmptyA.docx");var imageEmptyB=Path.Combine(dir,"imageEmptyB.docx");var imageEmptyO=Path.Combine(dir,"imageEmptyOut.docx");
+Make(imageEmptyA,
+    P("Stable one")+
+    "<w:p><w:r><w:drawing xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" r:id=\"rIdImage\"/></w:r></w:p>"+
+    P("Stable two")+P("Stable three"));
+Make(imageEmptyB,
+    P("Stable one")+P("Stable two")+
+    "<w:p><w:r><w:drawing xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" r:id=\"rIdImage\"/></w:r></w:p>"+
+    P("Stable three"));
+AddWordXml(imageEmptyA,"word/_rels/document.xml.rels",imageRels);AddWordXml(imageEmptyB,"word/_rels/document.xml.rels",imageRels);
+AddWordBytes(imageEmptyA,"word/media/image1.bin",new byte[]{1,2,3,4});AddWordBytes(imageEmptyB,"word/media/image1.bin",new byte[]{1,2,3,4});
+var imageEmptyBlocked=false;try{await eng.ExportWordAsync(imageEmptyA,imageEmptyB,imageEmptyO,"T",true);}catch(InvalidOperationException ex){imageEmptyBlocked=ex.Message.Contains("비텍스트")||ex.Message.Contains("관계");}
+Check(imageEmptyBlocked,"image-only relationship moved between empty-text paragraphs without being blocked");
+Console.WriteLine("PASS IMAGE-ONLY OWNER LOCATION GUARD");
+
+// 79. An image-only owner may shift globally when unrelated paragraphs are inserted elsewhere.
+var imageEmptyShiftA=Path.Combine(dir,"imageEmptyShiftA.docx");var imageEmptyShiftB=Path.Combine(dir,"imageEmptyShiftB.docx");var imageEmptyShiftO=Path.Combine(dir,"imageEmptyShiftOut.docx");
+Make(imageEmptyShiftA,
+    P("Stable one")+
+    "<w:p><w:r><w:drawing xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" r:id=\"rIdImage\"/></w:r></w:p>"+
+    P("Stable two"));
+Make(imageEmptyShiftB,
+    P("Intro")+P("Stable one")+
+    "<w:p><w:r><w:drawing xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" r:id=\"rIdImage\"/></w:r></w:p>"+
+    P("Stable two"));
+AddWordXml(imageEmptyShiftA,"word/_rels/document.xml.rels",imageRels);AddWordXml(imageEmptyShiftB,"word/_rels/document.xml.rels",imageRels);
+AddWordBytes(imageEmptyShiftA,"word/media/image1.bin",new byte[]{1,2,3,4});AddWordBytes(imageEmptyShiftB,"word/media/image1.bin",new byte[]{1,2,3,4});
+await eng.ExportWordAsync(imageEmptyShiftA,imageEmptyShiftB,imageEmptyShiftO,"T",true);
+Check(File.Exists(imageEmptyShiftO),"unchanged image-only owner was falsely blocked after unrelated paragraph insertion");
+Console.WriteLine("PASS IMAGE-ONLY LOGICAL-LOCATION SHIFT");
+
+// 80. Moving the same hyperlink from the first to the second identical text occurrence must be blocked.
+var linkRepeatA=Path.Combine(dir,"linkRepeatA.docx");var linkRepeatB=Path.Combine(dir,"linkRepeatB.docx");var linkRepeatO=Path.Combine(dir,"linkRepeatOut.docx");
+Make(linkRepeatA,P("Alpha Alpha"));Make(linkRepeatB,P("Alpha Alpha"));
+var linkRepeatDocA="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink><w:r><w:t xml:space=\"preserve\"> Alpha</w:t></w:r></w:p><w:sectPr/></w:body></w:document>";
+var linkRepeatDocB="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body><w:p><w:r><w:t xml:space=\"preserve\">Alpha </w:t></w:r><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink></w:p><w:sectPr/></w:body></w:document>";
+AddWordXml(linkRepeatA,"word/document.xml",linkRepeatDocA);AddWordXml(linkRepeatB,"word/document.xml",linkRepeatDocB);
+AddWordXml(linkRepeatA,"word/_rels/document.xml.rels",sameLinkRels);AddWordXml(linkRepeatB,"word/_rels/document.xml.rels",sameLinkRels);
+var linkRepeatBlocked=false;try{await eng.ExportWordAsync(linkRepeatA,linkRepeatB,linkRepeatO,"T",true);}catch(InvalidOperationException ex){linkRepeatBlocked=ex.Message.Contains("비텍스트")||ex.Message.Contains("관계");}
+Check(linkRepeatBlocked,"hyperlink moved between identical visible text occurrences without being blocked");
+Console.WriteLine("PASS HYPERLINK REPEATED-TEXT ASSOCIATION GUARD");
+
+// 81. Different-number General additions in the same 3-way gap must not merge on title alone.
+var genericAddA=Path.Combine(dir,"genericAddA.txt");var genericAddB=Path.Combine(dir,"genericAddB.txt");var genericAddC=Path.Combine(dir,"genericAddC.txt");
+File.WriteAllText(genericAddA,"Article 1 (Start)\nStable.\nArticle 5 (End)\nStable.",new UTF8Encoding(false));
+File.WriteAllText(genericAddB,"Article 1 (Start)\nStable.\nArticle 2 (General)\nLegacy desktop licensing obligations apply.\nArticle 5 (End)\nStable.",new UTF8Encoding(false));
+File.WriteAllText(genericAddC,"Article 1 (Start)\nStable.\nArticle 3 (General)\nAnonymous mobile advertising analytics rules apply.\nArticle 5 (End)\nStable.",new UTF8Encoding(false));
+var genericAddCmp=await eng.CompareAsync(new[]{genericAddA,genericAddB,genericAddC},0,"legal",true,true);
+var genericAddBRow=genericAddCmp.Rows.Single(r=>r.Members[1]?.Number=="2");
+var genericAddCRow=genericAddCmp.Rows.Single(r=>r.Members[2]?.Number=="3");
+Check(!ReferenceEquals(genericAddBRow,genericAddCRow)&&genericAddBRow.Members[2] is null&&genericAddCRow.Members[1] is null,
+    "different-number General additions merged on generic title alone");
+Console.WriteLine("PASS THREE-WAY GENERIC-TITLE SEPARATION");
+
+
+// 82. Repeated hyperlink text must not be reassigned while unrelated prefix text is also inserted.
+var linkRepeatEditA=Path.Combine(dir,"linkRepeatEditA.docx");var linkRepeatEditB=Path.Combine(dir,"linkRepeatEditB.docx");var linkRepeatEditO=Path.Combine(dir,"linkRepeatEditOut.docx");
+Make(linkRepeatEditA,P("Alpha Alpha"));Make(linkRepeatEditB,P("Intro Alpha Alpha"));
+var linkRepeatEditDocA="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink><w:r><w:t xml:space=\"preserve\"> Alpha</w:t></w:r></w:p><w:sectPr/></w:body></w:document>";
+var linkRepeatEditDocB="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body><w:p><w:r><w:t xml:space=\"preserve\">Intro Alpha </w:t></w:r><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink></w:p><w:sectPr/></w:body></w:document>";
+AddWordXml(linkRepeatEditA,"word/document.xml",linkRepeatEditDocA);AddWordXml(linkRepeatEditB,"word/document.xml",linkRepeatEditDocB);
+AddWordXml(linkRepeatEditA,"word/_rels/document.xml.rels",sameLinkRels);AddWordXml(linkRepeatEditB,"word/_rels/document.xml.rels",sameLinkRels);
+var linkRepeatEditBlocked=false;try{await eng.ExportWordAsync(linkRepeatEditA,linkRepeatEditB,linkRepeatEditO,"T",true);}catch(InvalidOperationException ex){linkRepeatEditBlocked=ex.Message.Contains("비텍스트")||ex.Message.Contains("관계");}
+Check(linkRepeatEditBlocked,"hyperlink reassignment between repeated text was hidden by simultaneous prefix insertion");
+Console.WriteLine("PASS HYPERLINK REPEATED-TEXT EDIT GUARD");
+
+// 83. Ordinary visible text may be appended in the same field-owning paragraph without changing the field.
+var fieldTextA=Path.Combine(dir,"fieldTextA.docx");var fieldTextB=Path.Combine(dir,"fieldTextB.docx");var fieldTextO=Path.Combine(dir,"fieldTextOut.docx");
+Make(fieldTextA,"<w:p><w:r><w:instrText>PAGE</w:instrText></w:r><w:r><w:t>Page</w:t></w:r></w:p>");
+Make(fieldTextB,"<w:p><w:r><w:instrText>PAGE</w:instrText></w:r><w:r><w:t>Page current</w:t></w:r></w:p>");
+await eng.ExportWordAsync(fieldTextA,fieldTextB,fieldTextO,"T",true);
+Check(File.Exists(fieldTextO),"ordinary text edit in unchanged field paragraph was falsely blocked");
+Console.WriteLine("PASS FIELD OWNER TEXT EDIT");
+
+// 84. Moving an image between two adjacent empty paragraphs with the same outer anchors must still be blocked.
+var imageEmptySiblingA=Path.Combine(dir,"imageEmptySiblingA.docx");var imageEmptySiblingB=Path.Combine(dir,"imageEmptySiblingB.docx");var imageEmptySiblingO=Path.Combine(dir,"imageEmptySiblingOut.docx");
+Make(imageEmptySiblingA,
+    P("Stable one")+
+    "<w:p><w:r><w:drawing xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" r:id=\"rIdImage\"/></w:r></w:p>"+
+    "<w:p/>"+P("Stable two"));
+Make(imageEmptySiblingB,
+    P("Stable one")+"<w:p/>"+
+    "<w:p><w:r><w:drawing xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" r:id=\"rIdImage\"/></w:r></w:p>"+
+    P("Stable two"));
+AddWordXml(imageEmptySiblingA,"word/_rels/document.xml.rels",imageRels);AddWordXml(imageEmptySiblingB,"word/_rels/document.xml.rels",imageRels);
+AddWordBytes(imageEmptySiblingA,"word/media/image1.bin",new byte[]{1,2,3,4});AddWordBytes(imageEmptySiblingB,"word/media/image1.bin",new byte[]{1,2,3,4});
+var imageEmptySiblingBlocked=false;try{await eng.ExportWordAsync(imageEmptySiblingA,imageEmptySiblingB,imageEmptySiblingO,"T",true);}catch(InvalidOperationException ex){imageEmptySiblingBlocked=ex.Message.Contains("비텍스트")||ex.Message.Contains("관계");}
+Check(imageEmptySiblingBlocked,"image moved between adjacent empty paragraphs with identical outer anchors");
+Console.WriteLine("PASS IMAGE EMPTY-SIBLING LOCATION GUARD");
+
+
+// 85. Inserting an identical paragraph before the same footnote owner must not look like a note move.
+var fnDupA=Path.Combine(dir,"fnDupA.docx");var fnDupB=Path.Combine(dir,"fnDupB.docx");var fnDupO=Path.Combine(dir,"fnDupOut.docx");
+Make(fnDupA,P("Repeat")+P("Repeat")+P("Stable tail"));Make(fnDupB,P("Repeat")+P("Repeat")+P("Repeat")+P("Stable tail"));
+var fnDupDocA="<w:document xmlns:w=\""+W+"\"><w:body>"+P("Repeat")+"<w:p><w:r><w:t>Repeat</w:t></w:r><w:r><w:footnoteReference w:id=\"2\"/></w:r></w:p>"+P("Stable tail")+"<w:sectPr/></w:body></w:document>";
+var fnDupDocB="<w:document xmlns:w=\""+W+"\"><w:body>"+P("Repeat")+P("Repeat")+"<w:p><w:r><w:t>Repeat</w:t></w:r><w:r><w:footnoteReference w:id=\"2\"/></w:r></w:p>"+P("Stable tail")+"<w:sectPr/></w:body></w:document>";
+AddWordXml(fnDupA,"word/document.xml",fnDupDocA);AddWordXml(fnDupB,"word/document.xml",fnDupDocB);
+AddWordXml(fnDupA,"word/footnotes.xml",footnotes);AddWordXml(fnDupB,"word/footnotes.xml",footnotes);
+await eng.ExportWordAsync(fnDupA,fnDupB,fnDupO,"T",true);
+Check(File.Exists(fnDupO),"identical paragraph insertion before unchanged footnote owner was falsely blocked");
+Console.WriteLine("PASS FOOTNOTE DUPLICATE-PARAGRAPH SHIFT");
+
+// 86. Moving the same footnote between identical paragraphs must still be detected.
+var fnRepeatA=Path.Combine(dir,"fnRepeatA.docx");var fnRepeatB=Path.Combine(dir,"fnRepeatB.docx");var fnRepeatO=Path.Combine(dir,"fnRepeatOut.docx");
+Make(fnRepeatA,P("Repeat")+P("Repeat")+P("Stable tail"));Make(fnRepeatB,P("Repeat")+P("Repeat")+P("Stable tail"));
+var fnRepeatDocA="<w:document xmlns:w=\""+W+"\"><w:body><w:p><w:r><w:t>Repeat</w:t></w:r><w:r><w:footnoteReference w:id=\"2\"/></w:r></w:p>"+P("Repeat")+P("Stable tail")+"<w:sectPr/></w:body></w:document>";
+var fnRepeatDocB="<w:document xmlns:w=\""+W+"\"><w:body>"+P("Repeat")+"<w:p><w:r><w:t>Repeat</w:t></w:r><w:r><w:footnoteReference w:id=\"2\"/></w:r></w:p>"+P("Stable tail")+"<w:sectPr/></w:body></w:document>";
+AddWordXml(fnRepeatA,"word/document.xml",fnRepeatDocA);AddWordXml(fnRepeatB,"word/document.xml",fnRepeatDocB);
+AddWordXml(fnRepeatA,"word/footnotes.xml",footnotes);AddWordXml(fnRepeatB,"word/footnotes.xml",footnotes);
+var fnRepeatBlocked=false;try{await eng.ExportWordAsync(fnRepeatA,fnRepeatB,fnRepeatO,"T",true);}catch(InvalidOperationException ex){fnRepeatBlocked=ex.Message.Contains("참조 위치")||ex.Message.Contains("footnote");}
+Check(fnRepeatBlocked,"footnote moved between identical paragraphs without being detected");
+Console.WriteLine("PASS FOOTNOTE REPEATED-OWNER LOCATION GUARD");
+
 Console.WriteLine("ALL REGRESSIONS PASSED");
