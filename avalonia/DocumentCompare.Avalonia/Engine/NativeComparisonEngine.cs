@@ -61,7 +61,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     private readonly object _cancelLock = new();
     private CancellationTokenSource? _activeOperation;
 
-    private static SourceFileStateVm CaptureSourceFileState(string path)
+    internal static SourceFileStateVm CaptureSourceFileState(string path)
     {
         var fullPath = Path.GetFullPath(path);
         var info = new FileInfo(fullPath);
@@ -78,7 +78,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         };
     }
 
-    private static bool SameSourceFileState(SourceFileStateVm a, SourceFileStateVm b) =>
+    internal static bool SameSourceFileState(SourceFileStateVm a, SourceFileStateVm b) =>
         string.Equals(a.Path, b.Path, StringComparison.OrdinalIgnoreCase) &&
         a.Length == b.Length && a.LastWriteTimeUtcTicks == b.LastWriteTimeUtcTicks &&
         string.Equals(a.Sha256, b.Sha256, StringComparison.Ordinal);

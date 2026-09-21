@@ -36,6 +36,21 @@ internal static class NativeOfficeExporter
         File.Move(temporaryPath, Path.GetFullPath(outputPath), overwrite: true);
     }
 
+    private static void EnsureComparisonSourcesStillMatch(ComparisonResultVm? result, params int[] indices)
+    {
+        if (result is null || result.SourceFiles.Count == 0) return;
+        var check = indices.Length == 0 ? Enumerable.Range(0, result.SourceFiles.Count) : indices.Distinct();
+        foreach (var index in check)
+        {
+            if (index < 0 || index >= result.SourceFiles.Count)
+                throw new InvalidOperationException("비교 결과의 입력 파일 정보가 현재 내보내기 대상과 일치하지 않습니다.");
+            var expected = result.SourceFiles[index];
+            var current = NativeComparisonEngine.CaptureSourceFileState(expected.Path);
+            if (!NativeComparisonEngine.SameSourceFileState(expected, current))
+                throw new InvalidOperationException($"내보내기 중 입력 파일이 변경되었습니다: {Path.GetFileName(expected.Path)}. 다시 비교한 뒤 내보내세요.");
+        }
+    }
+
     public static async Task WriteXlsxAsync(ComparisonResultVm result, string outputPath, CancellationToken cancellationToken)
     {
         var temporaryPath = TemporaryOutputPath(outputPath);
@@ -43,6 +58,7 @@ internal static class NativeOfficeExporter
         {
             await Task.Run(() => WriteXlsx(result, temporaryPath, cancellationToken), cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
+            EnsureComparisonSourcesStillMatch(result);
             CommitTemporaryOutput(temporaryPath, outputPath);
         }
         finally
@@ -63,12 +79,14 @@ internal static class NativeOfficeExporter
 
         var oldText = await NativeDocumentReader.ReadAsync(originalPath, cancellationToken);
         var newText = await NativeDocumentReader.ReadAsync(revisedPath, cancellationToken);
+        EnsureComparisonSourcesStillMatch(comparisonResult, originalDocumentIndex, revisedDocumentIndex);
         var temporaryPath = TemporaryOutputPath(outputPath);
         try
         {
             await Task.Run(() => WriteTrackedDocx(oldText, newText, originalPath, revisedPath, temporaryPath, author,
                 includePunctuation, cancellationToken, comparisonResult, originalDocumentIndex, revisedDocumentIndex), cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
+            EnsureComparisonSourcesStillMatch(comparisonResult, originalDocumentIndex, revisedDocumentIndex);
             CommitTemporaryOutput(temporaryPath, outputPath);
         }
         finally
@@ -1516,6 +1534,20 @@ internal static class NativeOfficeExporter
         return result;
     }
 
+    private static string ParagraphSemanticLocator(IReadOnlyList<XElement> bodyParagraphs, XElement? paragraph, XNamespace w)
+    {
+        if (paragraph is null) return "none";
+        var index = RefIndex(bodyParagraphs, paragraph);
+        if (index < 0) return "outside";
+        var key = NativeComparisonEngine.Normalize(ParagraphVisibleText(paragraph, w));
+        var occurrence = 0;
+        for (var i = 0; i < index; i++)
+            if (NativeComparisonEngine.Normalize(ParagraphVisibleText(bodyParagraphs[i], w)) == key)
+                occurrence++;
+        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key)));
+        return hash + "#" + occurrence;
+    }
+
     private static string ReadMainDocumentUnsupportedContentSignature(string path)
     {
         using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
@@ -1526,29 +1558,34 @@ internal static class NativeOfficeExporter
         XDocument doc; using (var input = documentEntry.Open()) doc = XDocument.Load(input, LoadOptions.PreserveWhitespace);
         var relationships = ReadPartRelationshipSignatures(zip, "word/document.xml");
         var tokens = new List<string>();
+        var body = doc.Root?.Element(w + "body");
+        var bodyParagraphs = body is null ? new List<XElement>() : BodyParagraphs(body, w).ToList();
 
         foreach (var element in doc.Descendants())
         {
             if (element.Name == w + "headerReference" || element.Name == w + "footerReference")
                 continue;
 
+            var ownerParagraph = element.Ancestors(w + "p").FirstOrDefault();
+            var paragraphLocator = ParagraphSemanticLocator(bodyParagraphs, ownerParagraph, w);
+
             foreach (var attribute in element.Attributes().Where(a => a.Name.NamespaceName == R))
             {
                 var resolved = relationships.TryGetValue(attribute.Value, out var signature)
                     ? signature
                     : "missing-rel|" + attribute.Value;
-                tokens.Add($"RELREF|{element.Name.LocalName}|{attribute.Name.LocalName}|{resolved}");
+                tokens.Add($"RELREF|paragraph={paragraphLocator}|{element.Name.LocalName}|{attribute.Name.LocalName}|{resolved}");
             }
 
             if (element.Name == w + "instrText")
             {
                 var value = NativeComparisonEngine.Normalize(element.Value);
-                if (value.Length > 0) tokens.Add("FIELD|" + value);
+                if (value.Length > 0) tokens.Add($"FIELD|paragraph={paragraphLocator}|{value}");
             }
             else if (element.Name == w + "fldSimple")
             {
                 var value = NativeComparisonEngine.Normalize(element.Attribute(w + "instr")?.Value ?? string.Empty);
-                if (value.Length > 0) tokens.Add("FIELD|" + value);
+                if (value.Length > 0) tokens.Add($"FIELD|paragraph={paragraphLocator}|{value}");
             }
             else if (element.Name == w + "sym")
             {
@@ -1557,7 +1594,7 @@ internal static class NativeOfficeExporter
                     .OrderBy(a => a.Name.NamespaceName, StringComparer.Ordinal)
                     .ThenBy(a => a.Name.LocalName, StringComparer.Ordinal)
                     .Select(a => $"{{{a.Name.NamespaceName}}}{a.Name.LocalName}={a.Value}"));
-                tokens.Add("SYM|" + attrs);
+                tokens.Add($"SYM|paragraph={paragraphLocator}|" + attrs);
             }
         }
         return string.Join("\n", tokens);
@@ -1610,18 +1647,16 @@ internal static class NativeOfficeExporter
                 var target = relationshipTargets.TryGetValue(id, out var resolved) ? resolved : "missing:" + id;
                 var sectPr = element.Ancestors(w + "sectPr").FirstOrDefault();
                 var sectionIndex = sectPr is null ? -1 : RefIndex(sectionProperties, sectPr);
-                var ownerParagraph = sectPr?.Ancestors(w + "p").FirstOrDefault();
-                var paragraphIndex = ownerParagraph is null ? -1 : RefIndex(bodyParagraphs, ownerParagraph);
-                tokens.Add($"{element.Name.LocalName}|section={sectionIndex}|paragraph={paragraphIndex}|{element.Attribute(w + "type")?.Value ?? string.Empty}|{target}");
+                tokens.Add($"{element.Name.LocalName}|section={sectionIndex}|{element.Attribute(w + "type")?.Value ?? string.Empty}|{target}");
             }
             else if (element.Name == w + "footnoteReference" || element.Name == w + "endnoteReference")
             {
                 var ownerParagraph = element.Ancestors(w + "p").FirstOrDefault();
-                var paragraphIndex = ownerParagraph is null ? -1 : RefIndex(bodyParagraphs, ownerParagraph);
+                var paragraphLocator = ParagraphSemanticLocator(bodyParagraphs, ownerParagraph, w);
                 var localIndex = ownerParagraph is null ? -1 : RefIndex(
                     ownerParagraph.Descendants(element.Name)
                         .Where(x => ReferenceEquals(x.Ancestors(w + "p").FirstOrDefault(), ownerParagraph)), element);
-                tokens.Add($"{element.Name.LocalName}|paragraph={paragraphIndex}|local={localIndex}|{element.Attribute(w + "id")?.Value ?? string.Empty}");
+                tokens.Add($"{element.Name.LocalName}|paragraph={paragraphLocator}|local={localIndex}|{element.Attribute(w + "id")?.Value ?? string.Empty}");
             }
         }
         return string.Join("\n", tokens);

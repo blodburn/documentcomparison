@@ -606,4 +606,72 @@ Check(!ReferenceEquals(gapHalfBRow,gapHalfCRow)&&gapHalfBRow.Members[2] is null&
     "different-number addition with one missing title merged on body alone");
 Console.WriteLine("PASS THREE-WAY PARTIAL-TITLE SEPARATION");
 
+
+// 59. The same body relationship moved to another paragraph must be treated as an unsupported position change.
+var relMoveA=Path.Combine(dir,"relMoveA.docx");var relMoveB=Path.Combine(dir,"relMoveB.docx");var relMoveO=Path.Combine(dir,"relMoveOut.docx");
+Make(relMoveA,P("Alpha")+P("Alpha"));Make(relMoveB,P("Alpha")+P("Alpha"));
+var relMoveDocA="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink></w:p>"+P("Alpha")+"<w:sectPr/></w:body></w:document>";
+var relMoveDocB="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body>"+P("Alpha")+"<w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink></w:p><w:sectPr/></w:body></w:document>";
+var sameLinkRels="<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rIdLink\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink\" Target=\"https://example.com/same\" TargetMode=\"External\"/></Relationships>";
+AddWordXml(relMoveA,"word/document.xml",relMoveDocA);AddWordXml(relMoveB,"word/document.xml",relMoveDocB);
+AddWordXml(relMoveA,"word/_rels/document.xml.rels",sameLinkRels);AddWordXml(relMoveB,"word/_rels/document.xml.rels",sameLinkRels);
+var relMoveBlocked=false;try{await eng.ExportWordAsync(relMoveA,relMoveB,relMoveO,"T",true);}catch(InvalidOperationException ex){relMoveBlocked=ex.Message.Contains("비텍스트")||ex.Message.Contains("관계");}
+Check(relMoveBlocked,"body relationship moved between paragraphs without being detected");
+Console.WriteLine("PASS MAIN-DOCUMENT RELATIONSHIP LOCATION GUARD");
+
+// 60. Source mutation during Excel export must abort before replacing an existing output.
+var raceXA=Path.Combine(dir,"raceExcelA.txt");var raceXB=Path.Combine(dir,"raceExcelB.txt");var raceXO=Path.Combine(dir,"raceExcelOut.xlsx");
+File.WriteAllText(raceXA,"Race A",new UTF8Encoding(false));File.WriteAllText(raceXB,"Race B",new UTF8Encoding(false));
+var raceXCmpBase=await eng.CompareAsync(new[]{raceXA,raceXB},0,"general",true,true);
+var raceXCmp=new ComparisonResultVm{Names=raceXCmpBase.Names,BaseIndex=0,SourceFiles=raceXCmpBase.SourceFiles,
+    Rows=Enumerable.Range(0,180000).Select(i=>new ComparisonRowVm{Id=i+1,Members=new List<MemberVm?>{null,null}}).ToList()};
+var raceXSentinel=Encoding.UTF8.GetBytes("PREVIOUS_RACE_XLSX");File.WriteAllBytes(raceXO,raceXSentinel);
+var raceXTask=eng.ExportExcelAsync(raceXCmp,raceXO);
+var raceXPattern="."+Path.GetFileName(raceXO)+".*.tmp";
+for(var i=0;i<1000&&!Directory.GetFiles(dir,raceXPattern).Any()&&!raceXTask.IsCompleted;i++)await Task.Delay(1);
+File.WriteAllText(raceXB,"Race B changed during export",new UTF8Encoding(false));
+var raceXBlocked=false;try{await raceXTask;}catch(InvalidOperationException ex){raceXBlocked=ex.Message.Contains("내보내기 중 입력 파일이 변경")||ex.Message.Contains("입력 파일이 변경");}
+Check(raceXBlocked,"Excel export committed after a compared source changed mid-export");
+Check(File.ReadAllBytes(raceXO).SequenceEqual(raceXSentinel),"Excel race guard replaced the previous output");
+Console.WriteLine("PASS EXCEL MID-EXPORT SOURCE RACE GUARD");
+
+// 61. Source mutation during Word export must abort before replacing an existing output.
+var raceWA=Path.Combine(dir,"raceWordA.docx");var raceWB=Path.Combine(dir,"raceWordB.docx");var raceWO=Path.Combine(dir,"raceWordOut.docx");
+var raceManyA=string.Concat(Enumerable.Range(0,1400).Select(i=>P("RACE_OLD_"+i.ToString("D4"))));
+var raceManyB=string.Concat(Enumerable.Range(0,1400).Select(i=>P("RACE_NEW_"+i.ToString("D4"))));
+Make(raceWA,raceManyA);Make(raceWB,raceManyB);
+var raceWCmp=await eng.CompareAsync(new[]{raceWA,raceWB},0,"general",true,true);
+var raceWSentinel=Encoding.UTF8.GetBytes("PREVIOUS_RACE_WORD");File.WriteAllBytes(raceWO,raceWSentinel);
+var raceWTask=eng.ExportWordAsync(raceWA,raceWB,raceWO,"T",true,default,raceWCmp,0,1);
+var raceWPattern="."+Path.GetFileName(raceWO)+".*.tmp";
+for(var i=0;i<1500&&!Directory.GetFiles(dir,raceWPattern).Any()&&!raceWTask.IsCompleted;i++)await Task.Delay(1);
+using(var raceFs=new FileStream(raceWB,FileMode.Open,FileAccess.ReadWrite,FileShare.ReadWrite)){raceFs.Position=Math.Max(0,raceFs.Length-8);raceFs.WriteByte(0x20);}
+var raceWBlocked=false;try{await raceWTask;}catch(InvalidOperationException ex){raceWBlocked=ex.Message.Contains("내보내기 중 입력 파일이 변경")||ex.Message.Contains("입력 파일이 변경");}catch(InvalidDataException){raceWBlocked=true;}
+Check(raceWBlocked,"Word export committed after a compared source changed mid-export");
+Check(File.ReadAllBytes(raceWO).SequenceEqual(raceWSentinel),"Word race guard replaced the previous output");
+Console.WriteLine("PASS WORD MID-EXPORT SOURCE RACE GUARD");
+
+
+// 62. Inserting an unrelated paragraph before an unchanged hyperlink must not trigger a false relationship-location block.
+var relShiftA=Path.Combine(dir,"relShiftA.docx");var relShiftB=Path.Combine(dir,"relShiftB.docx");var relShiftO=Path.Combine(dir,"relShiftOut.docx");
+Make(relShiftA,P("Alpha")+P("Beta"));Make(relShiftB,P("Intro")+P("Alpha")+P("Beta"));
+var relShiftDocA="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink></w:p>"+P("Beta")+"<w:sectPr/></w:body></w:document>";
+var relShiftDocB="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body>"+P("Intro")+"<w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink></w:p>"+P("Beta")+"<w:sectPr/></w:body></w:document>";
+AddWordXml(relShiftA,"word/document.xml",relShiftDocA);AddWordXml(relShiftB,"word/document.xml",relShiftDocB);
+AddWordXml(relShiftA,"word/_rels/document.xml.rels",sameLinkRels);AddWordXml(relShiftB,"word/_rels/document.xml.rels",sameLinkRels);
+await eng.ExportWordAsync(relShiftA,relShiftB,relShiftO,"T",true);
+Check(File.Exists(relShiftO),"unchanged hyperlink was falsely blocked after an unrelated paragraph insertion");
+Console.WriteLine("PASS RELATIONSHIP LOGICAL-LOCATION SHIFT");
+
+// 63. Inserting an unrelated paragraph before an unchanged footnote owner must not look like a footnote move.
+var fnShiftA=Path.Combine(dir,"fnShiftA.docx");var fnShiftB=Path.Combine(dir,"fnShiftB.docx");var fnShiftO=Path.Combine(dir,"fnShiftOut.docx");
+Make(fnShiftA,P("Alpha")+P("Beta"));Make(fnShiftB,P("Intro")+P("Alpha")+P("Beta"));
+var fnShiftDocA="<w:document xmlns:w=\""+W+"\"><w:body><w:p><w:r><w:t>Alpha</w:t></w:r><w:r><w:footnoteReference w:id=\"2\"/></w:r></w:p>"+P("Beta")+"<w:sectPr/></w:body></w:document>";
+var fnShiftDocB="<w:document xmlns:w=\""+W+"\"><w:body>"+P("Intro")+"<w:p><w:r><w:t>Alpha</w:t></w:r><w:r><w:footnoteReference w:id=\"2\"/></w:r></w:p>"+P("Beta")+"<w:sectPr/></w:body></w:document>";
+AddWordXml(fnShiftA,"word/document.xml",fnShiftDocA);AddWordXml(fnShiftB,"word/document.xml",fnShiftDocB);
+AddWordXml(fnShiftA,"word/footnotes.xml",footnotes);AddWordXml(fnShiftB,"word/footnotes.xml",footnotes);
+await eng.ExportWordAsync(fnShiftA,fnShiftB,fnShiftO,"T",true);
+Check(File.Exists(fnShiftO),"unchanged footnote owner was falsely treated as moved after paragraph insertion");
+Console.WriteLine("PASS FOOTNOTE LOGICAL-LOCATION SHIFT");
+
 Console.WriteLine("ALL REGRESSIONS PASSED");
