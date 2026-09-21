@@ -1945,8 +1945,7 @@ internal static class NativeOfficeExporter
         var snapshot = ReadMainDocumentAncillaryReferenceSnapshot(path);
         var notes = snapshot.NoteReferences.Select(x =>
             $"{x.Kind}|{x.Id}|local={x.LocalIndex}|owner={x.OwnerText}#{x.OwnerOccurrence}");
-        return string.Join("
-", snapshot.SectionReferences.Concat(notes));
+        return string.Join("\n", snapshot.SectionReferences.Concat(notes));
     }
 
     private static void EnsureAncillaryWordPartsEquivalent(string originalPath, string revisedPath)
