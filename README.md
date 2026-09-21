@@ -9,18 +9,12 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.20.18**
+**V5.20.19**
 
-- Harden article lineage so unique high-confidence titles survive large reorder/renumber operations, while low-information titles such as `General` cannot force false lineage by themselves.
-- Preserve Python-era one-sided numbered-list semantics and add stronger three-way addition separation for generic or partially titled clauses.
-- Make Excel and Word export atomic so cancellation/failure does not truncate a previously valid output file.
-- Add content-hash source identity checks and mid-export mutation guards, including Word exports invoked without an existing comparison result.
-- Harden Word relationship handling for hyperlinks, images, charts/objects, fields, symbols, footnotes/endnotes, internal anchors, linked bookmarks, and comments; unsupported association/location changes are blocked instead of being silently lost.
-- Allow safe visible-text edits around unchanged Word fields, hyperlinks, bookmarks, comments, and note references without over-blocking ordinary tracked text changes.
-- Preserve Word `w:noBreakHyphen` in comparison/export offsets and recognize Unicode space separators such as NBSP around flattened legal enumerators.
-- Recover single-paragraph `(1)` through `(7)` legal item boundaries reliably and protect collapsed/healthy hierarchy behavior.
-- Harden deleted table-row/cell/paragraph placement with mapped lineage neighbors instead of raw shifted indices.
-- Expand the regression suite to 102 adversarial cases covering lineage, hierarchy, tables, Word OpenXML semantics, cancellation, source races, relationship locations, internal links/bookmarks/comments, and export safety.
+- Fix whitespace-only comparison markers so edits such as `동의없이` → `동의 없이` are reported with the changed lexical boundary instead of the meaningless `없이` → `없이`.
+- Detect spacing insertions and deletions before Korean morph-style refinement, preserving accurate character ranges and clickable change locations.
+- Preserve the V5.20.18 structure-first lineage, table, 3-way comparison, atomic export, and Word OpenXML safety behavior without regression.
+- Expand the clean regression suite to 104 adversarial cases, including both Korean spacing insertion and spacing deletion directions.
 
 ## Features
 
