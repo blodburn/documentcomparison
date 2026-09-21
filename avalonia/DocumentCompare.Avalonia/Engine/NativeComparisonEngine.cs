@@ -1302,11 +1302,92 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         };
     }
 
+    private static List<NativeMarker>? TryWhitespaceBoundaryDiff(
+        string oldText, string newText, int oldBase, int newBase, int oldDoc, int newDoc,
+        string pair, int pairOrder, string part, int itemOrder)
+    {
+        // Whitespace insertion/deletion is semantically visible to reviewers even when every
+        // non-whitespace character is identical. The Korean review tokenizer intentionally
+        // ignores spaces, which previously turned "동의없이" -> "동의 없이" into the
+        // meaningless marker "없이" -> "없이". Detect boundary-only edits before morph DP.
+        var oldVisible = oldText.Where(ch => !char.IsWhiteSpace(ch)).ToArray();
+        var newVisible = newText.Where(ch => !char.IsWhiteSpace(ch)).ToArray();
+        if (!oldVisible.SequenceEqual(newVisible)) return null;
+
+        var oldPos = Enumerable.Range(0, oldText.Length).Where(i => !char.IsWhiteSpace(oldText[i])).ToArray();
+        var newPos = Enumerable.Range(0, newText.Length).Where(i => !char.IsWhiteSpace(newText[i])).ToArray();
+        if (oldPos.Length == 0 || oldPos.Length != newPos.Length) return null;
+
+        static (int Start, int End) Gap(IReadOnlyList<int> pos, int textLength, int boundary)
+        {
+            var start = boundary == 0 ? 0 : pos[boundary - 1] + 1;
+            var end = boundary == pos.Count ? textLength : pos[boundary];
+            return (start, end);
+        }
+
+        static bool ContextChar(char ch) => char.IsLetterOrDigit(ch) || ch == '_';
+
+        static (int Start, int End) Context(string text, int gapStart, int gapEnd)
+        {
+            var start = gapStart;
+            while (start > 0 && ContextChar(text[start - 1])) start--;
+            var end = gapEnd;
+            while (end < text.Length && ContextChar(text[end])) end++;
+            return (start, end);
+        }
+
+        var changes = new List<(int OldStart, int OldEnd, int NewStart, int NewEnd)>();
+        for (var boundary = 0; boundary <= oldPos.Length; boundary++)
+        {
+            var og = Gap(oldPos, oldText.Length, boundary);
+            var ng = Gap(newPos, newText.Length, boundary);
+            var oldGap = oldText[og.Start..og.End];
+            var newGap = newText[ng.Start..ng.End];
+            if (string.Equals(oldGap, newGap, StringComparison.Ordinal)) continue;
+            if (oldGap.Any(ch => !char.IsWhiteSpace(ch)) || newGap.Any(ch => !char.IsWhiteSpace(ch)))
+                return null;
+
+            var oc = Context(oldText, og.Start, og.End);
+            var nc = Context(newText, ng.Start, ng.End);
+            if (changes.Count > 0 &&
+                oc.Start <= changes[^1].OldEnd && nc.Start <= changes[^1].NewEnd)
+            {
+                var prev = changes[^1];
+                changes[^1] = (prev.OldStart, Math.Max(prev.OldEnd, oc.End),
+                    prev.NewStart, Math.Max(prev.NewEnd, nc.End));
+            }
+            else
+            {
+                changes.Add((oc.Start, oc.End, nc.Start, nc.End));
+            }
+        }
+
+        if (changes.Count == 0) return null;
+
+        var result = new List<NativeMarker>(changes.Count);
+        for (var i = 0; i < changes.Count; i++)
+        {
+            var c = changes[i];
+            var oldRaw = oldText[c.OldStart..c.OldEnd];
+            var newRaw = newText[c.NewStart..c.NewEnd];
+            if (string.Equals(oldRaw, newRaw, StringComparison.Ordinal)) continue;
+            result.Add(NativeMarker.Change(
+                pair, pairOrder, oldDoc, newDoc, oldRaw, newRaw,
+                oldBase + c.OldStart, oldBase + c.OldEnd,
+                newBase + c.NewStart, newBase + c.NewEnd,
+                part, itemOrder, i));
+        }
+        return result.Count > 0 ? result : null;
+    }
+
     private static List<NativeMarker> DiffText(
         string oldText, string newText, int oldBase, int newBase, int oldDoc, int newDoc,
         string pair, int pairOrder, string part, bool includePunctuation, int itemOrder)
     {
         if (SemanticEqual(oldText, newText)) return new();
+        var whitespace = TryWhitespaceBoundaryDiff(
+            oldText, newText, oldBase, newBase, oldDoc, newDoc, pair, pairOrder, part, itemOrder);
+        if (whitespace is not null) return whitespace;
         var korean = TryKoreanReviewDiff(oldText, newText, oldBase, newBase, oldDoc, newDoc, pair, pairOrder, part, itemOrder);
         if (korean is not null) return korean;
         var a = LexTokens(oldText); var b = LexTokens(newText);

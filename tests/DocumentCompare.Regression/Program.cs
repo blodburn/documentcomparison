@@ -1131,4 +1131,26 @@ await eng.ExportWordAsync(commentEditA,commentEditB,commentEditO,"T",true);
 Check(File.Exists(commentEditO),"unchanged comment range was falsely blocked by commented text rewrite");
 Console.WriteLine("PASS COMMENT OWNER TEXT REWRITE");
 
+
+// 103. Korean spacing-only edits must report the changed word boundary, not "없이" -> "없이".
+var spacingA=Path.Combine(dir,"spacingA.txt");var spacingB=Path.Combine(dir,"spacingB.txt");
+File.WriteAllText(spacingA,"이용자의 동의없이 제3자에게 제공할 수 있습니다.",new UTF8Encoding(false));
+File.WriteAllText(spacingB,"이용자의 동의 없이 제3자에게 제공할 수 있습니다.",new UTF8Encoding(false));
+var spacingCmp=await eng.CompareAsync(new[]{spacingA,spacingB},0,"general",true,true);
+var spacingMsgs=spacingCmp.Rows.SelectMany(r=>r.DisplayMessages).ToList();
+Check(spacingMsgs.Any(m=>m.Contains("동의없이")&&m.Contains("동의 없이")),
+    "spacing insertion was not reported with lexical context: "+string.Join(" | ",spacingMsgs));
+Check(!spacingMsgs.Any(m=>m.Contains("“없이” → “없이”")),
+    "spacing insertion regressed to meaningless identical-text marker: "+string.Join(" | ",spacingMsgs));
+Console.WriteLine("PASS KOREAN SPACING INSERTION DIFF");
+
+// 104. The reverse spacing edit must also preserve the lexical boundary in the message.
+var spacingRev=await eng.CompareAsync(new[]{spacingB,spacingA},0,"general",true,true);
+var spacingRevMsgs=spacingRev.Rows.SelectMany(r=>r.DisplayMessages).ToList();
+Check(spacingRevMsgs.Any(m=>m.Contains("동의 없이")&&m.Contains("동의없이")),
+    "spacing deletion was not reported with lexical context: "+string.Join(" | ",spacingRevMsgs));
+Check(!spacingRevMsgs.Any(m=>m.Contains("“없이” → “없이”")),
+    "spacing deletion regressed to meaningless identical-text marker: "+string.Join(" | ",spacingRevMsgs));
+Console.WriteLine("PASS KOREAN SPACING DELETION DIFF");
+
 Console.WriteLine("ALL REGRESSIONS PASSED");
