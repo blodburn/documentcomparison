@@ -36,6 +36,13 @@ internal static class NativeOfficeExporter
         File.Move(temporaryPath, Path.GetFullPath(outputPath), overwrite: true);
     }
 
+    private static void EnsureSourceStateStillMatches(SourceFileStateVm expected)
+    {
+        var current = NativeComparisonEngine.CaptureSourceFileState(expected.Path);
+        if (!NativeComparisonEngine.SameSourceFileState(expected, current))
+            throw new InvalidOperationException($"내보내기 중 입력 파일이 변경되었습니다: {Path.GetFileName(expected.Path)}. 다시 내보내세요.");
+    }
+
     private static void EnsureComparisonSourcesStillMatch(ComparisonResultVm? result, params int[] indices)
     {
         if (result is null || result.SourceFiles.Count == 0) return;
@@ -77,8 +84,15 @@ internal static class NativeOfficeExporter
             string.Equals(Path.GetFullPath(revisedPath), outputFullPath, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("입력 원본 문서(A/B) 자체를 변경추적 출력으로 덮어쓸 수 없습니다. 다른 파일명으로 저장하세요.");
 
+        // Export can also be called without a ComparisonResult (tests/API consumers). Capture
+        // independent source identities so repeated path reads inside the DOCX exporter cannot
+        // silently combine different file versions.
+        var originalState = NativeComparisonEngine.CaptureSourceFileState(originalPath);
+        var revisedState = NativeComparisonEngine.CaptureSourceFileState(revisedPath);
         var oldText = await NativeDocumentReader.ReadAsync(originalPath, cancellationToken);
         var newText = await NativeDocumentReader.ReadAsync(revisedPath, cancellationToken);
+        EnsureSourceStateStillMatches(originalState);
+        EnsureSourceStateStillMatches(revisedState);
         EnsureComparisonSourcesStillMatch(comparisonResult, originalDocumentIndex, revisedDocumentIndex);
         var temporaryPath = TemporaryOutputPath(outputPath);
         try
@@ -86,6 +100,8 @@ internal static class NativeOfficeExporter
             await Task.Run(() => WriteTrackedDocx(oldText, newText, originalPath, revisedPath, temporaryPath, author,
                 includePunctuation, cancellationToken, comparisonResult, originalDocumentIndex, revisedDocumentIndex), cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
+            EnsureSourceStateStillMatches(originalState);
+            EnsureSourceStateStillMatches(revisedState);
             EnsureComparisonSourcesStillMatch(comparisonResult, originalDocumentIndex, revisedDocumentIndex);
             CommitTemporaryOutput(temporaryPath, outputPath);
         }
@@ -1400,6 +1416,9 @@ internal static class NativeOfficeExporter
         if (file.StartsWith("footer", StringComparison.Ordinal) && file.EndsWith(".xml", StringComparison.Ordinal)) return "footer";
         if (file == "footnotes.xml") return "footnotes";
         if (file == "endnotes.xml") return "endnotes";
+        if ((file.StartsWith("comments", StringComparison.Ordinal) && file.EndsWith(".xml", StringComparison.Ordinal)) ||
+            file == "people.xml")
+            return "comments";
         return string.Empty;
     }
 
@@ -1544,7 +1563,8 @@ internal static class NativeOfficeExporter
 
     private sealed record UnsupportedOtherRef(
         string Kind, string Value, string OwnerText, int OwnerOccurrence,
-        string PreviousParagraph, string NextParagraph, string StructuralPath);
+        string PreviousParagraph, string NextParagraph,
+        string BeforeToken, string AfterToken, string StructuralPath);
 
     private sealed record UnsupportedMainContentSnapshot(
         List<UnsupportedRelationshipRef> Relationships, List<UnsupportedOtherRef> FieldsAndSymbols);
@@ -1653,6 +1673,91 @@ internal static class NativeOfficeExporter
         return xn.Distance > 0 && xn == yn;
     }
 
+    private static string RunChildVisibleText(XElement child, XNamespace w)
+    {
+        if (child.Name == w + "t") return child.Value;
+        if (child.Name == w + "tab") return "	";
+        if (child.Name == w + "br" || child.Name == w + "cr") return "\n";
+        if (child.Name == w + "noBreakHyphen") return "-";
+        return string.Empty;
+    }
+
+    private static string BoundaryToken(string value, bool before)
+    {
+        var normalized = NativeComparisonEngine.Normalize(value);
+        if (normalized.Length == 0) return string.Empty;
+        var matches = Regex.Matches(normalized, @"[가-힣A-Za-z0-9_]+|[^\s]");
+        if (matches.Count == 0) return string.Empty;
+        return before ? matches[^1].Value : matches[0].Value;
+    }
+
+    private static (string Before, string After) VisibleBoundaryTokens(
+        XElement element, XElement? paragraph, XNamespace w)
+    {
+        if (paragraph is null) return (string.Empty, string.Empty);
+        var runs = NativeDocumentReader.VisibleRunsInParagraph(paragraph, w).ToList();
+        var before = new StringBuilder();
+        var after = new StringBuilder();
+
+        var containingRun = element.AncestorsAndSelf().FirstOrDefault(x => x.Name == w + "r");
+        if (containingRun is not null)
+        {
+            var runIndex = RefIndex(runs, containingRun);
+            if (runIndex < 0) return (string.Empty, string.Empty);
+            for (var i = 0; i < runIndex; i++) before.Append(NativeDocumentReader.RunVisibleText(runs[i], w));
+
+            var targetChild = containingRun.Elements().FirstOrDefault(child =>
+                ReferenceEquals(child, element) || element.AncestorsAndSelf().Any(x => ReferenceEquals(x, child)));
+            var seen = false;
+            foreach (var child in containingRun.Elements())
+            {
+                if (targetChild is not null && ReferenceEquals(child, targetChild))
+                {
+                    seen = true;
+                    continue;
+                }
+                if (!seen) before.Append(RunChildVisibleText(child, w));
+                else after.Append(RunChildVisibleText(child, w));
+            }
+            for (var i = runIndex + 1; i < runs.Count; i++) after.Append(NativeDocumentReader.RunVisibleText(runs[i], w));
+        }
+        else
+        {
+            var inside = runs.Select((run, index) => (run, index))
+                .Where(x => x.run.AncestorsAndSelf().Any(a => ReferenceEquals(a, element)))
+                .Select(x => x.index).ToList();
+            if (inside.Count > 0)
+            {
+                for (var i = 0; i < inside[0]; i++) before.Append(NativeDocumentReader.RunVisibleText(runs[i], w));
+                for (var i = inside[^1] + 1; i < runs.Count; i++) after.Append(NativeDocumentReader.RunVisibleText(runs[i], w));
+            }
+            else
+            {
+                // Zero-width markers such as bookmarkStart/commentRangeStart do not own runs.
+                // Partition the visible runs by actual document order instead of returning an
+                // empty boundary, otherwise moving the marker within the paragraph is invisible.
+                foreach (var run in runs)
+                {
+                    var order = XNode.DocumentOrderComparer.Compare(run, element);
+                    if (order < 0) before.Append(NativeDocumentReader.RunVisibleText(run, w));
+                    else if (order > 0) after.Append(NativeDocumentReader.RunVisibleText(run, w));
+                }
+            }
+        }
+
+        return (BoundaryToken(before.ToString(), before: true), BoundaryToken(after.ToString(), before: false));
+    }
+
+    private static bool SameBoundary(string xb, string xa, string yb, string ya) =>
+        string.Equals(xb, yb, StringComparison.Ordinal) && string.Equals(xa, ya, StringComparison.Ordinal);
+
+    private static bool StableBoundaryAcrossTextEdit(string xb, string xa, string yb, string ya)
+    {
+        var beforeStable = xb.Length > 0 && xb == yb;
+        var afterStable = xa.Length > 0 && xa == ya;
+        return beforeStable || afterStable;
+    }
+
     private static XElement RelationshipAnchor(XElement element, XNamespace w)
     {
         return element.AncestorsAndSelf().FirstOrDefault(x =>
@@ -1685,6 +1790,10 @@ internal static class NativeOfficeExporter
         var otherTokens = new List<UnsupportedOtherRef>();
         var body = doc.Root?.Element(w + "body");
         var bodyParagraphs = body is null ? new List<XElement>() : BodyParagraphs(body, w).ToList();
+        var internalHyperlinkTargets = doc.Descendants(w + "hyperlink")
+            .Select(x => x.Attribute(w + "anchor")?.Value ?? string.Empty)
+            .Where(x => x.Length > 0)
+            .ToHashSet(StringComparer.Ordinal);
 
         foreach (var element in doc.Descendants())
         {
@@ -1725,16 +1834,24 @@ internal static class NativeOfficeExporter
             if (element.Name == w + "instrText")
             {
                 var value = NativeComparisonEngine.Normalize(element.Value);
-                if (value.Length > 0) otherTokens.Add(new UnsupportedOtherRef(
-                    "FIELD", value, ownerText, ownerOccurrence, previousParagraph, nextParagraph,
-                    StructuralPathWithinParagraph(element, ownerParagraph)));
+                if (value.Length > 0)
+                {
+                    var boundary = VisibleBoundaryTokens(element, ownerParagraph, w);
+                    otherTokens.Add(new UnsupportedOtherRef(
+                        "FIELD", value, ownerText, ownerOccurrence, previousParagraph, nextParagraph,
+                        boundary.Before, boundary.After, StructuralPathWithinParagraph(element, ownerParagraph)));
+                }
             }
             else if (element.Name == w + "fldSimple")
             {
                 var value = NativeComparisonEngine.Normalize(element.Attribute(w + "instr")?.Value ?? string.Empty);
-                if (value.Length > 0) otherTokens.Add(new UnsupportedOtherRef(
-                    "FIELD", value, ownerText, ownerOccurrence, previousParagraph, nextParagraph,
-                    StructuralPathWithinParagraph(element, ownerParagraph)));
+                if (value.Length > 0)
+                {
+                    var boundary = VisibleBoundaryTokens(element, ownerParagraph, w);
+                    otherTokens.Add(new UnsupportedOtherRef(
+                        "FIELD", value, ownerText, ownerOccurrence, previousParagraph, nextParagraph,
+                        boundary.Before, boundary.After, StructuralPathWithinParagraph(element, ownerParagraph)));
+                }
             }
             else if (element.Name == w + "sym")
             {
@@ -1743,9 +1860,47 @@ internal static class NativeOfficeExporter
                     .OrderBy(a => a.Name.NamespaceName, StringComparer.Ordinal)
                     .ThenBy(a => a.Name.LocalName, StringComparer.Ordinal)
                     .Select(a => $"{{{a.Name.NamespaceName}}}{a.Name.LocalName}={a.Value}"));
+                var boundary = VisibleBoundaryTokens(element, ownerParagraph, w);
                 otherTokens.Add(new UnsupportedOtherRef(
                     "SYM", attrs, ownerText, ownerOccurrence, previousParagraph, nextParagraph,
-                    StructuralPathWithinParagraph(element, ownerParagraph)));
+                    boundary.Before, boundary.After, StructuralPathWithinParagraph(element, ownerParagraph)));
+            }
+            else if (element.Name == w + "hyperlink")
+            {
+                var anchorValue = element.Attribute(w + "anchor")?.Value ?? string.Empty;
+                var docLocation = element.Attribute(w + "docLocation")?.Value ?? string.Empty;
+                var targetFrame = element.Attribute(w + "tgtFrame")?.Value ?? string.Empty;
+                var tooltip = element.Attribute(w + "tooltip")?.Value ?? string.Empty;
+                if (anchorValue.Length > 0 || docLocation.Length > 0 || targetFrame.Length > 0 || tooltip.Length > 0)
+                {
+                    var boundary = VisibleBoundaryTokens(element, ownerParagraph, w);
+                    var value = $"anchor={anchorValue}|docLocation={docLocation}|frame={targetFrame}|tooltip={tooltip}";
+                    otherTokens.Add(new UnsupportedOtherRef(
+                        "HYPERLINK_META", value, ownerText, ownerOccurrence, previousParagraph, nextParagraph,
+                        boundary.Before, boundary.After, StructuralPathWithinParagraph(element, ownerParagraph)));
+                }
+            }
+            else if (element.Name == w + "bookmarkStart")
+            {
+                var name = element.Attribute(w + "name")?.Value ?? string.Empty;
+                if (name.Length > 0 && internalHyperlinkTargets.Contains(name))
+                {
+                    var boundary = VisibleBoundaryTokens(element, ownerParagraph, w);
+                    otherTokens.Add(new UnsupportedOtherRef(
+                        "BOOKMARK_TARGET", name, ownerText, ownerOccurrence, previousParagraph, nextParagraph,
+                        boundary.Before, boundary.After, StructuralPathWithinParagraph(element, ownerParagraph)));
+                }
+            }
+            else if (element.Name == w + "commentReference" ||
+                     element.Name == w + "commentRangeStart" ||
+                     element.Name == w + "commentRangeEnd")
+            {
+                var idValue = element.Attribute(w + "id")?.Value ?? string.Empty;
+                var boundary = VisibleBoundaryTokens(element, ownerParagraph, w);
+                otherTokens.Add(new UnsupportedOtherRef(
+                    "COMMENT_MARKER", element.Name.LocalName + "|" + idValue,
+                    ownerText, ownerOccurrence, previousParagraph, nextParagraph,
+                    boundary.Before, boundary.After, StructuralPathWithinParagraph(element, ownerParagraph)));
             }
         }
         return new(relationRefs, otherTokens);
@@ -1773,10 +1928,14 @@ internal static class NativeOfficeExporter
 
             if (sameOwner)
             {
+                if (x.AnchorKind == "hyperlink")
+                {
+                    if (x.AnchorText.Length > 0 && x.AnchorText == y.AnchorText &&
+                        x.AnchorOccurrence == y.AnchorOccurrence)
+                        continue;
+                    return false;
+                }
                 if (x.StructuralPath == y.StructuralPath)
-                    continue;
-                if (x.AnchorKind == "hyperlink" && x.AnchorText.Length > 0 &&
-                    x.AnchorText == y.AnchorText && x.AnchorOccurrence == y.AnchorOccurrence)
                     continue;
                 return false;
             }
@@ -1809,12 +1968,23 @@ internal static class NativeOfficeExporter
         for (var i = 0; i < a.Count; i++)
         {
             var x = a[i]; var y = b[i];
-            if (x.Kind != y.Kind || x.Value != y.Value || x.StructuralPath != y.StructuralPath)
+            if (x.Kind != y.Kind || x.Value != y.Value)
                 return false;
-            if (SameSemanticOwner(
-                    x.OwnerText, x.OwnerOccurrence, x.PreviousParagraph, x.NextParagraph,
-                    y.OwnerText, y.OwnerOccurrence, y.PreviousParagraph, y.NextParagraph))
+            var sameOwner = SameSemanticOwner(
+                x.OwnerText, x.OwnerOccurrence, x.PreviousParagraph, x.NextParagraph,
+                y.OwnerText, y.OwnerOccurrence, y.PreviousParagraph, y.NextParagraph);
+            if (sameOwner)
+            {
+                if (x.OwnerText.Length == 0)
+                {
+                    if (x.StructuralPath != y.StructuralPath) return false;
+                }
+                else if (!SameBoundary(x.BeforeToken, x.AfterToken, y.BeforeToken, y.AfterToken))
+                    return false;
                 continue;
+            }
+            if (x.OwnerText == y.OwnerText)
+                return false;
             var sameContext =
                 ContextOverlap(x.PreviousParagraph, y.PreviousParagraph) ||
                 ContextOverlap(x.NextParagraph, y.NextParagraph) ||
@@ -1823,7 +1993,8 @@ internal static class NativeOfficeExporter
             var ownerContainment = x.OwnerText.Length > 0 && y.OwnerText.Length > 0 &&
                 (x.OwnerText.Contains(y.OwnerText, StringComparison.Ordinal) ||
                  y.OwnerText.Contains(x.OwnerText, StringComparison.Ordinal));
-            if (!sameContext || !ownerContainment)
+            if (!sameContext || !ownerContainment ||
+                !StableBoundaryAcrossTextEdit(x.BeforeToken, x.AfterToken, y.BeforeToken, y.AfterToken))
                 return false;
         }
         return true;
@@ -1835,7 +2006,7 @@ internal static class NativeOfficeExporter
         var rels = snapshot.Relationships.Select(x =>
             $"RELREF|{x.ElementName}|{x.AttributeName}|{x.Resolved}|{x.AnchorKind}|{x.AnchorText}#{x.AnchorOccurrence}|owner={x.OwnerText}#{x.OwnerOccurrence}|outside={x.OutsideText}|{x.StructuralPath}");
         var others = snapshot.FieldsAndSymbols.Select(x =>
-            $"{x.Kind}|{x.Value}|owner={x.OwnerText}#{x.OwnerOccurrence}|{x.StructuralPath}");
+            $"{x.Kind}|{x.Value}|owner={x.OwnerText}#{x.OwnerOccurrence}|before={x.BeforeToken}|after={x.AfterToken}|{x.StructuralPath}");
         return string.Join("\n", rels.Concat(others));
     }
 
@@ -1850,7 +2021,8 @@ internal static class NativeOfficeExporter
 
     private sealed record AncillaryNoteRef(
         string Kind, string Id, int LocalIndex,
-        string OwnerText, int OwnerOccurrence, string PreviousParagraph, string NextParagraph);
+        string OwnerText, int OwnerOccurrence, string PreviousParagraph, string NextParagraph,
+        string BeforeToken, string AfterToken, string StructuralPath);
 
     private sealed record MainAncillaryReferenceSnapshot(
         List<string> SectionReferences, List<AncillaryNoteRef> NoteReferences);
@@ -1910,6 +2082,7 @@ internal static class NativeOfficeExporter
                 var localIndex = ownerParagraph is null ? -1 : RefIndex(
                     ownerParagraph.Descendants(element.Name)
                         .Where(x => ReferenceEquals(x.Ancestors(w + "p").FirstOrDefault(), ownerParagraph)), element);
+                var boundary = VisibleBoundaryTokens(element, ownerParagraph, w);
                 noteRefs.Add(new AncillaryNoteRef(
                     element.Name.LocalName,
                     element.Attribute(w + "id")?.Value ?? string.Empty,
@@ -1917,7 +2090,10 @@ internal static class NativeOfficeExporter
                     ownerText,
                     ownerOccurrence,
                     previousParagraph,
-                    nextParagraph));
+                    nextParagraph,
+                    boundary.Before,
+                    boundary.After,
+                    StructuralPathWithinParagraph(element, ownerParagraph)));
             }
         }
         return new(sectionTokens, noteRefs);
@@ -1932,9 +2108,31 @@ internal static class NativeOfficeExporter
             var x = a[i]; var y = b[i];
             if (x.Kind != y.Kind || x.Id != y.Id || x.LocalIndex != y.LocalIndex)
                 return false;
-            if (!SameSemanticOwner(
-                    x.OwnerText, x.OwnerOccurrence, x.PreviousParagraph, x.NextParagraph,
-                    y.OwnerText, y.OwnerOccurrence, y.PreviousParagraph, y.NextParagraph))
+            var sameOwner = SameSemanticOwner(
+                x.OwnerText, x.OwnerOccurrence, x.PreviousParagraph, x.NextParagraph,
+                y.OwnerText, y.OwnerOccurrence, y.PreviousParagraph, y.NextParagraph);
+            if (sameOwner)
+            {
+                if (x.OwnerText.Length == 0)
+                {
+                    if (x.StructuralPath != y.StructuralPath) return false;
+                }
+                else if (!SameBoundary(x.BeforeToken, x.AfterToken, y.BeforeToken, y.AfterToken))
+                    return false;
+                continue;
+            }
+            if (x.OwnerText == y.OwnerText)
+                return false;
+            var sameContext =
+                ContextOverlap(x.PreviousParagraph, y.PreviousParagraph) ||
+                ContextOverlap(x.NextParagraph, y.NextParagraph) ||
+                (x.PreviousParagraph.Length == 0 && x.NextParagraph.Length == 0 &&
+                 y.PreviousParagraph.Length == 0 && y.NextParagraph.Length == 0);
+            var ownerContainment = x.OwnerText.Length > 0 && y.OwnerText.Length > 0 &&
+                (x.OwnerText.Contains(y.OwnerText, StringComparison.Ordinal) ||
+                 y.OwnerText.Contains(x.OwnerText, StringComparison.Ordinal));
+            if (!sameContext || !ownerContainment ||
+                !StableBoundaryAcrossTextEdit(x.BeforeToken, x.AfterToken, y.BeforeToken, y.AfterToken))
                 return false;
         }
         return true;
@@ -1944,7 +2142,7 @@ internal static class NativeOfficeExporter
     {
         var snapshot = ReadMainDocumentAncillaryReferenceSnapshot(path);
         var notes = snapshot.NoteReferences.Select(x =>
-            $"{x.Kind}|{x.Id}|local={x.LocalIndex}|owner={x.OwnerText}#{x.OwnerOccurrence}");
+            $"{x.Kind}|{x.Id}|local={x.LocalIndex}|owner={x.OwnerText}#{x.OwnerOccurrence}|before={x.BeforeToken}|after={x.AfterToken}|{x.StructuralPath}");
         return string.Join("\n", snapshot.SectionReferences.Concat(notes));
     }
 

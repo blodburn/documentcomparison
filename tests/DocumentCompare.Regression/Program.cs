@@ -946,4 +946,189 @@ var fnRepeatBlocked=false;try{await eng.ExportWordAsync(fnRepeatA,fnRepeatB,fnRe
 Check(fnRepeatBlocked,"footnote moved between identical paragraphs without being detected");
 Console.WriteLine("PASS FOOTNOTE REPEATED-OWNER LOCATION GUARD");
 
+
+// 87. Moving the same footnote within one paragraph must be detected even when visible text is unchanged.
+var fnInlineA=Path.Combine(dir,"fnInlineA.docx");var fnInlineB=Path.Combine(dir,"fnInlineB.docx");var fnInlineO=Path.Combine(dir,"fnInlineOut.docx");
+Make(fnInlineA,P("Alpha Beta"));Make(fnInlineB,P("Alpha Beta"));
+var fnInlineDocA="<w:document xmlns:w=\""+W+"\"><w:body><w:p><w:r><w:t xml:space=\"preserve\">Alpha </w:t></w:r><w:r><w:footnoteReference w:id=\"2\"/></w:r><w:r><w:t>Beta</w:t></w:r></w:p><w:sectPr/></w:body></w:document>";
+var fnInlineDocB="<w:document xmlns:w=\""+W+"\"><w:body><w:p><w:r><w:t>Alpha Beta</w:t></w:r><w:r><w:footnoteReference w:id=\"2\"/></w:r></w:p><w:sectPr/></w:body></w:document>";
+AddWordXml(fnInlineA,"word/document.xml",fnInlineDocA);AddWordXml(fnInlineB,"word/document.xml",fnInlineDocB);
+AddWordXml(fnInlineA,"word/footnotes.xml",footnotes);AddWordXml(fnInlineB,"word/footnotes.xml",footnotes);
+var fnInlineBlocked=false;try{await eng.ExportWordAsync(fnInlineA,fnInlineB,fnInlineO,"T",true);}catch(InvalidOperationException ex){fnInlineBlocked=ex.Message.Contains("참조 위치")||ex.Message.Contains("footnote");}
+Check(fnInlineBlocked,"footnote moved within the same paragraph without being detected");
+Console.WriteLine("PASS FOOTNOTE INTRA-PARAGRAPH LOCATION GUARD");
+
+// 88. Inserting ordinary visible text before an unchanged field must be trackable, not rejected by raw XML ordinal changes.
+var fieldPrefixA=Path.Combine(dir,"fieldPrefixA.docx");var fieldPrefixB=Path.Combine(dir,"fieldPrefixB.docx");var fieldPrefixO=Path.Combine(dir,"fieldPrefixOut.docx");
+Make(fieldPrefixA,"<w:p><w:r><w:instrText>PAGE</w:instrText></w:r><w:r><w:t>Page</w:t></w:r></w:p>");
+Make(fieldPrefixB,"<w:p><w:r><w:t xml:space=\"preserve\">Intro </w:t></w:r><w:r><w:instrText>PAGE</w:instrText></w:r><w:r><w:t>Page</w:t></w:r></w:p>");
+await eng.ExportWordAsync(fieldPrefixA,fieldPrefixB,fieldPrefixO,"T",true);
+Check(File.Exists(fieldPrefixO),"ordinary text insertion before unchanged field was falsely blocked");
+Console.WriteLine("PASS FIELD PREFIX TEXT INSERTION");
+
+// 89. Expanding the linked range while paragraph text stays identical is a relationship-association change and must be blocked.
+var linkRangeA=Path.Combine(dir,"linkRangeA.docx");var linkRangeB=Path.Combine(dir,"linkRangeB.docx");var linkRangeO=Path.Combine(dir,"linkRangeOut.docx");
+Make(linkRangeA,P("Alpha Beta"));Make(linkRangeB,P("Alpha Beta"));
+var linkRangeDocA="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink><w:r><w:t xml:space=\"preserve\"> Beta</w:t></w:r></w:p><w:sectPr/></w:body></w:document>";
+var linkRangeDocB="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha Beta</w:t></w:r></w:hyperlink></w:p><w:sectPr/></w:body></w:document>";
+AddWordXml(linkRangeA,"word/document.xml",linkRangeDocA);AddWordXml(linkRangeB,"word/document.xml",linkRangeDocB);
+AddWordXml(linkRangeA,"word/_rels/document.xml.rels",sameLinkRels);AddWordXml(linkRangeB,"word/_rels/document.xml.rels",sameLinkRels);
+var linkRangeBlocked=false;try{await eng.ExportWordAsync(linkRangeA,linkRangeB,linkRangeO,"T",true);}catch(InvalidOperationException ex){linkRangeBlocked=ex.Message.Contains("비텍스트")||ex.Message.Contains("관계");}
+Check(linkRangeBlocked,"hyperlink range expanded without being detected");
+Console.WriteLine("PASS HYPERLINK RANGE-ASSOCIATION GUARD");
+
+
+// 90. Text inserted before an unchanged footnote boundary is trackable and must not be falsely blocked.
+var fnPrefixA=Path.Combine(dir,"fnPrefixA.docx");var fnPrefixB=Path.Combine(dir,"fnPrefixB.docx");var fnPrefixO=Path.Combine(dir,"fnPrefixOut.docx");
+Make(fnPrefixA,P("Alpha Beta"));Make(fnPrefixB,P("Intro Alpha Beta"));
+var fnPrefixDocA="<w:document xmlns:w=\""+W+"\"><w:body><w:p><w:r><w:t xml:space=\"preserve\">Alpha </w:t></w:r><w:r><w:footnoteReference w:id=\"2\"/></w:r><w:r><w:t>Beta</w:t></w:r></w:p><w:sectPr/></w:body></w:document>";
+var fnPrefixDocB="<w:document xmlns:w=\""+W+"\"><w:body><w:p><w:r><w:t xml:space=\"preserve\">Intro Alpha </w:t></w:r><w:r><w:footnoteReference w:id=\"2\"/></w:r><w:r><w:t>Beta</w:t></w:r></w:p><w:sectPr/></w:body></w:document>";
+AddWordXml(fnPrefixA,"word/document.xml",fnPrefixDocA);AddWordXml(fnPrefixB,"word/document.xml",fnPrefixDocB);
+AddWordXml(fnPrefixA,"word/footnotes.xml",footnotes);AddWordXml(fnPrefixB,"word/footnotes.xml",footnotes);
+await eng.ExportWordAsync(fnPrefixA,fnPrefixB,fnPrefixO,"T",true);
+Check(File.Exists(fnPrefixO),"text insertion before unchanged footnote boundary was falsely blocked");
+Console.WriteLine("PASS FOOTNOTE PREFIX TEXT INSERTION");
+
+// 91. A simultaneous text insertion must not hide a real footnote move.
+var fnMoveEditA=Path.Combine(dir,"fnMoveEditA.docx");var fnMoveEditB=Path.Combine(dir,"fnMoveEditB.docx");var fnMoveEditO=Path.Combine(dir,"fnMoveEditOut.docx");
+Make(fnMoveEditA,P("Alpha Beta"));Make(fnMoveEditB,P("Intro Alpha Beta"));
+var fnMoveEditDocA=fnPrefixDocA;
+var fnMoveEditDocB="<w:document xmlns:w=\""+W+"\"><w:body><w:p><w:r><w:t>Intro Alpha Beta</w:t></w:r><w:r><w:footnoteReference w:id=\"2\"/></w:r></w:p><w:sectPr/></w:body></w:document>";
+AddWordXml(fnMoveEditA,"word/document.xml",fnMoveEditDocA);AddWordXml(fnMoveEditB,"word/document.xml",fnMoveEditDocB);
+AddWordXml(fnMoveEditA,"word/footnotes.xml",footnotes);AddWordXml(fnMoveEditB,"word/footnotes.xml",footnotes);
+var fnMoveEditBlocked=false;try{await eng.ExportWordAsync(fnMoveEditA,fnMoveEditB,fnMoveEditO,"T",true);}catch(InvalidOperationException ex){fnMoveEditBlocked=ex.Message.Contains("참조 위치")||ex.Message.Contains("footnote");}
+Check(fnMoveEditBlocked,"text insertion hid a simultaneous footnote move");
+Console.WriteLine("PASS FOOTNOTE MOVE-WITH-EDIT GUARD");
+
+// 92. A visible prefix insertion must not hide moving the same field to the end of the paragraph.
+var fieldMoveEditA=Path.Combine(dir,"fieldMoveEditA.docx");var fieldMoveEditB=Path.Combine(dir,"fieldMoveEditB.docx");var fieldMoveEditO=Path.Combine(dir,"fieldMoveEditOut.docx");
+Make(fieldMoveEditA,"<w:p><w:r><w:instrText>PAGE</w:instrText></w:r><w:r><w:t>Page</w:t></w:r></w:p>");
+Make(fieldMoveEditB,"<w:p><w:r><w:t>Intro Page</w:t></w:r><w:r><w:instrText>PAGE</w:instrText></w:r></w:p>");
+var fieldMoveEditBlocked=false;try{await eng.ExportWordAsync(fieldMoveEditA,fieldMoveEditB,fieldMoveEditO,"T",true);}catch(InvalidOperationException ex){fieldMoveEditBlocked=ex.Message.Contains("비텍스트")||ex.Message.Contains("필드");}
+Check(fieldMoveEditBlocked,"text insertion hid a simultaneous field move");
+Console.WriteLine("PASS FIELD MOVE-WITH-EDIT GUARD");
+
+
+// 93. A Word paragraph flattened to single spaces must recover every consecutive (1)..(7) item boundary.
+var flatSeven=(System.Collections.IEnumerable)parse.Invoke(null,new object[]{
+    "Lead: (1) One (2) Two (3) Three (4) Four (5) Five (6) Six (7) Seven"
+})!;
+var flatSevenLabels=new List<string>();
+foreach(var x in flatSeven)
+    flatSevenLabels.Add((string)x!.GetType().GetProperty("Label")!.GetValue(x)!);
+for(var n=1;n<=7;n++)
+    Check(flatSevenLabels.Contains("("+n+")"),"flattened numeric item boundary missing: ("+n+") => "+string.Join(",",flatSevenLabels));
+Console.WriteLine("PASS FLATTENED PAREN NUMBER SEVEN");
+
+
+// 94. Word non-breaking spaces around flattened legal enumerators must behave like ordinary spaces.
+var nbspSeven=(System.Collections.IEnumerable)parse.Invoke(null,new object[]{
+    "Lead: (1) One (2) Two (3) Three (4) Four (5) Five (6) Six (7) Seven"
+})!;
+var nbspSevenLabels=new List<string>();
+foreach(var x in nbspSeven)
+    nbspSevenLabels.Add((string)x!.GetType().GetProperty("Label")!.GetValue(x)!);
+for(var n=1;n<=7;n++)
+    Check(nbspSevenLabels.Contains("("+n+")"),"NBSP flattened numeric item boundary missing: ("+n+") => "+string.Join(",",nbspSevenLabels));
+Console.WriteLine("PASS NBSP FLATTENED PAREN NUMBER SEVEN");
+
+// 95. Word export without a ComparisonResult must still reject a source mutation during export.
+var rawRaceA=Path.Combine(dir,"rawRaceA.docx");var rawRaceB=Path.Combine(dir,"rawRaceB.docx");var rawRaceO=Path.Combine(dir,"rawRaceOut.docx");
+var rawRaceOld=string.Concat(Enumerable.Range(0,120).Select(i=>P("RAW_OLD_"+i.ToString("D3"))));
+var rawRaceNew=string.Concat(Enumerable.Range(0,120).Select(i=>P("RAW_NEW_"+i.ToString("D3"))));
+Make(rawRaceA,rawRaceOld);Make(rawRaceB,rawRaceNew);
+var rawRacePadding=new byte[24*1024*1024];new Random(5218).NextBytes(rawRacePadding);
+AddWordBytes(rawRaceB,"word/media/race-padding.bin",rawRacePadding);
+var rawRaceSentinel=Encoding.UTF8.GetBytes("PREVIOUS_RAW_RACE_WORD");File.WriteAllBytes(rawRaceO,rawRaceSentinel);
+var rawRaceTask=eng.ExportWordAsync(rawRaceA,rawRaceB,rawRaceO,"T",true);
+var rawRacePattern="."+Path.GetFileName(rawRaceO)+".*.tmp";
+for(var i=0;i<4000&&!Directory.GetFiles(dir,rawRacePattern).Any()&&!rawRaceTask.IsCompleted;i++)await Task.Delay(1);
+using(var fsRaw=new FileStream(rawRaceA,FileMode.Open,FileAccess.ReadWrite,FileShare.ReadWrite))
+{
+    fsRaw.Position=Math.Max(0,fsRaw.Length-16);
+    fsRaw.WriteByte(0x20);
+}
+var rawRaceBlocked=false;
+try{await rawRaceTask;}
+catch(InvalidOperationException ex){rawRaceBlocked=ex.Message.Contains("입력 파일이 변경")||ex.Message.Contains("내보내기 중");}
+catch(InvalidDataException){rawRaceBlocked=true;}
+Check(rawRaceBlocked,"Word export without ComparisonResult committed after source mutation");
+Check(File.ReadAllBytes(rawRaceO).SequenceEqual(rawRaceSentinel),"raw Word race guard replaced prior output");
+Console.WriteLine("PASS WORD RAW MID-EXPORT SOURCE RACE GUARD");
+
+
+// 96. Internal Word hyperlink anchor changes are semantic even without an r:id.
+var intLinkA=Path.Combine(dir,"internalLinkA.docx");var intLinkB=Path.Combine(dir,"internalLinkB.docx");var intLinkO=Path.Combine(dir,"internalLinkOut.docx");
+Make(intLinkA,P("Jump")+P("Target A")+P("Target B"));Make(intLinkB,P("Jump")+P("Target A")+P("Target B"));
+var intLinkDocA="<w:document xmlns:w=\""+W+"\"><w:body><w:p><w:hyperlink w:anchor=\"TargetA\"><w:r><w:t>Jump</w:t></w:r></w:hyperlink></w:p><w:p><w:bookmarkStart w:id=\"1\" w:name=\"TargetA\"/><w:r><w:t>Target A</w:t></w:r><w:bookmarkEnd w:id=\"1\"/></w:p><w:p><w:bookmarkStart w:id=\"2\" w:name=\"TargetB\"/><w:r><w:t>Target B</w:t></w:r><w:bookmarkEnd w:id=\"2\"/></w:p><w:sectPr/></w:body></w:document>";
+var intLinkDocB=intLinkDocA.Replace("w:anchor=\"TargetA\"","w:anchor=\"TargetB\"");
+AddWordXml(intLinkA,"word/document.xml",intLinkDocA);AddWordXml(intLinkB,"word/document.xml",intLinkDocB);
+var intLinkBlocked=false;try{await eng.ExportWordAsync(intLinkA,intLinkB,intLinkO,"T",true);}catch(InvalidOperationException ex){intLinkBlocked=ex.Message.Contains("비텍스트")||ex.Message.Contains("관계");}
+Check(intLinkBlocked,"internal hyperlink anchor target change was silently ignored");
+Console.WriteLine("PASS INTERNAL HYPERLINK ANCHOR GUARD");
+
+// 97. Moving the bookmark targeted by an unchanged internal hyperlink must be detected.
+var bmMoveA=Path.Combine(dir,"bookmarkMoveA.docx");var bmMoveB=Path.Combine(dir,"bookmarkMoveB.docx");var bmMoveO=Path.Combine(dir,"bookmarkMoveOut.docx");
+Make(bmMoveA,P("Jump")+P("Alpha")+P("Beta"));Make(bmMoveB,P("Jump")+P("Alpha")+P("Beta"));
+var bmMoveDocA="<w:document xmlns:w=\""+W+"\"><w:body><w:p><w:hyperlink w:anchor=\"Dest\"><w:r><w:t>Jump</w:t></w:r></w:hyperlink></w:p><w:p><w:bookmarkStart w:id=\"1\" w:name=\"Dest\"/><w:r><w:t>Alpha</w:t></w:r><w:bookmarkEnd w:id=\"1\"/></w:p>"+P("Beta")+"<w:sectPr/></w:body></w:document>";
+var bmMoveDocB="<w:document xmlns:w=\""+W+"\"><w:body><w:p><w:hyperlink w:anchor=\"Dest\"><w:r><w:t>Jump</w:t></w:r></w:hyperlink></w:p>"+P("Alpha")+"<w:p><w:bookmarkStart w:id=\"1\" w:name=\"Dest\"/><w:r><w:t>Beta</w:t></w:r><w:bookmarkEnd w:id=\"1\"/></w:p><w:sectPr/></w:body></w:document>";
+AddWordXml(bmMoveA,"word/document.xml",bmMoveDocA);AddWordXml(bmMoveB,"word/document.xml",bmMoveDocB);
+var bmMoveBlocked=false;try{await eng.ExportWordAsync(bmMoveA,bmMoveB,bmMoveO,"T",true);}catch(InvalidOperationException ex){bmMoveBlocked=ex.Message.Contains("비텍스트")||ex.Message.Contains("관계");}
+Check(bmMoveBlocked,"linked bookmark target moved without being detected");
+Console.WriteLine("PASS LINKED BOOKMARK LOCATION GUARD");
+
+// 98. Comment text changes must not be silently inherited from B without tracking.
+var commentA=Path.Combine(dir,"commentA.docx");var commentB=Path.Combine(dir,"commentB.docx");var commentO=Path.Combine(dir,"commentOut.docx");
+var commentBody="<w:document xmlns:w=\""+W+"\"><w:body><w:p><w:commentRangeStart w:id=\"0\"/><w:r><w:t>Alpha</w:t></w:r><w:commentRangeEnd w:id=\"0\"/><w:r><w:commentReference w:id=\"0\"/></w:r></w:p><w:sectPr/></w:body></w:document>";
+Make(commentA,P("Alpha"));Make(commentB,P("Alpha"));AddWordXml(commentA,"word/document.xml",commentBody);AddWordXml(commentB,"word/document.xml",commentBody);
+AddWordXml(commentA,"word/comments.xml","<w:comments xmlns:w=\""+W+"\"><w:comment w:id=\"0\" w:author=\"T\"><w:p><w:r><w:t>Old comment</w:t></w:r></w:p></w:comment></w:comments>");
+AddWordXml(commentB,"word/comments.xml","<w:comments xmlns:w=\""+W+"\"><w:comment w:id=\"0\" w:author=\"T\"><w:p><w:r><w:t>New comment</w:t></w:r></w:p></w:comment></w:comments>");
+var commentBlocked=false;try{await eng.ExportWordAsync(commentA,commentB,commentO,"T",true);}catch(InvalidOperationException ex){commentBlocked=ex.Message.Contains("comments")||ex.Message.Contains("서로 다릅니다");}
+Check(commentBlocked,"comment content change was silently omitted");
+Console.WriteLine("PASS COMMENT CONTENT GUARD");
+
+// 99. Moving an unchanged comment range inside the same paragraph must be detected.
+var commentMoveA=Path.Combine(dir,"commentMoveA.docx");var commentMoveB=Path.Combine(dir,"commentMoveB.docx");var commentMoveO=Path.Combine(dir,"commentMoveOut.docx");
+Make(commentMoveA,P("Alpha Beta"));Make(commentMoveB,P("Alpha Beta"));
+var commentMoveDocA="<w:document xmlns:w=\""+W+"\"><w:body><w:p><w:commentRangeStart w:id=\"0\"/><w:r><w:t xml:space=\"preserve\">Alpha </w:t></w:r><w:commentRangeEnd w:id=\"0\"/><w:r><w:t>Beta</w:t></w:r><w:r><w:commentReference w:id=\"0\"/></w:r></w:p><w:sectPr/></w:body></w:document>";
+var commentMoveDocB="<w:document xmlns:w=\""+W+"\"><w:body><w:p><w:r><w:t xml:space=\"preserve\">Alpha </w:t></w:r><w:commentRangeStart w:id=\"0\"/><w:r><w:t>Beta</w:t></w:r><w:commentRangeEnd w:id=\"0\"/><w:r><w:commentReference w:id=\"0\"/></w:r></w:p><w:sectPr/></w:body></w:document>";
+AddWordXml(commentMoveA,"word/document.xml",commentMoveDocA);AddWordXml(commentMoveB,"word/document.xml",commentMoveDocB);
+var sameComments="<w:comments xmlns:w=\""+W+"\"><w:comment w:id=\"0\" w:author=\"T\"><w:p><w:r><w:t>Same comment</w:t></w:r></w:p></w:comment></w:comments>";
+AddWordXml(commentMoveA,"word/comments.xml",sameComments);AddWordXml(commentMoveB,"word/comments.xml",sameComments);
+var commentMoveBlocked=false;try{await eng.ExportWordAsync(commentMoveA,commentMoveB,commentMoveO,"T",true);}catch(InvalidOperationException ex){commentMoveBlocked=ex.Message.Contains("비텍스트")||ex.Message.Contains("서로 다릅니다");}
+Check(commentMoveBlocked,"comment range moved within paragraph without being detected");
+Console.WriteLine("PASS COMMENT RANGE LOCATION GUARD");
+
+
+// 100. Internal hyperlink display text may be edited while the internal target stays unchanged.
+var intTextA=Path.Combine(dir,"internalTextA.docx");var intTextB=Path.Combine(dir,"internalTextB.docx");var intTextO=Path.Combine(dir,"internalTextOut.docx");
+Make(intTextA,P("Jump")+P("Destination"));Make(intTextB,P("Jump changed")+P("Destination"));
+var intTextDocA="<w:document xmlns:w=\""+W+"\"><w:body><w:p><w:hyperlink w:anchor=\"Dest\"><w:r><w:t>Jump</w:t></w:r></w:hyperlink></w:p><w:p><w:bookmarkStart w:id=\"1\" w:name=\"Dest\"/><w:r><w:t>Destination</w:t></w:r><w:bookmarkEnd w:id=\"1\"/></w:p><w:sectPr/></w:body></w:document>";
+var intTextDocB=intTextDocA.Replace(">Jump<",">Jump changed<");
+AddWordXml(intTextA,"word/document.xml",intTextDocA);AddWordXml(intTextB,"word/document.xml",intTextDocB);
+await eng.ExportWordAsync(intTextA,intTextB,intTextO,"T",true);
+Check(File.Exists(intTextO),"internal hyperlink display-text edit was falsely blocked");
+Console.WriteLine("PASS INTERNAL HYPERLINK DISPLAY-TEXT EDIT");
+
+// 101. A linked bookmark may remain at the same structural target while that paragraph is fully rewritten.
+var bmEditA=Path.Combine(dir,"bookmarkEditA.docx");var bmEditB=Path.Combine(dir,"bookmarkEditB.docx");var bmEditO=Path.Combine(dir,"bookmarkEditOut.docx");
+Make(bmEditA,P("Jump")+P("Alpha old wording")+P("Tail"));Make(bmEditB,P("Jump")+P("Completely rewritten destination")+P("Tail"));
+var bmEditDocA="<w:document xmlns:w=\""+W+"\"><w:body><w:p><w:hyperlink w:anchor=\"Dest\"><w:r><w:t>Jump</w:t></w:r></w:hyperlink></w:p><w:p><w:bookmarkStart w:id=\"1\" w:name=\"Dest\"/><w:r><w:t>Alpha old wording</w:t></w:r><w:bookmarkEnd w:id=\"1\"/></w:p>"+P("Tail")+"<w:sectPr/></w:body></w:document>";
+var bmEditDocB="<w:document xmlns:w=\""+W+"\"><w:body><w:p><w:hyperlink w:anchor=\"Dest\"><w:r><w:t>Jump</w:t></w:r></w:hyperlink></w:p><w:p><w:bookmarkStart w:id=\"1\" w:name=\"Dest\"/><w:r><w:t>Completely rewritten destination</w:t></w:r><w:bookmarkEnd w:id=\"1\"/></w:p>"+P("Tail")+"<w:sectPr/></w:body></w:document>";
+AddWordXml(bmEditA,"word/document.xml",bmEditDocA);AddWordXml(bmEditB,"word/document.xml",bmEditDocB);
+await eng.ExportWordAsync(bmEditA,bmEditB,bmEditO,"T",true);
+Check(File.Exists(bmEditO),"unchanged linked bookmark was falsely blocked by target paragraph rewrite");
+Console.WriteLine("PASS LINKED BOOKMARK OWNER REWRITE");
+
+// 102. An unchanged comment range may surround edited text; the text edit itself should remain trackable.
+var commentEditA=Path.Combine(dir,"commentEditA.docx");var commentEditB=Path.Combine(dir,"commentEditB.docx");var commentEditO=Path.Combine(dir,"commentEditOut.docx");
+Make(commentEditA,P("Alpha old"));Make(commentEditB,P("Completely rewritten"));
+var commentEditDocA="<w:document xmlns:w=\""+W+"\"><w:body><w:p><w:commentRangeStart w:id=\"0\"/><w:r><w:t>Alpha old</w:t></w:r><w:commentRangeEnd w:id=\"0\"/><w:r><w:commentReference w:id=\"0\"/></w:r></w:p><w:sectPr/></w:body></w:document>";
+var commentEditDocB="<w:document xmlns:w=\""+W+"\"><w:body><w:p><w:commentRangeStart w:id=\"0\"/><w:r><w:t>Completely rewritten</w:t></w:r><w:commentRangeEnd w:id=\"0\"/><w:r><w:commentReference w:id=\"0\"/></w:r></w:p><w:sectPr/></w:body></w:document>";
+AddWordXml(commentEditA,"word/document.xml",commentEditDocA);AddWordXml(commentEditB,"word/document.xml",commentEditDocB);
+AddWordXml(commentEditA,"word/comments.xml",sameComments);AddWordXml(commentEditB,"word/comments.xml",sameComments);
+await eng.ExportWordAsync(commentEditA,commentEditB,commentEditO,"T",true);
+Check(File.Exists(commentEditO),"unchanged comment range was falsely blocked by commented text rewrite");
+Console.WriteLine("PASS COMMENT OWNER TEXT REWRITE");
+
 Console.WriteLine("ALL REGRESSIONS PASSED");

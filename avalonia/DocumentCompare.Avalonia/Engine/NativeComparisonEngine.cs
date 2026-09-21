@@ -28,7 +28,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         """^[\s\p{Cf}]*(?:[•●▪◦·*]+\s*)?제\s*(?<num>\d+)\s*(?<level>장|절|관)\s*(?:\((?<p>[^)\n]*)\)|\[(?<b>[^]\n]*)\]|(?<title>.*?))\s*$""",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex ExplicitItem = new(
-        """^[ \t\p{Cf}]*(?<label>(?:[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|\(\d+\)|\([A-Za-z]\)|\([IVXLCDMivxlcdm]{2,}\)|\d+[.)]|[가-하A-Za-z][.)]))(?<ws>[ \t]+)""",
+        """^[\t\p{Zs}\p{Cf}]*(?<label>(?:[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|\(\d+\)|\([A-Za-z]\)|\([IVXLCDMivxlcdm]{2,}\)|\d+[.)]|[가-하A-Za-z][.)]))(?<ws>[\t\p{Zs}]+)""",
         RegexOptions.Compiled | RegexOptions.Multiline | RegexOptions.CultureInvariant);
     private static readonly Regex StrongInlineEnglishArticle = new(
         @"(?<![A-Za-z0-9])(?:Article|Section)\s+(?:(?:\d+(?:[-.]\d+)*)|(?:" + RomanNumberPattern + @"))\s*(?:[.:-])?\s*\([^
@@ -41,7 +41,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         "^\\s*[\\x22“‘]([^\\x22”’]{1,96})[\\x22”’]",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex EmbeddedExplicitItemCandidate = new(
-        @"(?m)(?<gap>^[ \t]*|[ \t]+)(?<label>(?:[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|\(\d+\)|\([A-Za-z]\)|\([IVXLCDMivxlcdm]{2,}\)|\d+[.)]|[가-하A-Za-z][.)]))(?=[ \t]+)",
+        @"(?m)(?<gap>^[\t\p{Zs}]*|[\t\p{Zs}]+)(?<label>(?:[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|\(\d+\)|\([A-Za-z]\)|\([IVXLCDMivxlcdm]{2,}\)|\d+[.)]|[가-하A-Za-z][.)]))(?=[\t\p{Zs}]+)",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex KoreanLexToken = new(
         @"[가-힣A-Za-z]+|\d+(?:,\d{3})*(?:\.\d+)?%?", RegexOptions.Compiled | RegexOptions.CultureInvariant);
