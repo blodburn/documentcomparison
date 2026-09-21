@@ -1609,6 +1609,18 @@ internal static class NativeOfficeExporter
             .Where(x => x != EmptyParagraphContextToken).Any(right.Contains);
     }
 
+    private static string ImmediateContextToken(string window)
+    {
+        if (window.Length == 0) return string.Empty;
+        return window.Split('\u001f', StringSplitOptions.None)[0];
+    }
+
+    private static bool SameImmediateParagraphContext(string xPrevious, string xNext, string yPrevious, string yNext)
+    {
+        return string.Equals(ImmediateContextToken(xPrevious), ImmediateContextToken(yPrevious), StringComparison.Ordinal) &&
+               string.Equals(ImmediateContextToken(xNext), ImmediateContextToken(yNext), StringComparison.Ordinal);
+    }
+
     private static int ParagraphTextOccurrence(IReadOnlyList<XElement> paragraphs, int index, string ownerText, XNamespace w)
     {
         if (index < 0 || ownerText.Length == 0) return -1;
@@ -1983,13 +1995,26 @@ internal static class NativeOfficeExporter
                     return false;
                 continue;
             }
-            if (x.OwnerText == y.OwnerText)
-                return false;
             var sameContext =
                 ContextOverlap(x.PreviousParagraph, y.PreviousParagraph) ||
                 ContextOverlap(x.NextParagraph, y.NextParagraph) ||
                 (x.PreviousParagraph.Length == 0 && x.NextParagraph.Length == 0 &&
                  y.PreviousParagraph.Length == 0 && y.NextParagraph.Length == 0);
+
+            // Zero-width semantic markers and internal hyperlinks may stay at exactly the same
+            // structural slot while the surrounding visible text is fully rewritten.  In that
+            // case the unchanged kind/value + same paragraph context + same structural path is
+            // stronger evidence than lexical containment of the owner text.  We still require
+            // boundary equality above whenever the visible owner text itself did not change, so
+            // moving a marker/link within an otherwise unchanged paragraph remains detectable.
+            if (x.OwnerText != y.OwnerText && x.StructuralPath == y.StructuralPath &&
+                (x.Kind is "HYPERLINK_META" or "BOOKMARK_TARGET" or "COMMENT_MARKER") &&
+                SameImmediateParagraphContext(
+                    x.PreviousParagraph, x.NextParagraph, y.PreviousParagraph, y.NextParagraph))
+                continue;
+
+            if (x.OwnerText == y.OwnerText)
+                return false;
             var ownerContainment = x.OwnerText.Length > 0 && y.OwnerText.Length > 0 &&
                 (x.OwnerText.Contains(y.OwnerText, StringComparison.Ordinal) ||
                  y.OwnerText.Contains(x.OwnerText, StringComparison.Ordinal));
