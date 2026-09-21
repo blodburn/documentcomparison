@@ -173,12 +173,26 @@ internal static class NativeOfficeExporter
             string.Equals(revisedFullPath, outputFullPath, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("입력 원본 문서(A/B) 자체를 변경추적 출력으로 덮어쓸 수 없습니다. 다른 파일명으로 저장하세요.");
         Directory.CreateDirectory(Path.GetDirectoryName(outputFullPath)!);
+        var originalIsDocx = Path.GetExtension(originalPath).Equals(".docx", StringComparison.OrdinalIgnoreCase);
         var revisedIsDocx = Path.GetExtension(revisedPath).Equals(".docx", StringComparison.OrdinalIgnoreCase);
         if (revisedIsDocx)
-        {
             EnsureNoExistingTrackedRevisions(revisedPath);
-            if (Path.GetExtension(originalPath).Equals(".docx", StringComparison.OrdinalIgnoreCase))
-                EnsureAncillaryWordPartsEquivalent(originalPath, revisedPath);
+        if (originalIsDocx && revisedIsDocx)
+        {
+            EnsureAncillaryWordPartsEquivalent(originalPath, revisedPath);
+            EnsureMainDocumentUnsupportedContentEquivalent(originalPath, revisedPath);
+        }
+        else if (originalIsDocx || revisedIsDocx)
+        {
+            var docxPath = originalIsDocx ? originalPath : revisedPath;
+            if (ReadMainDocumentAncillaryReferenceSignature(docxPath).Length > 0)
+                throw new InvalidOperationException("DOCX와 TXT 간 Word 변경추적 내보내기에서 header/footer/footnote/endnote 부속 내용을 안전하게 추적할 수 없습니다. 부속 참조가 있는 DOCX는 동일 형식의 DOCX와 비교하세요.");
+            if (ReadMainDocumentUnsupportedContentSignature(docxPath).Length > 0)
+                throw new InvalidOperationException("DOCX와 TXT 간 Word 변경추적 내보내기에서 본문 관계/필드/기호 같은 비텍스트 내용을 안전하게 추적할 수 없습니다. 비텍스트 참조가 있는 DOCX는 동일 형식의 DOCX와 비교하세요.");
+        }
+
+        if (revisedIsDocx)
+        {
             File.Copy(revisedPath, outputPath, overwrite: true);
         }
         else
@@ -1460,6 +1474,61 @@ internal static class NativeOfficeExporter
             result[entry.FullName] = AncillaryPartSemanticSignature(zip, entry, doc, w);
         }
         return result;
+    }
+
+    private static string ReadMainDocumentUnsupportedContentSignature(string path)
+    {
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var zip = new ZipArchive(fs, ZipArchiveMode.Read);
+        var documentEntry = zip.GetEntry("word/document.xml");
+        if (documentEntry is null) return string.Empty;
+        XNamespace w = W;
+        XDocument doc; using (var input = documentEntry.Open()) doc = XDocument.Load(input, LoadOptions.PreserveWhitespace);
+        var relationships = ReadPartRelationshipSignatures(zip, "word/document.xml");
+        var tokens = new List<string>();
+
+        foreach (var element in doc.Descendants())
+        {
+            if (element.Name == w + "headerReference" || element.Name == w + "footerReference")
+                continue;
+
+            foreach (var attribute in element.Attributes().Where(a => a.Name.NamespaceName == R))
+            {
+                var resolved = relationships.TryGetValue(attribute.Value, out var signature)
+                    ? signature
+                    : "missing-rel|" + attribute.Value;
+                tokens.Add($"RELREF|{element.Name.LocalName}|{attribute.Name.LocalName}|{resolved}");
+            }
+
+            if (element.Name == w + "instrText")
+            {
+                var value = NativeComparisonEngine.Normalize(element.Value);
+                if (value.Length > 0) tokens.Add("FIELD|" + value);
+            }
+            else if (element.Name == w + "fldSimple")
+            {
+                var value = NativeComparisonEngine.Normalize(element.Attribute(w + "instr")?.Value ?? string.Empty);
+                if (value.Length > 0) tokens.Add("FIELD|" + value);
+            }
+            else if (element.Name == w + "sym")
+            {
+                var attrs = string.Join(";", element.Attributes()
+                    .Where(a => !a.IsNamespaceDeclaration)
+                    .OrderBy(a => a.Name.NamespaceName, StringComparer.Ordinal)
+                    .ThenBy(a => a.Name.LocalName, StringComparer.Ordinal)
+                    .Select(a => $"{{{a.Name.NamespaceName}}}{a.Name.LocalName}={a.Value}"));
+                tokens.Add("SYM|" + attrs);
+            }
+        }
+        return string.Join("\n", tokens);
+    }
+
+    private static void EnsureMainDocumentUnsupportedContentEquivalent(string originalPath, string revisedPath)
+    {
+        var a = ReadMainDocumentUnsupportedContentSignature(originalPath);
+        var b = ReadMainDocumentUnsupportedContentSignature(revisedPath);
+        if (!string.Equals(a, b, StringComparison.Ordinal))
+            throw new InvalidOperationException("A와 B의 Word 본문 관계/필드/기호 같은 비텍스트 내용이 서로 다릅니다. 현재 변경추적 엔진이 이 변경을 안전하게 표현하지 못하므로 저장을 중단했습니다.");
     }
 
     private static string ReadMainDocumentAncillaryReferenceSignature(string path)

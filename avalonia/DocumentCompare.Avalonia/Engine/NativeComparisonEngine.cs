@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Numerics;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -66,17 +67,21 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         var info = new FileInfo(fullPath);
         info.Refresh();
         if (!info.Exists) throw new FileNotFoundException("입력 파일을 찾을 수 없습니다.", fullPath);
+        using var stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        var sha256 = Convert.ToHexString(SHA256.HashData(stream));
         return new SourceFileStateVm
         {
             Path = fullPath,
             Length = info.Length,
-            LastWriteTimeUtcTicks = info.LastWriteTimeUtc.Ticks
+            LastWriteTimeUtcTicks = info.LastWriteTimeUtc.Ticks,
+            Sha256 = sha256
         };
     }
 
     private static bool SameSourceFileState(SourceFileStateVm a, SourceFileStateVm b) =>
         string.Equals(a.Path, b.Path, StringComparison.OrdinalIgnoreCase) &&
-        a.Length == b.Length && a.LastWriteTimeUtcTicks == b.LastWriteTimeUtcTicks;
+        a.Length == b.Length && a.LastWriteTimeUtcTicks == b.LastWriteTimeUtcTicks &&
+        string.Equals(a.Sha256, b.Sha256, StringComparison.Ordinal);
 
     private static void EnsureSourceFilesUnchanged(ComparisonResultVm result, params int[] indices)
     {
@@ -601,7 +606,11 @@ public sealed class NativeComparisonEngine : IComparisonEngine
                 {
                     if (r[x.Doc] is not null) return false;
                     var ex = r.FirstOrDefault(u => u is not null);
-                    return ex is not null && UnitLineageSimilarity(ex, x.Unit) >= .84;
+                    if (ex is null || UnitLineageSimilarity(ex, x.Unit) < .84) return false;
+                    if (ex.Title.Length > 0 && x.Unit.Title.Length > 0 &&
+                        TitleSimilarity(ex, x.Unit) < .35)
+                        return false;
+                    return true;
                 });
                 if (merge is null) { merge = new NativeUnit?[n]; pending.Add(merge); }
                 merge[x.Doc] = x.Unit;

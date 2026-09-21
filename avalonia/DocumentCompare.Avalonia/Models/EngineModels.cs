@@ -134,6 +134,7 @@ public sealed class SourceFileStateVm
     public string Path { get; init; } = "";
     public long Length { get; init; }
     public long LastWriteTimeUtcTicks { get; init; }
+    public string Sha256 { get; init; } = "";
 }
 
 public sealed class ComparisonResultVm

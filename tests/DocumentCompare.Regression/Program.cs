@@ -473,4 +473,53 @@ Check(overwriteABlocked,"Word export allowed outputPath to overwrite original A"
 Check(File.ReadAllBytes(sameOutA).SequenceEqual(sameOutBefore),"original A was modified before same-path export was rejected");
 Console.WriteLine("PASS WORD INPUT OVERWRITE GUARD");
 
+
+// 49. Input invalidation must detect same-length content replacement even when mtime is preserved.
+var stealthA=Path.Combine(dir,"stealthA.txt");var stealthB=Path.Combine(dir,"stealthB.txt");var stealthX=Path.Combine(dir,"stealth.xlsx");
+File.WriteAllText(stealthA,"AAAA1111",new UTF8Encoding(false));File.WriteAllText(stealthB,"BBBB2222",new UTF8Encoding(false));
+var stealthCmp=await eng.CompareAsync(new[]{stealthA,stealthB},0,"general",true,true);
+var stealthStamp=File.GetLastWriteTimeUtc(stealthB);
+File.WriteAllText(stealthB,"CCCC3333",new UTF8Encoding(false));File.SetLastWriteTimeUtc(stealthB,stealthStamp);
+var stealthBlocked=false;try{await eng.ExportExcelAsync(stealthCmp,stealthX);}catch(InvalidOperationException ex){stealthBlocked=ex.Message.Contains("입력 파일이 변경");}
+Check(stealthBlocked,"same-length same-mtime input mutation bypassed stale-result guard");
+Console.WriteLine("PASS CONTENT HASH INPUT INVALIDATION");
+
+
+// 50. Three-way additions in the same gap must not merge solely because their generic bodies match.
+var gap3A=Path.Combine(dir,"gap3A.txt");var gap3B=Path.Combine(dir,"gap3B.txt");var gap3C=Path.Combine(dir,"gap3C.txt");
+File.WriteAllText(gap3A,"Article 1 (Start)\nStable start.\nArticle 4 (End)\nStable end.",new UTF8Encoding(false));
+File.WriteAllText(gap3B,"Article 1 (Start)\nStable start.\nArticle 2 (Payment Terms)\nThe Company may provide the Service.\nArticle 4 (End)\nStable end.",new UTF8Encoding(false));
+File.WriteAllText(gap3C,"Article 1 (Start)\nStable start.\nArticle 2 (Privacy Protection)\nThe Company may provide the Service.\nArticle 4 (End)\nStable end.",new UTF8Encoding(false));
+var gap3Cmp=await eng.CompareAsync(new[]{gap3A,gap3B,gap3C},0,"legal",true,true);
+var paymentGapRow=gap3Cmp.Rows.Single(r=>r.Members[1]?.Title.Contains("Payment",StringComparison.OrdinalIgnoreCase)==true);
+var privacyGapRow=gap3Cmp.Rows.Single(r=>r.Members[2]?.Title.Contains("Privacy",StringComparison.OrdinalIgnoreCase)==true);
+Check(!ReferenceEquals(paymentGapRow,privacyGapRow)&&paymentGapRow.Members[2] is null&&privacyGapRow.Members[1] is null,
+    "distinct same-gap B/C additions were merged by generic body wording");
+Console.WriteLine("PASS THREE-WAY GENERIC ADDITION SEPARATION");
+
+
+// 51. Cross-format Word export must not silently omit referenced DOCX ancillary content.
+var mixTxt=Path.Combine(dir,"mixPlain.txt");var mixDoc=Path.Combine(dir,"mixHeader.docx");var mixOut=Path.Combine(dir,"mixOut.docx");
+File.WriteAllText(mixTxt,"Body",new UTF8Encoding(false));Make(mixDoc,P("Body"));
+AddWordXml(mixDoc,"word/document.xml","<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body>"+P("Body")+"<w:sectPr><w:headerReference w:type=\"default\" r:id=\"rIdHdr\"/></w:sectPr></w:body></w:document>");
+AddWordXml(mixDoc,"word/_rels/document.xml.rels","<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rIdHdr\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/header\" Target=\"header1.xml\"/></Relationships>");
+AddWordXml(mixDoc,"word/header1.xml","<w:hdr xmlns:w=\""+W+"\"><w:p><w:r><w:t>VISIBLE HEADER</w:t></w:r></w:p></w:hdr>");
+var mixedBlocked=false;try{await eng.ExportWordAsync(mixTxt,mixDoc,mixOut,"T",true);}catch(InvalidOperationException ex){mixedBlocked=ex.Message.Contains("header/footer/footnote/endnote")||ex.Message.Contains("부속");}
+Check(mixedBlocked,"TXT->DOCX export silently omitted referenced header ancestry");
+var reverseMixedBlocked=false;try{await eng.ExportWordAsync(mixDoc,mixTxt,mixOut,"T",true);}catch(InvalidOperationException ex){reverseMixedBlocked=ex.Message.Contains("header/footer/footnote/endnote")||ex.Message.Contains("부속");}
+Check(reverseMixedBlocked,"DOCX->TXT export silently omitted referenced header ancestry");
+Console.WriteLine("PASS CROSS-FORMAT ANCILLARY GUARD");
+
+
+// 52. Main-document relationship changes (hyperlink/image/OLE) must never pass as text-identical.
+var linkA=Path.Combine(dir,"bodyLinkA.docx");var linkB=Path.Combine(dir,"bodyLinkB.docx");var linkO=Path.Combine(dir,"bodyLinkOut.docx");
+Make(linkA,P("Body"));Make(linkB,P("Body"));
+var linkDoc="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Same Link Text</w:t></w:r></w:hyperlink></w:p><w:sectPr/></w:body></w:document>";
+AddWordXml(linkA,"word/document.xml",linkDoc);AddWordXml(linkB,"word/document.xml",linkDoc);
+AddWordXml(linkA,"word/_rels/document.xml.rels","<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rIdLink\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink\" Target=\"https://example.com/a\" TargetMode=\"External\"/></Relationships>");
+AddWordXml(linkB,"word/_rels/document.xml.rels","<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rIdLink\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink\" Target=\"https://example.com/b\" TargetMode=\"External\"/></Relationships>");
+var bodyRelBlocked=false;try{await eng.ExportWordAsync(linkA,linkB,linkO,"T",true);}catch(InvalidOperationException ex){bodyRelBlocked=ex.Message.Contains("본문")&&ex.Message.Contains("관계");}
+Check(bodyRelBlocked,"body hyperlink target change silently passed as text-identical");
+Console.WriteLine("PASS MAIN-DOCUMENT RELATIONSHIP GUARD");
+
 Console.WriteLine("ALL REGRESSIONS PASSED");
