@@ -166,6 +166,9 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     public Task ExportExcelAsync(ComparisonResultVm result, string outputPath, CancellationToken cancellationToken = default)
     {
         EnsureSourceFilesUnchanged(result);
+        var outputFullPath = Path.GetFullPath(outputPath);
+        if (result.SourceFiles.Any(x => string.Equals(x.Path, outputFullPath, StringComparison.OrdinalIgnoreCase)))
+            throw new InvalidOperationException("입력 원본 문서(A/B/C) 자체를 Excel 출력으로 덮어쓸 수 없습니다. 다른 파일명으로 저장하세요.");
         return NativeOfficeExporter.WriteXlsxAsync(result, outputPath, cancellationToken);
     }
 
@@ -609,6 +612,11 @@ public sealed class NativeComparisonEngine : IComparisonEngine
                     if (ex is null || UnitLineageSimilarity(ex, x.Unit) < .84) return false;
                     if (ex.Title.Length > 0 && x.Unit.Title.Length > 0 &&
                         TitleSimilarity(ex, x.Unit) < .35)
+                        return false;
+                    if (ex.Number.Length > 0 && x.Unit.Number.Length > 0 &&
+                        !string.Equals(ex.Number, x.Unit.Number, StringComparison.OrdinalIgnoreCase) &&
+                        (ex.Title.Length == 0 || x.Unit.Title.Length == 0 ||
+                         TitleSimilarity(ex, x.Unit) < .35))
                         return false;
                     return true;
                 });

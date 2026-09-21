@@ -3,6 +3,7 @@ using System.Reflection;
 using System.Text;
 using System.Xml.Linq;
 using DocumentCompare.Avalonia.Engine;
+using DocumentCompare.Avalonia.Models;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Validation;
 
@@ -521,5 +522,88 @@ AddWordXml(linkB,"word/_rels/document.xml.rels","<Relationships xmlns=\"http://s
 var bodyRelBlocked=false;try{await eng.ExportWordAsync(linkA,linkB,linkO,"T",true);}catch(InvalidOperationException ex){bodyRelBlocked=ex.Message.Contains("본문")&&ex.Message.Contains("관계");}
 Check(bodyRelBlocked,"body hyperlink target change silently passed as text-identical");
 Console.WriteLine("PASS MAIN-DOCUMENT RELATIONSHIP GUARD");
+
+
+// 53. Untitled same-gap additions with different article numbers must not merge on generic body text alone.
+var gapNumA=Path.Combine(dir,"gapNumA.txt");var gapNumB=Path.Combine(dir,"gapNumB.txt");var gapNumC=Path.Combine(dir,"gapNumC.txt");
+File.WriteAllText(gapNumA,"Article 1 (Start)\nStable start.\nArticle 5 (End)\nStable end.",new UTF8Encoding(false));
+File.WriteAllText(gapNumB,"Article 1 (Start)\nStable start.\nArticle 2\nThe Company may provide the Service.\nArticle 5 (End)\nStable end.",new UTF8Encoding(false));
+File.WriteAllText(gapNumC,"Article 1 (Start)\nStable start.\nArticle 3\nThe Company may provide the Service.\nArticle 5 (End)\nStable end.",new UTF8Encoding(false));
+var gapNumCmp=await eng.CompareAsync(new[]{gapNumA,gapNumB,gapNumC},0,"legal",true,true);
+var gapBRow=gapNumCmp.Rows.Single(r=>r.Members[1]?.Number=="2");
+var gapCRow=gapNumCmp.Rows.Single(r=>r.Members[2]?.Number=="3");
+Check(!ReferenceEquals(gapBRow,gapCRow)&&gapBRow.Members[2] is null&&gapCRow.Members[1] is null,
+    "different-number untitled additions merged on generic body alone");
+Console.WriteLine("PASS THREE-WAY UNTITLED GENERIC SEPARATION");
+
+
+// 54. Canceled Excel export must preserve an existing good output and clean temporary files.
+var atomicX=Path.Combine(dir,"atomic.xlsx");var atomicXSentinel=Encoding.UTF8.GetBytes("PREVIOUS_GOOD_XLSX");
+File.WriteAllBytes(atomicX,atomicXSentinel);
+var atomicResult=new ComparisonResultVm{Names=new List<string>{"A","B"},BaseIndex=0,
+    Rows=Enumerable.Range(0,200000).Select(i=>new ComparisonRowVm{Id=i+1,Members=new List<MemberVm?>{null,null}}).ToList()};
+using(var atomicXCts=new CancellationTokenSource()){
+    var atomicXTask=eng.ExportExcelAsync(atomicResult,atomicX,atomicXCts.Token);
+    var pattern="."+Path.GetFileName(atomicX)+".*.tmp";
+    for(var i=0;i<500&&!Directory.GetFiles(dir,pattern).Any()&&!atomicXTask.IsCompleted;i++)await Task.Delay(1);
+    atomicXCts.Cancel();
+    try{await atomicXTask;}catch(OperationCanceledException){}
+}
+Check(File.ReadAllBytes(atomicX).SequenceEqual(atomicXSentinel),"canceled Excel export damaged the previous output");
+Check(!Directory.GetFiles(dir,"."+Path.GetFileName(atomicX)+".*.tmp").Any(),"Excel temp file leaked after cancellation");
+Console.WriteLine("PASS ATOMIC EXCEL CANCELLATION");
+
+// 55. Canceled Word export must preserve an existing good output and clean temporary files.
+var atomicWA=Path.Combine(dir,"atomicWordA.docx");var atomicWB=Path.Combine(dir,"atomicWordB.docx");var atomicWO=Path.Combine(dir,"atomicWordOut.docx");
+var manyA=string.Concat(Enumerable.Range(0,1200).Select(i=>P("OLD_"+i.ToString("D4"))));
+var manyB=string.Concat(Enumerable.Range(0,1200).Select(i=>P("NEW_"+i.ToString("D4"))));
+Make(atomicWA,manyA);Make(atomicWB,manyB);var atomicWSentinel=Encoding.UTF8.GetBytes("PREVIOUS_GOOD_WORD");File.WriteAllBytes(atomicWO,atomicWSentinel);
+using(var atomicWCts=new CancellationTokenSource()){
+    var atomicWTask=eng.ExportWordAsync(atomicWA,atomicWB,atomicWO,"T",true,atomicWCts.Token);
+    var pattern="."+Path.GetFileName(atomicWO)+".*.tmp";
+    for(var i=0;i<1000&&!Directory.GetFiles(dir,pattern).Any()&&!atomicWTask.IsCompleted;i++)await Task.Delay(1);
+    atomicWCts.Cancel();
+    try{await atomicWTask;}catch(OperationCanceledException){}
+}
+Check(File.ReadAllBytes(atomicWO).SequenceEqual(atomicWSentinel),"canceled Word export damaged the previous output");
+Check(!Directory.GetFiles(dir,"."+Path.GetFileName(atomicWO)+".*.tmp").Any(),"Word temp file leaked after cancellation");
+Console.WriteLine("PASS ATOMIC WORD CANCELLATION");
+
+
+// 56. Moving the same footnote reference to another paragraph must be detected as ancillary-location change.
+var fnMoveA=Path.Combine(dir,"footnoteMoveA.docx");var fnMoveB=Path.Combine(dir,"footnoteMoveB.docx");var fnMoveO=Path.Combine(dir,"footnoteMoveOut.docx");
+Make(fnMoveA,P("First")+P("Second"));Make(fnMoveB,P("First")+P("Second"));
+var fnDocA="<w:document xmlns:w=\""+W+"\"><w:body><w:p><w:r><w:t>First</w:t></w:r><w:r><w:footnoteReference w:id=\"2\"/></w:r></w:p>"+P("Second")+"<w:sectPr/></w:body></w:document>";
+var fnDocB="<w:document xmlns:w=\""+W+"\"><w:body>"+P("First")+"<w:p><w:r><w:t>Second</w:t></w:r><w:r><w:footnoteReference w:id=\"2\"/></w:r></w:p><w:sectPr/></w:body></w:document>";
+AddWordXml(fnMoveA,"word/document.xml",fnDocA);AddWordXml(fnMoveB,"word/document.xml",fnDocB);
+var footnotes="<w:footnotes xmlns:w=\""+W+"\"><w:footnote w:id=\"2\">"+P("Same footnote")+"</w:footnote></w:footnotes>";
+AddWordXml(fnMoveA,"word/footnotes.xml",footnotes);AddWordXml(fnMoveB,"word/footnotes.xml",footnotes);
+var fnMoveBlocked=false;try{await eng.ExportWordAsync(fnMoveA,fnMoveB,fnMoveO,"T",true);}catch(InvalidOperationException ex){fnMoveBlocked=ex.Message.Contains("참조 위치")||ex.Message.Contains("footnote");}
+Check(fnMoveBlocked,"moved footnote reference was treated as the same location");
+Console.WriteLine("PASS FOOTNOTE REFERENCE LOCATION GUARD");
+
+
+// 57. Excel export must never overwrite any compared source file.
+var excelSourceA=Path.Combine(dir,"excelSourceA.txt");var excelSourceB=Path.Combine(dir,"excelSourceB.txt");
+File.WriteAllText(excelSourceA,"Source A",new UTF8Encoding(false));File.WriteAllText(excelSourceB,"Source B",new UTF8Encoding(false));
+var excelSourceCmp=await eng.CompareAsync(new[]{excelSourceA,excelSourceB},0,"general",true,true);
+var excelSourceBefore=File.ReadAllBytes(excelSourceA);var excelOverwriteBlocked=false;
+try{await eng.ExportExcelAsync(excelSourceCmp,excelSourceA);}catch(InvalidOperationException ex){excelOverwriteBlocked=ex.Message.Contains("원본")||ex.Message.Contains("입력");}
+Check(excelOverwriteBlocked,"Excel export allowed overwriting a compared source");
+Check(File.ReadAllBytes(excelSourceA).SequenceEqual(excelSourceBefore),"Excel overwrite guard modified source A");
+Console.WriteLine("PASS EXCEL INPUT OVERWRITE GUARD");
+
+
+// 58. Different-number same-gap additions need positive title evidence even if only one side has a title.
+var gapHalfA=Path.Combine(dir,"gapHalfA.txt");var gapHalfB=Path.Combine(dir,"gapHalfB.txt");var gapHalfC=Path.Combine(dir,"gapHalfC.txt");
+File.WriteAllText(gapHalfA,"Article 1 (Start)\nStable.\nArticle 5 (End)\nStable.",new UTF8Encoding(false));
+File.WriteAllText(gapHalfB,"Article 1 (Start)\nStable.\nArticle 2 (Payment Terms)\nThe Company may provide the Service.\nArticle 5 (End)\nStable.",new UTF8Encoding(false));
+File.WriteAllText(gapHalfC,"Article 1 (Start)\nStable.\nArticle 3\nThe Company may provide the Service.\nArticle 5 (End)\nStable.",new UTF8Encoding(false));
+var gapHalfCmp=await eng.CompareAsync(new[]{gapHalfA,gapHalfB,gapHalfC},0,"legal",true,true);
+var gapHalfBRow=gapHalfCmp.Rows.Single(r=>r.Members[1]?.Number=="2");
+var gapHalfCRow=gapHalfCmp.Rows.Single(r=>r.Members[2]?.Number=="3");
+Check(!ReferenceEquals(gapHalfBRow,gapHalfCRow)&&gapHalfBRow.Members[2] is null&&gapHalfCRow.Members[1] is null,
+    "different-number addition with one missing title merged on body alone");
+Console.WriteLine("PASS THREE-WAY PARTIAL-TITLE SEPARATION");
 
 Console.WriteLine("ALL REGRESSIONS PASSED");

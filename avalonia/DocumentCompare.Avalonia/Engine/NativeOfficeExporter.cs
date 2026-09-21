@@ -23,18 +23,58 @@ internal static class NativeOfficeExporter
         "customXmlConflictDelRangeStart", "customXmlConflictDelRangeEnd"
     };
 
-    public static Task WriteXlsxAsync(ComparisonResultVm result, string outputPath, CancellationToken cancellationToken) =>
-        Task.Run(() => WriteXlsx(result, outputPath, cancellationToken), cancellationToken);
+    private static string TemporaryOutputPath(string outputPath)
+    {
+        var full = Path.GetFullPath(outputPath);
+        var dir = Path.GetDirectoryName(full)!;
+        Directory.CreateDirectory(dir);
+        return Path.Combine(dir, $".{Path.GetFileName(full)}.{Guid.NewGuid():N}.tmp");
+    }
+
+    private static void CommitTemporaryOutput(string temporaryPath, string outputPath)
+    {
+        File.Move(temporaryPath, Path.GetFullPath(outputPath), overwrite: true);
+    }
+
+    public static async Task WriteXlsxAsync(ComparisonResultVm result, string outputPath, CancellationToken cancellationToken)
+    {
+        var temporaryPath = TemporaryOutputPath(outputPath);
+        try
+        {
+            await Task.Run(() => WriteXlsx(result, temporaryPath, cancellationToken), cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            CommitTemporaryOutput(temporaryPath, outputPath);
+        }
+        finally
+        {
+            try { if (File.Exists(temporaryPath)) File.Delete(temporaryPath); } catch { }
+        }
+    }
 
     public static async Task WriteTrackedDocxAsync(
         string originalPath, string revisedPath, string outputPath, string author, bool includePunctuation,
         CancellationToken cancellationToken, ComparisonResultVm? comparisonResult = null,
         int originalDocumentIndex = -1, int revisedDocumentIndex = -1)
     {
+        var outputFullPath = Path.GetFullPath(outputPath);
+        if (string.Equals(Path.GetFullPath(originalPath), outputFullPath, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(Path.GetFullPath(revisedPath), outputFullPath, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("입력 원본 문서(A/B) 자체를 변경추적 출력으로 덮어쓸 수 없습니다. 다른 파일명으로 저장하세요.");
+
         var oldText = await NativeDocumentReader.ReadAsync(originalPath, cancellationToken);
         var newText = await NativeDocumentReader.ReadAsync(revisedPath, cancellationToken);
-        await Task.Run(() => WriteTrackedDocx(oldText, newText, originalPath, revisedPath, outputPath, author,
-            includePunctuation, cancellationToken, comparisonResult, originalDocumentIndex, revisedDocumentIndex), cancellationToken);
+        var temporaryPath = TemporaryOutputPath(outputPath);
+        try
+        {
+            await Task.Run(() => WriteTrackedDocx(oldText, newText, originalPath, revisedPath, temporaryPath, author,
+                includePunctuation, cancellationToken, comparisonResult, originalDocumentIndex, revisedDocumentIndex), cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            CommitTemporaryOutput(temporaryPath, outputPath);
+        }
+        finally
+        {
+            try { if (File.Exists(temporaryPath)) File.Delete(temporaryPath); } catch { }
+        }
     }
 
     private static void WriteXlsx(ComparisonResultVm result, string outputPath, CancellationToken token)
@@ -1559,16 +1599,30 @@ internal static class NativeOfficeExporter
         }
 
         var tokens = new List<string>();
+        var body = doc.Root?.Element(w + "body");
+        var bodyParagraphs = body is null ? new List<XElement>() : BodyParagraphs(body, w).ToList();
+        var sectionProperties = doc.Descendants(w + "sectPr").ToList();
         foreach (var element in doc.Descendants())
         {
             if (element.Name == w + "headerReference" || element.Name == w + "footerReference")
             {
                 var id = element.Attribute(XName.Get("id", R))?.Value ?? string.Empty;
                 var target = relationshipTargets.TryGetValue(id, out var resolved) ? resolved : "missing:" + id;
-                tokens.Add($"{element.Name.LocalName}|{element.Attribute(w + "type")?.Value ?? string.Empty}|{target}");
+                var sectPr = element.Ancestors(w + "sectPr").FirstOrDefault();
+                var sectionIndex = sectPr is null ? -1 : RefIndex(sectionProperties, sectPr);
+                var ownerParagraph = sectPr?.Ancestors(w + "p").FirstOrDefault();
+                var paragraphIndex = ownerParagraph is null ? -1 : RefIndex(bodyParagraphs, ownerParagraph);
+                tokens.Add($"{element.Name.LocalName}|section={sectionIndex}|paragraph={paragraphIndex}|{element.Attribute(w + "type")?.Value ?? string.Empty}|{target}");
             }
             else if (element.Name == w + "footnoteReference" || element.Name == w + "endnoteReference")
-                tokens.Add($"{element.Name.LocalName}|{element.Attribute(w + "id")?.Value ?? string.Empty}");
+            {
+                var ownerParagraph = element.Ancestors(w + "p").FirstOrDefault();
+                var paragraphIndex = ownerParagraph is null ? -1 : RefIndex(bodyParagraphs, ownerParagraph);
+                var localIndex = ownerParagraph is null ? -1 : RefIndex(
+                    ownerParagraph.Descendants(element.Name)
+                        .Where(x => ReferenceEquals(x.Ancestors(w + "p").FirstOrDefault(), ownerParagraph)), element);
+                tokens.Add($"{element.Name.LocalName}|paragraph={paragraphIndex}|local={localIndex}|{element.Attribute(w + "id")?.Value ?? string.Empty}");
+            }
         }
         return string.Join("\n", tokens);
     }
