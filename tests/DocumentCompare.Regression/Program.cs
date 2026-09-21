@@ -674,4 +674,132 @@ await eng.ExportWordAsync(fnShiftA,fnShiftB,fnShiftO,"T",true);
 Check(File.Exists(fnShiftO),"unchanged footnote owner was falsely treated as moved after paragraph insertion");
 Console.WriteLine("PASS FOOTNOTE LOGICAL-LOCATION SHIFT");
 
+
+// 64. Same hyperlink relationship with edited display text must export normally.
+var linkTextA=Path.Combine(dir,"linkTextA.docx");var linkTextB=Path.Combine(dir,"linkTextB.docx");var linkTextO=Path.Combine(dir,"linkTextOut.docx");
+Make(linkTextA,P("Alpha"));Make(linkTextB,P("Alpha changed"));
+var linkTextDocA="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink></w:p><w:sectPr/></w:body></w:document>";
+var linkTextDocB="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha changed</w:t></w:r></w:hyperlink></w:p><w:sectPr/></w:body></w:document>";
+AddWordXml(linkTextA,"word/document.xml",linkTextDocA);AddWordXml(linkTextB,"word/document.xml",linkTextDocB);
+AddWordXml(linkTextA,"word/_rels/document.xml.rels",sameLinkRels);AddWordXml(linkTextB,"word/_rels/document.xml.rels",sameLinkRels);
+await eng.ExportWordAsync(linkTextA,linkTextB,linkTextO,"T",true);
+var linkTextOut=Doc(linkTextO);
+Check(linkTextOut.Descendants(w+"hyperlink").Any(),"hyperlink lost after display-text edit");
+Check(linkTextOut.Descendants().Any(x=>x.Name==w+"ins"||x.Name==w+"del"),"hyperlink display-text edit was not tracked");
+Console.WriteLine("PASS HYPERLINK DISPLAY-TEXT EDIT");
+
+// 65. Same URL reassigned to different visible text in the same paragraph must be blocked.
+var linkAssocA=Path.Combine(dir,"linkAssocA.docx");var linkAssocB=Path.Combine(dir,"linkAssocB.docx");var linkAssocO=Path.Combine(dir,"linkAssocOut.docx");
+Make(linkAssocA,P("Alpha Beta"));Make(linkAssocB,P("Alpha Beta"));
+var linkAssocDocA="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink><w:r><w:t xml:space=\"preserve\"> Beta</w:t></w:r></w:p><w:sectPr/></w:body></w:document>";
+var linkAssocDocB="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body><w:p><w:r><w:t xml:space=\"preserve\">Alpha </w:t></w:r><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Beta</w:t></w:r></w:hyperlink></w:p><w:sectPr/></w:body></w:document>";
+AddWordXml(linkAssocA,"word/document.xml",linkAssocDocA);AddWordXml(linkAssocB,"word/document.xml",linkAssocDocB);
+AddWordXml(linkAssocA,"word/_rels/document.xml.rels",sameLinkRels);AddWordXml(linkAssocB,"word/_rels/document.xml.rels",sameLinkRels);
+var linkAssocBlocked=false;try{await eng.ExportWordAsync(linkAssocA,linkAssocB,linkAssocO,"T",true);}catch(InvalidOperationException ex){linkAssocBlocked=ex.Message.Contains("비텍스트")||ex.Message.Contains("관계");}
+Check(linkAssocBlocked,"same hyperlink target moved to different visible text without being blocked");
+Console.WriteLine("PASS HYPERLINK ASSOCIATION MOVE GUARD");
+
+// 66. Distinct titled articles with similar generic wording must follow title lineage, not same-number proximity.
+var titleSwapA=Path.Combine(dir,"titleSwapA.txt");var titleSwapB=Path.Combine(dir,"titleSwapB.txt");
+File.WriteAllText(titleSwapA,"Article 2 (Payment Terms)\nThe Company may provide the Service to registered members.\nArticle 3 (Privacy Protection)\nThe Company may provide the Service to registered users.",new UTF8Encoding(false));
+File.WriteAllText(titleSwapB,"Article 2 (Privacy Protection)\nThe Company may provide the Service to registered users.\nArticle 3 (Payment Terms)\nThe Company may provide the Service to registered members.",new UTF8Encoding(false));
+var titleSwapCmp=await eng.CompareAsync(new[]{titleSwapA,titleSwapB},0,"legal",true,true);
+var titleSwapPaymentRow=titleSwapCmp.Rows.Single(r=>r.Members[0]?.Title=="Payment Terms");
+var titleSwapPrivacyRow=titleSwapCmp.Rows.Single(r=>r.Members[0]?.Title=="Privacy Protection");
+Check(titleSwapPaymentRow.Members[1]?.Title=="Payment Terms"&&titleSwapPaymentRow.Members[1]?.Number=="3","Payment Terms followed generic body/number instead of title lineage");
+Check(titleSwapPrivacyRow.Members[1]?.Title=="Privacy Protection"&&titleSwapPrivacyRow.Members[1]?.Number=="2","Privacy Protection followed generic body/number instead of title lineage");
+Console.WriteLine("PASS GENERIC-BODY TITLE-LINEAGE SWAP");
+
+// 67. w:noBreakHyphen is visible text and must compare like a normal hyphen.
+var nbhA=Path.Combine(dir,"noBreakHyphenA.docx");var nbhB=Path.Combine(dir,"noBreakHyphenB.txt");
+Make(nbhA,"<w:p><w:r><w:t>Alpha</w:t><w:noBreakHyphen/><w:t>Beta</w:t></w:r></w:p>");
+File.WriteAllText(nbhB,"Alpha-Beta",new UTF8Encoding(false));
+var nbhCmp=await eng.CompareAsync(new[]{nbhA,nbhB},0,"general",true,true);
+Check(!nbhCmp.Rows.Any(r=>r.Changed),"w:noBreakHyphen disappeared and created a fake change");
+Console.WriteLine("PASS NO-BREAK HYPHEN TEXT");
+
+// 68. Word tracked export must preserve noBreakHyphen and keep offsets aligned around it.
+var nbhExpA=Path.Combine(dir,"noBreakExportA.docx");var nbhExpB=Path.Combine(dir,"noBreakExportB.docx");var nbhExpO=Path.Combine(dir,"noBreakExportOut.docx");
+Make(nbhExpA,"<w:p><w:r><w:t>Alpha</w:t><w:noBreakHyphen/><w:t>Beta</w:t></w:r></w:p>");
+Make(nbhExpB,"<w:p><w:r><w:t>Alpha</w:t><w:noBreakHyphen/><w:t>Gamma</w:t></w:r></w:p>");
+await eng.ExportWordAsync(nbhExpA,nbhExpB,nbhExpO,"T",true);
+var nbhExpDoc=Doc(nbhExpO);
+Check(nbhExpDoc.Descendants(w+"noBreakHyphen").Any(),"noBreakHyphen was lost during tracked export");
+Check(nbhExpDoc.Descendants().Any(x=>x.Name==w+"ins")&&nbhExpDoc.Descendants().Any(x=>x.Name==w+"del"),"text change around noBreakHyphen was not tracked correctly");
+Console.WriteLine("PASS NO-BREAK HYPHEN TRACKED EXPORT");
+
+// 69. Inserting ordinary text before the same hyperlink inside a paragraph must not be mistaken for relationship reassignment.
+var linkInlineA=Path.Combine(dir,"linkInlineA.docx");var linkInlineB=Path.Combine(dir,"linkInlineB.docx");var linkInlineO=Path.Combine(dir,"linkInlineOut.docx");
+Make(linkInlineA,P("Alpha"));Make(linkInlineB,P("Intro Alpha"));
+var linkInlineDocA="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink></w:p><w:sectPr/></w:body></w:document>";
+var linkInlineDocB="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body><w:p><w:r><w:t xml:space=\"preserve\">Intro </w:t></w:r><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink></w:p><w:sectPr/></w:body></w:document>";
+AddWordXml(linkInlineA,"word/document.xml",linkInlineDocA);AddWordXml(linkInlineB,"word/document.xml",linkInlineDocB);
+AddWordXml(linkInlineA,"word/_rels/document.xml.rels",sameLinkRels);AddWordXml(linkInlineB,"word/_rels/document.xml.rels",sameLinkRels);
+await eng.ExportWordAsync(linkInlineA,linkInlineB,linkInlineO,"T",true);
+Check(File.Exists(linkInlineO),"ordinary text insertion before unchanged hyperlink was falsely blocked");
+Console.WriteLine("PASS HYPERLINK INLINE-TEXT SHIFT");
+
+
+// 70. Inserting ordinary paragraphs after the unchanged hyperlink owner must not create a false location change.
+var linkAfterA=Path.Combine(dir,"linkAfterA.docx");var linkAfterB=Path.Combine(dir,"linkAfterB.docx");var linkAfterO=Path.Combine(dir,"linkAfterOut.docx");
+Make(linkAfterA,P("Alpha")+P("Stable tail"));Make(linkAfterB,P("Alpha")+P("Inserted one")+P("Inserted two")+P("Stable tail"));
+var linkAfterDocA="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink></w:p>"+P("Stable tail")+"<w:sectPr/></w:body></w:document>";
+var linkAfterDocB="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink></w:p>"+P("Inserted one")+P("Inserted two")+P("Stable tail")+"<w:sectPr/></w:body></w:document>";
+AddWordXml(linkAfterA,"word/document.xml",linkAfterDocA);AddWordXml(linkAfterB,"word/document.xml",linkAfterDocB);
+AddWordXml(linkAfterA,"word/_rels/document.xml.rels",sameLinkRels);AddWordXml(linkAfterB,"word/_rels/document.xml.rels",sameLinkRels);
+await eng.ExportWordAsync(linkAfterA,linkAfterB,linkAfterO,"T",true);
+Check(File.Exists(linkAfterO),"paragraph insertion after unchanged hyperlink was falsely blocked");
+Console.WriteLine("PASS HYPERLINK CONTEXT-WINDOW SHIFT");
+
+// 71. Unique titled articles must follow title lineage across a full reorder even with highly similar boilerplate bodies.
+var propA=Path.Combine(dir,"propertyLineageA.txt");var propB=Path.Combine(dir,"propertyLineageB.txt");
+var propTitles=new[]{"Payment Terms","Privacy Protection","Service Suspension","Intellectual Property"};
+var propBodies=new[]{"The Company may provide the Service to registered members.","The Company may provide the Service to registered users.","The Company may suspend the Service for registered members.","The Company may protect the Service for registered members."};
+File.WriteAllText(propA,string.Join("\n",Enumerable.Range(0,4).SelectMany(i=>new[]{"Article "+(i+1)+" ("+propTitles[i]+")",propBodies[i]})),new UTF8Encoding(false));
+var propOrder=new[]{2,0,3,1};
+File.WriteAllText(propB,string.Join("\n",propOrder.SelectMany((src,i)=>new[]{"Article "+(i+1)+" ("+propTitles[src]+")",propBodies[src]})),new UTF8Encoding(false));
+var propCmp=await eng.CompareAsync(new[]{propA,propB},0,"legal",true,true);
+for(var i=0;i<propTitles.Length;i++){
+    var row=propCmp.Rows.Single(r=>r.Members[0]?.Title==propTitles[i]);
+    Check(row.Members[1]?.Title==propTitles[i],"title-lineage property failed for "+propTitles[i]+" -> "+row.Members[1]?.Title);
+}
+Console.WriteLine("PASS TITLE-LINEAGE REORDER PROPERTY");
+
+
+// 72. Moving an unchanged field instruction to another paragraph must remain blocked as unsupported.
+var fieldMoveA=Path.Combine(dir,"fieldMoveA.docx");var fieldMoveB=Path.Combine(dir,"fieldMoveB.docx");var fieldMoveO=Path.Combine(dir,"fieldMoveOut.docx");
+Make(fieldMoveA,"<w:p><w:r><w:instrText>PAGE</w:instrText></w:r><w:r><w:t>One</w:t></w:r></w:p>"+P("Two"));
+Make(fieldMoveB,P("One")+"<w:p><w:r><w:instrText>PAGE</w:instrText></w:r><w:r><w:t>Two</w:t></w:r></w:p>");
+var fieldMoveBlocked=false;try{await eng.ExportWordAsync(fieldMoveA,fieldMoveB,fieldMoveO,"T",true);}catch(InvalidOperationException ex){fieldMoveBlocked=ex.Message.Contains("필드")||ex.Message.Contains("비텍스트");}
+Check(fieldMoveBlocked,"field instruction moved between paragraphs without being blocked");
+Console.WriteLine("PASS FIELD LOCATION GUARD");
+
+// 73. An unchanged field may shift by paragraph insertions elsewhere without a false block.
+var fieldShiftA=Path.Combine(dir,"fieldShiftA.docx");var fieldShiftB=Path.Combine(dir,"fieldShiftB.docx");var fieldShiftO=Path.Combine(dir,"fieldShiftOut.docx");
+Make(fieldShiftA,"<w:p><w:r><w:instrText>PAGE</w:instrText></w:r><w:r><w:t>One</w:t></w:r></w:p>"+P("Stable tail"));
+Make(fieldShiftB,P("Intro")+"<w:p><w:r><w:instrText>PAGE</w:instrText></w:r><w:r><w:t>One</w:t></w:r></w:p>"+P("Stable tail"));
+await eng.ExportWordAsync(fieldShiftA,fieldShiftB,fieldShiftO,"T",true);
+Check(File.Exists(fieldShiftO),"unchanged field was falsely blocked after paragraph insertion");
+Console.WriteLine("PASS FIELD LOGICAL-LOCATION SHIFT");
+
+
+// 74. Moving the same image relationship to a different paragraph must be blocked.
+var imageMoveA=Path.Combine(dir,"imageMoveA.docx");var imageMoveB=Path.Combine(dir,"imageMoveB.docx");var imageMoveO=Path.Combine(dir,"imageMoveOut.docx");
+Make(imageMoveA,P("Stable one")+"<w:p><w:r><w:t>Two</w:t></w:r><w:r><w:drawing xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" r:id=\"rIdImage\"/></w:r></w:p>"+P("Three")+P("Stable four"));
+Make(imageMoveB,P("Stable one")+P("Two")+"<w:p><w:r><w:t>Three</w:t></w:r><w:r><w:drawing xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" r:id=\"rIdImage\"/></w:r></w:p>"+P("Stable four"));
+var imageRels="<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rIdImage\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"media/image1.bin\"/></Relationships>";
+AddWordXml(imageMoveA,"word/_rels/document.xml.rels",imageRels);AddWordXml(imageMoveB,"word/_rels/document.xml.rels",imageRels);
+AddWordBytes(imageMoveA,"word/media/image1.bin",new byte[]{1,2,3,4});AddWordBytes(imageMoveB,"word/media/image1.bin",new byte[]{1,2,3,4});
+var imageMoveBlocked=false;try{await eng.ExportWordAsync(imageMoveA,imageMoveB,imageMoveO,"T",true);}catch(InvalidOperationException ex){imageMoveBlocked=ex.Message.Contains("비텍스트")||ex.Message.Contains("관계");}
+Check(imageMoveBlocked,"image relationship moved between paragraphs without being blocked");
+Console.WriteLine("PASS IMAGE RELATIONSHIP LOCATION GUARD");
+
+// 75. Moving an unchanged field between nearby paragraphs in a longer document must still be blocked.
+var fieldNearA=Path.Combine(dir,"fieldNearA.docx");var fieldNearB=Path.Combine(dir,"fieldNearB.docx");var fieldNearO=Path.Combine(dir,"fieldNearOut.docx");
+Make(fieldNearA,P("Stable one")+"<w:p><w:r><w:instrText>PAGE</w:instrText></w:r><w:r><w:t>Two</w:t></w:r></w:p>"+P("Three")+P("Stable four"));
+Make(fieldNearB,P("Stable one")+P("Two")+"<w:p><w:r><w:instrText>PAGE</w:instrText></w:r><w:r><w:t>Three</w:t></w:r></w:p>"+P("Stable four"));
+var fieldNearBlocked=false;try{await eng.ExportWordAsync(fieldNearA,fieldNearB,fieldNearO,"T",true);}catch(InvalidOperationException ex){fieldNearBlocked=ex.Message.Contains("필드")||ex.Message.Contains("비텍스트");}
+Check(fieldNearBlocked,"field moved to nearby paragraph despite overlapping context");
+Console.WriteLine("PASS FIELD NEARBY-MOVE GUARD");
+
 Console.WriteLine("ALL REGRESSIONS PASSED");

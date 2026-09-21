@@ -649,18 +649,57 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             .GroupBy(x => x, StringComparer.Ordinal).Where(g => g.Count() > 1).Select(g => g.Key).ToHashSet(StringComparer.Ordinal);
         var repeatedBodiesB = articleB.Select(i => LineageNormalize(b[i].Body)).Where(x => x.Length > 0)
             .GroupBy(x => x, StringComparer.Ordinal).Where(g => g.Count() > 1).Select(g => g.Key).ToHashSet(StringComparer.Ordinal);
+        var titleScores = new Dictionary<(int A, int B), double>();
+        foreach (var ai in articleA)
+        foreach (var bj in articleB)
+            titleScores[(ai, bj)] = TitleSimilarity(a[ai], b[bj]);
+        double TitleScore(int ai, int bj) => titleScores.TryGetValue((ai, bj), out var score) ? score : 0.0;
+        var bestTitleForA = articleA.ToDictionary(i => i,
+            i => articleB.Count == 0 ? 0.0 : articleB.Max(j => TitleScore(i, j)));
+        var bestTitleForB = articleB.ToDictionary(j => j,
+            j => articleA.Count == 0 ? 0.0 : articleA.Max(i => TitleScore(i, j)));
+
+        // High-confidence unique titles are lineage anchors before monotonic DP.  Otherwise a
+        // large reorder can let the DP consume the right counterpart by same-number proximity
+        // and leave the residual move pass unable to recover the true article lineage.
+        var strongTitlePairs = new List<(int A, int B, double Score)>();
+        foreach (var ai in articleA)
+        {
+            if (a[ai].Title.Length == 0 || articleB.Count == 0) continue;
+            var rankedB = articleB.Select(j => (B: j, S: TitleScore(ai, j)))
+                .OrderByDescending(x => x.S).ThenBy(x => x.B).ToList();
+            if (rankedB.Count == 0 || rankedB[0].S < .82) continue;
+            var bj = rankedB[0].B;
+            if (b[bj].Title.Length == 0) continue;
+            var rankedA = articleA.Select(i => (A: i, S: TitleScore(i, bj)))
+                .OrderByDescending(x => x.S).ThenBy(x => x.A).ToList();
+            if (rankedA.Count == 0 || rankedA[0].A != ai) continue;
+            var uniqueA = rankedB.Count == 1 || rankedB[0].S - rankedB[1].S >= .10;
+            var uniqueB = rankedA.Count == 1 || rankedA[0].S - rankedA[1].S >= .10;
+            var exactTitle = LineageNormalize(a[ai].Title) is var ta && ta.Length > 0 &&
+                             ta == LineageNormalize(b[bj].Title) &&
+                             articleA.Count(i => LineageNormalize(a[i].Title) == ta) == 1 &&
+                             articleB.Count(j => LineageNormalize(b[j].Title) == ta) == 1;
+            if ((uniqueA && uniqueB) || exactTitle)
+                strongTitlePairs.Add((ai, bj, rankedB[0].S));
+        }
+        var strongA = strongTitlePairs.Select(x => x.A).ToHashSet();
+        var strongB = strongTitlePairs.Select(x => x.B).ToHashSet();
 
         (double Sim, double Title, double Body, bool AmbiguousRepeatedBody) Evidence(int ai, int bj)
         {
             var ua = a[ai]; var ub = b[bj];
-            var tr = TitleSimilarity(ua, ub);
+            var tr = TitleScore(ai, bj);
             var br = BodySimilarity(ua, ub);
             var sim = UnitLineageSimilarity(ua, ub);
             var bodyKeyA = LineageNormalize(ua.Body); var bodyKeyB = LineageNormalize(ub.Body);
             var repeated = bodyKeyA.Length > 0 && bodyKeyA == bodyKeyB &&
                            (repeatedBodiesA.Contains(bodyKeyA) || repeatedBodiesB.Contains(bodyKeyB));
             var titleConflict = ua.Title.Length > 0 && ub.Title.Length > 0 && tr < .35;
-            var ambiguous = repeated && br >= .88 && titleConflict;
+            var betterTitleElsewhere = titleConflict &&
+                ((bestTitleForA.TryGetValue(ai, out var bestA) && bestA >= .72 && bestA >= tr + .20) ||
+                 (bestTitleForB.TryGetValue(bj, out var bestB) && bestB >= .72 && bestB >= tr + .20));
+            var ambiguous = titleConflict && br >= .84 && (repeated || betterTitleElsewhere);
             if (ambiguous) sim = Math.Min(sim, .42);
             return (sim, tr, br, ambiguous);
         }
@@ -669,8 +708,10 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         if (articleA.Count == 0 || articleB.Count == 0)
             return MatchGenericUnits(a, b, token);
 
-        var n = articleA.Count;
-        var m = articleB.Count;
+        var dpArticleA = articleA.Where(i => !strongA.Contains(i)).ToList();
+        var dpArticleB = articleB.Where(j => !strongB.Contains(j)).ToList();
+        var n = dpArticleA.Count;
+        var m = dpArticleB.Count;
         const double gap = .48;
         // Preserve the exact DP decision rule while using only two score rows.  The traceback
         // matrix stores one byte per cell instead of a double + char + similarity-cache entry.
@@ -685,9 +726,9 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             current[0] = prior[0] + gap; prev[i, 0] = D;
             for (var j = 1; j <= m; j++)
             {
-                var sim = Evidence(articleA[i - 1], articleB[j - 1]).Sim;
+                var sim = Evidence(dpArticleA[i - 1], dpArticleB[j - 1]).Sim;
                 var matchCost = sim >= .43 ? .94 * (1.0 - sim) : 1.08;
-                if (string.Equals(a[articleA[i - 1]].Number, b[articleB[j - 1]].Number, StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(a[dpArticleA[i - 1]].Number, b[dpArticleB[j - 1]].Number, StringComparison.OrdinalIgnoreCase))
                     matchCost -= .015;
                 var mc = prior[j - 1] + matchCost;
                 var dc = prior[j] + gap;
@@ -710,12 +751,14 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         }
         ops.Reverse();
 
-        var mapping = new Dictionary<int, UnitMatch>();
-        var usedB = new HashSet<int>();
+        var mapping = strongTitlePairs.ToDictionary(x => x.A,
+            x => new UnitMatch(x.A, x.B, Math.Max(x.Score, UnitLineageSimilarity(a[x.A], b[x.B])),
+                string.Equals(a[x.A].Number, b[x.B].Number, StringComparison.OrdinalIgnoreCase) ? "same" : "moved"));
+        var usedB = strongB.ToHashSet();
         foreach (var op in ops)
         {
             if (op.Op != M) continue;
-            var bi = articleA[op.A]; var oj = articleB[op.B];
+            var bi = dpArticleA[op.A]; var oj = dpArticleB[op.B];
             var sim = Evidence(bi, oj).Sim;
             if (sim < .43) continue;
             var mode = string.Equals(a[bi].Number, b[oj].Number, StringComparison.OrdinalIgnoreCase) ? "same" : "renumbered";

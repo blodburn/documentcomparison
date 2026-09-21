@@ -483,6 +483,7 @@ internal static class NativeDocumentReader
             if (node.Name == w + "t") sb.Append(node.Value);
             else if (node.Name == w + "tab") sb.Append('\t');
             else if (node.Name == w + "br" || node.Name == w + "cr") sb.Append('\n');
+            else if (node.Name == w + "noBreakHyphen") sb.Append('-');
         }
         return sb.ToString();
     }
