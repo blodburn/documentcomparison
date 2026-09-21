@@ -8,7 +8,7 @@ set "ZIP_FILE=%DIST_ROOT%\DocumentCompare_Windows_x64_Portable.zip"
 set "PUBLISH_STAGE=.build\avalonia_publish"
 
 echo =====================================================
-echo   Document Compare V5.20.17 - Native C# One File Build
+echo   Document Compare V5.20.18 - Native C# One File Build
 echo =====================================================
 echo.
 where dotnet >nul 2>nul || (
