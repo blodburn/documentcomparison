@@ -380,18 +380,29 @@ public partial class MainWindow : Window
         _operationCts?.Cancel();
         _operationCts?.Dispose();
         _operationCts = new CancellationTokenSource();
+        var operationCts = _operationCts;
+        var operationToken = operationCts.Token;
+        var acceptProgress = true;
         SetBusy(true, L("비교 중... 0%", "Comparing... 0%"));
         CompareProgress.Value = 0;
         CompareProgress.IsVisible = true;
         var progress = new Progress<int>(value =>
         {
+            // Progress<T> posts callbacks back to the UI synchronization context. The engine can
+            // finish before the final queued callback runs, so a stale "Comparing... 100%" update
+            // must not overwrite the terminal Complete/Canceled/Failed status.
+            if (!acceptProgress ||
+                !ReferenceEquals(_operationCts, operationCts) ||
+                operationToken.IsCancellationRequested)
+                return;
             CompareProgress.Value = value;
             StatusText.Text = L($"비교 중... {value}%", $"Comparing... {value}%");
         });
         try
         {
             _result = await _engine.CompareAsync(
-                paths, baseIndex, mode, includeAc, includePunctuation, _operationCts.Token, progress);
+                paths, baseIndex, mode, includeAc, includePunctuation, operationToken, progress);
+            acceptProgress = false;
             _lastPaths = paths;
             _lastBaseIndex = baseIndex;
             _lastMode = mode;
@@ -418,6 +429,7 @@ public partial class MainWindow : Window
         }
         finally
         {
+            acceptProgress = false;
             SetBusy(false);
             CompareProgress.IsVisible = false;
         }

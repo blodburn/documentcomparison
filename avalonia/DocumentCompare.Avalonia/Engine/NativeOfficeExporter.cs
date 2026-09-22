@@ -255,7 +255,11 @@ internal static class NativeOfficeExporter
         {
             EnsureAncillaryWordPartsEquivalent(originalPath, revisedPath);
             EnsureMainDocumentUnsupportedContentEquivalent(originalPath, revisedPath);
-            EnsureNoUntrackedFormattingOnlyChanges(originalPath, revisedPath);
+            // DOCX -> DOCX export intentionally uses revised document B as the physical base.
+            // Formatting-only differences are not comparison-content changes in this product;
+            // B's styles/layout are therefore preserved and must not block tracked-text export.
+            // Structural/non-text content that cannot be reproduced safely is still guarded by
+            // EnsureAncillaryWordPartsEquivalent / EnsureMainDocumentUnsupportedContentEquivalent.
         }
         else if (originalIsDocx || revisedIsDocx)
         {
