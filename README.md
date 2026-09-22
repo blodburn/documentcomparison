@@ -9,13 +9,12 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.20.20**
+**V5.20.21**
 
-- Harden Word Track Changes export so unsupported formatting-only changes are rejected instead of being silently inherited from revised document B. This covers paragraph/run formatting, table/cell/section formatting, referenced/default/table styles, theme-dependent formatting, and numbering layout/appearance.
-- Preserve structural Word controls during tracked revisions: manual breaks and tabs remain `w:br`/`w:tab`; soft hyphen, no-break hyphen, and page/column/clear breaks are guarded when the current string model cannot reproduce them faithfully.
-- Tighten numbering safety so supported numbering insertion/removal remains tracked while same-label `numPr` replacement or untracked numbering-format changes cannot slip through.
-- Avoid false blocking from unused theme changes and repeated duplicate text while keeping the existing structure-first comparison and lineage behavior intact.
-- Expand the clean regression suite to 123 adversarial cases; the full suite passes with zero build warnings/errors before release.
+- Fix Word Track Changes export falsely failing when A and B have ordinary Word formatting/style/layout differences. DOCX→DOCX export again preserves revised document B formatting as intended while tracking content changes.
+- Keep structural/non-text safety guards for relationships, fields, soft/no-break hyphens, and special page/column/clear breaks where lossy reconstruction would be unsafe.
+- Fix the UI status text remaining at `비교 중... 100%` after comparison had already completed.
+- Full regression suite: 123/123 passed with zero build warnings/errors.
 
 ## Features
 
