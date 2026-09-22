@@ -255,6 +255,7 @@ internal static class NativeOfficeExporter
         {
             EnsureAncillaryWordPartsEquivalent(originalPath, revisedPath);
             EnsureMainDocumentUnsupportedContentEquivalent(originalPath, revisedPath);
+            EnsureNoUntrackedFormattingOnlyChanges(originalPath, revisedPath);
         }
         else if (originalIsDocx || revisedIsDocx)
         {
@@ -874,12 +875,44 @@ internal static class NativeOfficeExporter
         return result;
     }
 
-    private static XElement RunFragment(XElement sourceRun, string text, XNamespace w, bool deleted = false)
+    private static XElement RunFromLogicalText(
+        string text, XNamespace w, bool deleted = false, XElement? runProperties = null)
     {
         var run = new XElement(w + "r");
-        var rPr = sourceRun.Element(w + "rPr"); if (rPr is not null) run.Add(new XElement(rPr));
-        run.Add(TextNode(deleted ? w + "delText" : w + "t", text));
+        if (runProperties is not null) run.Add(new XElement(runProperties));
+
+        var buffer = new StringBuilder();
+        void Flush()
+        {
+            if (buffer.Length == 0) return;
+            run.Add(TextNode(deleted ? w + "delText" : w + "t", buffer.ToString()));
+            buffer.Clear();
+        }
+
+        foreach (var ch in text ?? string.Empty)
+        {
+            if (ch == '\t')
+            {
+                Flush();
+                run.Add(new XElement(w + "tab"));
+            }
+            else if (ch == '\n')
+            {
+                Flush();
+                run.Add(new XElement(w + "br"));
+            }
+            else if (ch != '\r')
+            {
+                buffer.Append(ch);
+            }
+        }
+        Flush();
         return run;
+    }
+
+    private static XElement RunFragment(XElement sourceRun, string text, XNamespace w, bool deleted = false)
+    {
+        return RunFromLogicalText(text, w, deleted, sourceRun.Element(w + "rPr"));
     }
 
     private static List<(int Start, int End)> MergeRanges(IEnumerable<(int Start, int End)> ranges)
@@ -1005,7 +1038,8 @@ internal static class NativeOfficeExporter
         if (maps.Count == 0)
         {
             var pPr = paragraph.Element(w + "pPr");
-            var del = new XElement(w + "del", RevisionAttrs(w, id++, author), new XElement(w + "r", TextNode(w + "delText", deletedText)));
+            var del = new XElement(w + "del", RevisionAttrs(w, id++, author),
+                RunFromLogicalText(deletedText, w, deleted: true));
             if (pPr is null) paragraph.AddFirst(del); else pPr.AddAfterSelf(del);
             return;
         }
@@ -1877,6 +1911,37 @@ internal static class NativeOfficeExporter
                     "SYM", attrs, ownerText, ownerOccurrence, previousParagraph, nextParagraph,
                     boundary.Before, boundary.After, StructuralPathWithinParagraph(element, ownerParagraph)));
             }
+            else if (element.Name == w + "br")
+            {
+                var type = element.Attribute(w + "type")?.Value ?? "textWrapping";
+                var clear = element.Attribute(w + "clear")?.Value ?? "none";
+                var ordinaryManualBreak =
+                    type.Equals("textWrapping", StringComparison.OrdinalIgnoreCase) &&
+                    clear.Equals("none", StringComparison.OrdinalIgnoreCase);
+                if (!ordinaryManualBreak)
+                {
+                    // The logical text model collapses page/column/clear breaks to '\n'.
+                    // They cannot be faithfully reconstructed from deleted text, so unchanged
+                    // special breaks may pass but structural changes must be rejected.
+                    var boundary = VisibleBoundaryTokens(element, ownerParagraph, w);
+                    otherTokens.Add(new UnsupportedOtherRef(
+                        "SPECIAL_BREAK", $"type={type};clear={clear}",
+                        ownerText, ownerOccurrence, previousParagraph, nextParagraph,
+                        boundary.Before, boundary.After, StructuralPathWithinParagraph(element, ownerParagraph)));
+                }
+            }
+            else if (element.Name == w + "softHyphen" || element.Name == w + "noBreakHyphen")
+            {
+                // softHyphen is absent from visible text and noBreakHyphen collapses to an ordinary
+                // '-' in the logical text model. Their add/remove/move cannot be reconstructed
+                // faithfully from strings alone, so preserve unchanged markers but block structural
+                // changes until native marker revisions are supported.
+                var boundary = VisibleBoundaryTokens(element, ownerParagraph, w);
+                var kind = element.Name == w + "softHyphen" ? "SOFT_HYPHEN" : "NO_BREAK_HYPHEN";
+                otherTokens.Add(new UnsupportedOtherRef(
+                    kind, "present", ownerText, ownerOccurrence, previousParagraph, nextParagraph,
+                    boundary.Before, boundary.After, StructuralPathWithinParagraph(element, ownerParagraph)));
+            }
             else if (element.Name == w + "hyperlink")
             {
                 var anchorValue = element.Attribute(w + "anchor")?.Value ?? string.Empty;
@@ -1982,6 +2047,11 @@ internal static class NativeOfficeExporter
             var x = a[i]; var y = b[i];
             if (x.Kind != y.Kind || x.Value != y.Value)
                 return false;
+            // These inline markers can remain at the same structural slot while surrounding
+            // visible text changes. Same structural path is the strongest available identity.
+            if ((x.Kind is "SOFT_HYPHEN" or "NO_BREAK_HYPHEN") &&
+                x.StructuralPath == y.StructuralPath)
+                continue;
             var sameOwner = SameSemanticOwner(
                 x.OwnerText, x.OwnerOccurrence, x.PreviousParagraph, x.NextParagraph,
                 y.OwnerText, y.OwnerOccurrence, y.PreviousParagraph, y.NextParagraph);
@@ -2033,6 +2103,412 @@ internal static class NativeOfficeExporter
         var others = snapshot.FieldsAndSymbols.Select(x =>
             $"{x.Kind}|{x.Value}|owner={x.OwnerText}#{x.OwnerOccurrence}|before={x.BeforeToken}|after={x.AfterToken}|{x.StructuralPath}");
         return string.Join("\n", rels.Concat(others));
+    }
+
+    private sealed record ParagraphFormattingSnapshot(
+        string Text,
+        string Signature,
+        string NonNumberingSignature,
+        string DirectNumberingReference);
+
+    private static string CanonicalFormattingElement(XElement? element)
+    {
+        if (element is null) return string.Empty;
+        var clone = new XElement(element);
+        XNamespace w = W;
+
+        // Numbering has its own supported Track Changes path and must not be mistaken for a
+        // formatting-only edit.
+        if (clone.Name == w + "pPr")
+            clone.Element(w + "numPr")?.Remove();
+
+        foreach (var attribute in clone.DescendantsAndSelf().Attributes().ToList())
+        {
+            if (attribute.IsNamespaceDeclaration)
+            {
+                attribute.Remove();
+                continue;
+            }
+            if (attribute.Name.NamespaceName == W &&
+                attribute.Name.LocalName.StartsWith("rsid", StringComparison.Ordinal))
+                attribute.Remove();
+            else if (attribute.Name.NamespaceName == "http://schemas.microsoft.com/office/word/2010/wordml" &&
+                     attribute.Name.LocalName is "paraId" or "textId")
+                attribute.Remove();
+        }
+
+        // After removing supported/volatile children, an empty property container is equivalent
+        // to having no direct properties at all (e.g. pPr containing only numPr).
+        if (!clone.HasAttributes && !clone.Elements().Any() && string.IsNullOrWhiteSpace(clone.Value))
+            return string.Empty;
+
+        return clone.ToString(SaveOptions.DisableFormatting);
+    }
+
+    private static Dictionary<string, XElement> ReadStyleElements(ZipArchive zip, XNamespace w, out string docDefaults)
+    {
+        var result = new Dictionary<string, XElement>(StringComparer.Ordinal);
+        docDefaults = string.Empty;
+        var entry = zip.GetEntry("word/styles.xml");
+        if (entry is null) return result;
+        if (entry.Length > 16L * 1024 * 1024)
+            throw new InvalidDataException($"DOCX styles.xml이 너무 큽니다: {entry.Length:N0} bytes");
+
+        XDocument doc;
+        using (var input = entry.Open())
+            doc = XDocument.Load(input, LoadOptions.PreserveWhitespace);
+        var root = doc.Root;
+        if (root is null) return result;
+
+        docDefaults = CanonicalFormattingElement(root.Element(w + "docDefaults"));
+        foreach (var style in root.Elements(w + "style"))
+        {
+            var id = style.Attribute(w + "styleId")?.Value;
+            if (!string.IsNullOrEmpty(id))
+                result[id] = style;
+        }
+        return result;
+    }
+
+    private sealed record NumberingFormattingContext(
+        Dictionary<int, XElement> Abstracts,
+        Dictionary<int, XElement> Instances);
+
+    private static NumberingFormattingContext ReadNumberingFormattingContext(ZipArchive zip, XNamespace w)
+    {
+        var abstracts = new Dictionary<int, XElement>();
+        var instances = new Dictionary<int, XElement>();
+        var entry = zip.GetEntry("word/numbering.xml");
+        if (entry is null) return new NumberingFormattingContext(abstracts, instances);
+        if (entry.Length > 16L * 1024 * 1024)
+            throw new InvalidDataException($"DOCX numbering.xml이 너무 큽니다: {entry.Length:N0} bytes");
+        XDocument doc;
+        using (var input = entry.Open())
+            doc = XDocument.Load(input, LoadOptions.PreserveWhitespace);
+        if (doc.Root is null) return new NumberingFormattingContext(abstracts, instances);
+        foreach (var abstractNum in doc.Root.Elements(w + "abstractNum"))
+            if (int.TryParse(abstractNum.Attribute(w + "abstractNumId")?.Value, out var abstractId))
+                abstracts[abstractId] = abstractNum;
+        foreach (var num in doc.Root.Elements(w + "num"))
+            if (int.TryParse(num.Attribute(w + "numId")?.Value, out var numId))
+                instances[numId] = num;
+        return new NumberingFormattingContext(abstracts, instances);
+    }
+
+    private static (int NumId, int Level)? ParagraphNumberingReference(
+        XElement paragraph, IReadOnlyDictionary<string, XElement> styles, XNamespace w)
+    {
+        static (int NumId, int Level)? ReadNumPr(XElement? pPr, XNamespace w)
+        {
+            var numPr = pPr?.Element(w + "numPr");
+            if (numPr is null) return null;
+            if (!int.TryParse(numPr.Element(w + "numId")?.Attribute(w + "val")?.Value, out var numId))
+                return null;
+            var level = 0;
+            _ = int.TryParse(numPr.Element(w + "ilvl")?.Attribute(w + "val")?.Value, out level);
+            return (numId, level);
+        }
+        var pPr = paragraph.Element(w + "pPr");
+        var direct = ReadNumPr(pPr, w);
+        if (direct is not null) return direct;
+        var styleId = pPr?.Element(w + "pStyle")?.Attribute(w + "val")?.Value;
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        while (!string.IsNullOrEmpty(styleId) && seen.Add(styleId) && styles.TryGetValue(styleId, out var style))
+        {
+            var inherited = ReadNumPr(style.Element(w + "pPr"), w);
+            if (inherited is not null) return inherited;
+            styleId = style.Element(w + "basedOn")?.Attribute(w + "val")?.Value;
+        }
+        return null;
+    }
+
+    private static string NumberingFormattingSignature(
+        XElement paragraph, IReadOnlyDictionary<string, XElement> styles,
+        NumberingFormattingContext numbering, XNamespace w)
+    {
+        var reference = ParagraphNumberingReference(paragraph, styles, w);
+        if (reference is null || reference.Value.NumId == 0) return string.Empty;
+        var (numId, level) = reference.Value;
+        if (!numbering.Instances.TryGetValue(numId, out var instance))
+            return $"MISSING-NUM:{level}";
+        if (!int.TryParse(instance.Element(w + "abstractNumId")?.Attribute(w + "val")?.Value, out var abstractId) ||
+            !numbering.Abstracts.TryGetValue(abstractId, out var abstractNum))
+            return $"MISSING-ABSTRACT:{level}";
+        static bool SameLevel(XElement element, XNamespace w, int level) =>
+            int.TryParse(element.Attribute(w + "ilvl")?.Value, out var parsed) && parsed == level;
+        static string FormattingOnly(XElement? source, XNamespace w)
+        {
+            if (source is null) return string.Empty;
+            var clone = new XElement(source);
+            // Label semantics are already handled by the comparison/numberingChange path.
+            // This guard is only for layout/appearance that would otherwise be inherited
+            // silently from physical base B.
+            foreach (var lvl in clone.Name == w + "lvl"
+                         ? new[] { clone }
+                         : clone.DescendantsAndSelf(w + "lvl").ToArray())
+            {
+                lvl.Element(w + "start")?.Remove();
+                lvl.Element(w + "numFmt")?.Remove();
+                lvl.Element(w + "lvlText")?.Remove();
+                lvl.Element(w + "lvlRestart")?.Remove();
+            }
+            clone.Element(w + "startOverride")?.Remove();
+            return CanonicalFormattingElement(clone);
+        }
+
+        var levelDefinition = abstractNum.Elements(w + "lvl").FirstOrDefault(x => SameLevel(x, w, level));
+        var levelOverride = instance.Elements(w + "lvlOverride").FirstOrDefault(x => SameLevel(x, w, level));
+        return "LEVEL|" + FormattingOnly(levelDefinition, w) +
+               "|OVERRIDE|" + FormattingOnly(levelOverride, w);
+    }
+
+    private static string ReadThemeFormattingSignature(ZipArchive zip)
+    {
+        var entry = zip.GetEntry("word/theme/theme1.xml");
+        if (entry is null) return string.Empty;
+        if (entry.Length > 16L * 1024 * 1024)
+            throw new InvalidDataException($"DOCX theme1.xml이 너무 큽니다: {entry.Length:N0} bytes");
+        XDocument doc;
+        using (var input = entry.Open())
+            doc = XDocument.Load(input, LoadOptions.PreserveWhitespace);
+        return doc.Root is null ? string.Empty : CanonicalFormattingElement(doc.Root);
+    }
+
+    private static bool FormattingSignatureUsesTheme(string signature)
+    {
+        if (string.IsNullOrEmpty(signature)) return false;
+        string[] themeAttributes =
+        {
+            "themeColor=", "themeTint=", "themeShade=",
+            "themeFill=", "themeFillTint=", "themeFillShade=",
+            "asciiTheme=", "hAnsiTheme=", "eastAsiaTheme=", "cstheme="
+        };
+        return themeAttributes.Any(x =>
+            signature.Contains(x, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string ReferencedStyleFormattingSignature(
+        XElement paragraph, IReadOnlyDictionary<string, XElement> styles, string docDefaults, XNamespace w)
+    {
+        var needed = new HashSet<string>(StringComparer.Ordinal);
+        var paragraphStyle = paragraph.Element(w + "pPr")?.Element(w + "pStyle")?.Attribute(w + "val")?.Value;
+        if (!string.IsNullOrEmpty(paragraphStyle)) needed.Add(paragraphStyle);
+
+        foreach (var run in NativeDocumentReader.VisibleRunsInParagraph(paragraph, w))
+        {
+            var runStyle = run.Element(w + "rPr")?.Element(w + "rStyle")?.Attribute(w + "val")?.Value;
+            if (!string.IsNullOrEmpty(runStyle)) needed.Add(runStyle);
+        }
+
+        // Unstyled text still inherits Word's default paragraph/character styles. A table can
+        // likewise inherit an explicit/default table style. Include these dependencies so a
+        // styles.xml-only change cannot silently alter B-based export rendering.
+        var insideTable = paragraph.Ancestors(w + "tbl").Any();
+        foreach (var (id, style) in styles)
+        {
+            var type = style.Attribute(w + "type")?.Value ?? string.Empty;
+            var defaultValue = style.Attribute(w + "default")?.Value ?? string.Empty;
+            var isDefault = defaultValue is "1" or "true" or "on";
+            if (isDefault && (type is "paragraph" or "character" || (insideTable && type == "table")))
+                needed.Add(id);
+        }
+        foreach (var table in paragraph.Ancestors(w + "tbl"))
+        {
+            var tableStyle = table.Element(w + "tblPr")?.Element(w + "tblStyle")?.Attribute(w + "val")?.Value;
+            if (!string.IsNullOrEmpty(tableStyle)) needed.Add(tableStyle);
+        }
+
+        var queue = new Queue<string>(needed);
+        while (queue.Count > 0)
+        {
+            var id = queue.Dequeue();
+            if (!styles.TryGetValue(id, out var style)) continue;
+            foreach (var relation in new[] { style.Element(w + "basedOn"), style.Element(w + "link") })
+            {
+                var parent = relation?.Attribute(w + "val")?.Value;
+                if (!string.IsNullOrEmpty(parent) && needed.Add(parent))
+                    queue.Enqueue(parent);
+            }
+        }
+
+        var sb = new StringBuilder();
+        if (docDefaults.Length > 0)
+            sb.Append("DEFAULTS|").Append(docDefaults).Append('|');
+        foreach (var id in needed.OrderBy(x => x, StringComparer.Ordinal))
+        {
+            sb.Append("STYLE:").Append(id).Append('=');
+            if (styles.TryGetValue(id, out var style))
+                sb.Append(CanonicalFormattingElement(style));
+            else
+                sb.Append("<missing>");
+            sb.Append('|');
+        }
+        return sb.ToString();
+    }
+
+    private static string StructuralFormattingSignature(XElement paragraph, XNamespace w)
+    {
+        var sb = new StringBuilder();
+        // Nearest container first, then outer containers. This makes nested-table ownership part
+        // of the formatting identity without relying on raw document-wide table ordinals.
+        foreach (var ancestor in paragraph.Ancestors())
+        {
+            if (ancestor.Name == w + "tc")
+                sb.Append("TC|").Append(CanonicalFormattingElement(ancestor.Element(w + "tcPr"))).Append('|');
+            else if (ancestor.Name == w + "tr")
+                sb.Append("TR|").Append(CanonicalFormattingElement(ancestor.Element(w + "trPr"))).Append('|');
+            else if (ancestor.Name == w + "tbl")
+                sb.Append("TBL|").Append(CanonicalFormattingElement(ancestor.Element(w + "tblPr"))).Append('|')
+                  .Append("GRID|").Append(CanonicalFormattingElement(ancestor.Element(w + "tblGrid"))).Append('|');
+        }
+        return sb.ToString();
+    }
+
+    private static List<string> ReadSectionFormattingSignatures(string path)
+    {
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var zip = new ZipArchive(fs, ZipArchiveMode.Read);
+        var entry = zip.GetEntry("word/document.xml");
+        if (entry is null) return new();
+
+        XNamespace w = W;
+        XDocument doc;
+        using (var input = entry.Open())
+            doc = XDocument.Load(input, LoadOptions.PreserveWhitespace);
+
+        var result = new List<string>();
+        foreach (var source in doc.Descendants(w + "sectPr"))
+        {
+            var clone = new XElement(source);
+            // Header/footer identity and relationship targets are guarded separately by the
+            // ancillary-reference checks. Do not compare volatile rIds here.
+            clone.Elements(w + "headerReference").Remove();
+            clone.Elements(w + "footerReference").Remove();
+            result.Add(CanonicalFormattingElement(clone));
+        }
+        return result;
+    }
+
+    private static List<ParagraphFormattingSnapshot> ReadParagraphFormattingSnapshots(string path)
+    {
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var zip = new ZipArchive(fs, ZipArchiveMode.Read);
+        var entry = zip.GetEntry("word/document.xml");
+        if (entry is null) return new();
+
+        XNamespace w = W;
+        XDocument doc;
+        using (var input = entry.Open())
+            doc = XDocument.Load(input, LoadOptions.PreserveWhitespace);
+        var body = doc.Root?.Element(w + "body");
+        if (body is null) return new();
+
+        var styles = ReadStyleElements(zip, w, out var docDefaults);
+        var numbering = ReadNumberingFormattingContext(zip, w);
+        var theme = ReadThemeFormattingSignature(zip);
+        var result = new List<ParagraphFormattingSnapshot>();
+        foreach (var paragraph in BodyParagraphs(body, w))
+        {
+            var text = ParagraphVisibleText(paragraph, w);
+            if (string.IsNullOrWhiteSpace(text)) continue;
+
+            var sb = new StringBuilder();
+            var directNumberingReference =
+                CanonicalFormattingElement(paragraph.Element(w + "pPr")?.Element(w + "numPr"));
+            sb.Append("P|").Append(CanonicalFormattingElement(paragraph.Element(w + "pPr"))).Append('|');
+
+            string? previousFormat = null;
+            var previousLength = 0;
+            void Flush()
+            {
+                if (previousFormat is null) return;
+                sb.Append("R").Append(previousLength).Append(':')
+                  .Append(previousFormat.Length).Append(':').Append(previousFormat).Append(';');
+            }
+
+            foreach (var run in NativeDocumentReader.VisibleRunsInParagraph(paragraph, w))
+            {
+                var length = NativeDocumentReader.RunVisibleText(run, w).Length;
+                if (length == 0) continue;
+                var format = CanonicalFormattingElement(run.Element(w + "rPr"));
+                if (previousFormat == format)
+                    previousLength += length;
+                else
+                {
+                    Flush();
+                    previousFormat = format;
+                    previousLength = length;
+                }
+            }
+            Flush();
+            sb.Append("STRUCT|").Append(StructuralFormattingSignature(paragraph, w)).Append('|');
+            sb.Append("STYLES|").Append(ReferencedStyleFormattingSignature(paragraph, styles, docDefaults, w));
+            var nonNumberingUsesTheme = FormattingSignatureUsesTheme(sb.ToString());
+            if (nonNumberingUsesTheme)
+                sb.Append("|THEME|").Append(theme);
+            var nonNumberingSignature = sb.ToString();
+            var numberingSignature = NumberingFormattingSignature(paragraph, styles, numbering, w);
+            sb.Append("|NUMBERING|").Append(numberingSignature);
+            if (!nonNumberingUsesTheme && FormattingSignatureUsesTheme(numberingSignature))
+                sb.Append("|NUMBERING_THEME|").Append(theme);
+            result.Add(new ParagraphFormattingSnapshot(
+                text, sb.ToString(), nonNumberingSignature, directNumberingReference));
+        }
+        return result;
+    }
+
+    private static void EnsureNoUntrackedFormattingOnlyChanges(string originalPath, string revisedPath)
+    {
+        var a = ReadParagraphFormattingSnapshots(originalPath);
+        var b = ReadParagraphFormattingSnapshots(revisedPath);
+
+        // Repeated boilerplate text is common in contracts and tables. Pair exact text+format
+        // survivors first, so a newly inserted duplicate does not steal the old paragraph merely
+        // because it occurs earlier in B. Only the residual monotonic gaps are candidates for a
+        // true formatting-only rewrite of otherwise identical text.
+        static string ExactFormattingKey(ParagraphFormattingSnapshot x) =>
+            $"{x.Text.Length}:{x.Text}{x.Signature.Length}:{x.Signature}" +
+            $"|NUMPR|{x.DirectNumberingReference.Length}:{x.DirectNumberingReference}";
+        var exactPairs = Lcs(a.Select(ExactFormattingKey).ToArray(), b.Select(ExactFormattingKey).ToArray());
+        var anchors = new List<(int A, int B)> { (-1, -1) };
+        anchors.AddRange(exactPairs);
+        anchors.Add((a.Count, b.Count));
+
+        for (var k = 0; k < anchors.Count - 1; k++)
+        {
+            var left = anchors[k];
+            var right = anchors[k + 1];
+            var a0 = left.A + 1; var a1 = right.A;
+            var b0 = left.B + 1; var b1 = right.B;
+            if (a0 >= a1 || b0 >= b1) continue;
+            var residual = Lcs(a.Skip(a0).Take(a1 - a0).Select(x => x.Text).ToArray(),
+                               b.Skip(b0).Take(b1 - b0).Select(x => x.Text).ToArray());
+            foreach (var (localA, localB) in residual)
+            {
+                var ai = a0 + localA; var bi = b0 + localB;
+                if (string.Equals(a[ai].Signature, b[bi].Signature, StringComparison.Ordinal) &&
+                    string.Equals(a[ai].DirectNumberingReference, b[bi].DirectNumberingReference,
+                        StringComparison.Ordinal))
+                    continue;
+
+                var supportedDirectNumberingChange =
+                    !string.Equals(a[ai].DirectNumberingReference, b[bi].DirectNumberingReference,
+                        StringComparison.Ordinal) &&
+                    (a[ai].DirectNumberingReference.Length == 0 ||
+                     b[bi].DirectNumberingReference.Length == 0) &&
+                    string.Equals(a[ai].NonNumberingSignature, b[bi].NonNumberingSignature,
+                        StringComparison.Ordinal);
+                if (!supportedDirectNumberingChange)
+                    throw new InvalidOperationException(
+                        "A와 B의 동일 본문 문단 또는 그 문단이 속한 Word 서식/스타일 구조가 다릅니다. 현재 변경추적 내보내기는 해당 서식 변경을 안전하게 추적하지 않으므로 저장을 중단했습니다.");
+            }
+        }
+
+        var aSections = ReadSectionFormattingSignatures(originalPath);
+        var bSections = ReadSectionFormattingSignatures(revisedPath);
+        if (!aSections.SequenceEqual(bSections, StringComparer.Ordinal))
+            throw new InvalidOperationException(
+                "A와 B의 Word 구역/페이지 설정이 다릅니다. 현재 변경추적 내보내기는 구역 서식 변경을 안전하게 추적하지 않으므로 저장을 중단했습니다.");
     }
 
     private static void EnsureMainDocumentUnsupportedContentEquivalent(string originalPath, string revisedPath)
@@ -2207,7 +2683,8 @@ internal static class NativeOfficeExporter
     private static XElement PlainParagraph(string text, XElement? properties)
     {
         XNamespace w = W;
-        return new XElement(w + "p", properties is null ? null : new XElement(properties), new XElement(w + "r", TextNode(w + "t", text)));
+        return new XElement(w + "p", properties is null ? null : new XElement(properties),
+            RunFromLogicalText(text, w));
     }
 
     private static void MarkParagraphMarkRevision(XElement paragraph, bool inserted, string author, ref int id, XNamespace w)
@@ -2238,7 +2715,7 @@ internal static class NativeOfficeExporter
     {
         XNamespace w = W;
         var p = new XElement(w + "p", properties is null ? null : new XElement(properties),
-            new XElement(w + "ins", RevisionAttrs(w, id++, author), new XElement(w + "r", TextNode(w + "t", text))));
+            new XElement(w + "ins", RevisionAttrs(w, id++, author), RunFromLogicalText(text, w)));
         MarkParagraphMarkRevision(p, inserted: true, author, ref id, w);
         return p;
     }
@@ -2247,7 +2724,7 @@ internal static class NativeOfficeExporter
     {
         XNamespace w = W;
         var p = new XElement(w + "p", properties is null ? null : new XElement(properties),
-            new XElement(w + "del", RevisionAttrs(w, id++, author), new XElement(w + "r", TextNode(w + "delText", text))));
+            new XElement(w + "del", RevisionAttrs(w, id++, author), RunFromLogicalText(text, w, deleted: true)));
         MarkParagraphMarkRevision(p, inserted: false, author, ref id, w);
         return p;
     }
@@ -2270,10 +2747,12 @@ internal static class NativeOfficeExporter
                                   (newChunk.Length == 0 || PunctuationOnly(newChunk));
             if (includePunctuation || !punctuationOnly)
             {
-                if (oldChunk.Length > 0) p.Add(new XElement(w + "del", RevisionAttrs(w, id++, author), new XElement(w + "r", TextNode(w + "delText", oldChunk))));
-                if (newChunk.Length > 0) p.Add(new XElement(w + "ins", RevisionAttrs(w, id++, author), new XElement(w + "r", TextNode(w + "t", newChunk))));
+                if (oldChunk.Length > 0) p.Add(new XElement(w + "del", RevisionAttrs(w, id++, author),
+                    RunFromLogicalText(oldChunk, w, deleted: true)));
+                if (newChunk.Length > 0) p.Add(new XElement(w + "ins", RevisionAttrs(w, id++, author),
+                    RunFromLogicalText(newChunk, w)));
             }
-            if (right.A < a.Count && right.B < b.Count) p.Add(new XElement(w + "r", TextNode(w + "t", b[right.B].Text)));
+            if (right.A < a.Count && right.B < b.Count) p.Add(RunFromLogicalText(b[right.B].Text, w));
         }
         return p;
     }

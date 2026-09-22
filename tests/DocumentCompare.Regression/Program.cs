@@ -1153,4 +1153,245 @@ Check(!spacingRevMsgs.Any(m=>m.Contains("“없이” → “없이”")),
     "spacing deletion regressed to meaningless identical-text marker: "+string.Join(" | ",spacingRevMsgs));
 Console.WriteLine("PASS KOREAN SPACING DELETION DIFF");
 
+
+// 105. Format-only DOCX differences must either emit property Track Changes or be rejected.
+var fmtA=Path.Combine(dir,"formatOnlyA.docx");var fmtB=Path.Combine(dir,"formatOnlyB.docx");var fmtO=Path.Combine(dir,"formatOnlyOut.docx");
+Make(fmtA,"<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>Alpha</w:t></w:r></w:p>");
+Make(fmtB,P("Alpha"));
+var fmtSafe=false;
+try
+{
+    await eng.ExportWordAsync(fmtA,fmtB,fmtO,"T",true);
+    var fmtDoc=Doc(fmtO);
+    fmtSafe=fmtDoc.Descendants(w+"rPrChange").Any()||fmtDoc.Descendants(w+"pPrChange").Any();
+}
+catch(InvalidOperationException){fmtSafe=true;}
+Check(fmtSafe,"format-only Word change was silently inherited from B without tracked property change or rejection");
+Console.WriteLine("PASS FORMATTING-ONLY EXPORT SAFETY");
+
+// 106. Zero-width format control immediately after flattened labels must not destroy boundaries.
+var zwAfterLabel=(System.Collections.IEnumerable)parse.Invoke(null,new object[]{
+    "Lead: (1)​ One (2)​ Two (3)​ Three"
+})!;
+var zwAfterLabels=new List<string>();
+foreach(var x in zwAfterLabel) zwAfterLabels.Add((string)x!.GetType().GetProperty("Label")!.GetValue(x)!);
+for(var n=1;n<=3;n++)
+    Check(zwAfterLabels.Contains("("+n+")"),"zero-width-after-label boundary missing: ("+n+") => "+string.Join(",",zwAfterLabels));
+Console.WriteLine("PASS ZERO-WIDTH AFTER ITEM LABEL");
+
+// 107. A soft hyphen must not disappear silently from comparison/export semantics.
+var shyA=Path.Combine(dir,"softHyphenA.docx");var shyB=Path.Combine(dir,"softHyphenB.docx");var shyO=Path.Combine(dir,"softHyphenOut.docx");
+Make(shyA,"<w:p><w:r><w:t>Alpha</w:t><w:softHyphen/><w:t>Beta</w:t></w:r></w:p>");
+Make(shyB,P("AlphaBeta"));
+var shyCmp=await eng.CompareAsync(new[]{shyA,shyB},0,"general",true,true);
+var shySafe=shyCmp.Rows.Any(r=>r.Changed);
+try
+{
+    await eng.ExportWordAsync(shyA,shyB,shyO,"T",true);
+    var shyDoc=Doc(shyO);
+    shySafe=shySafe||shyDoc.Descendants(w+"del").Any()||shyDoc.Descendants(w+"ins").Any();
+}
+catch(InvalidOperationException){shySafe=true;}
+Check(shySafe,"w:softHyphen disappeared without comparison marker, tracked revision, or export rejection");
+Console.WriteLine("PASS SOFT-HYPHEN SAFETY");
+
+
+// 108. An unchanged soft hyphen in both documents must remain exportable.
+var shySameA=Path.Combine(dir,"softHyphenSameA.docx");var shySameB=Path.Combine(dir,"softHyphenSameB.docx");var shySameO=Path.Combine(dir,"softHyphenSameOut.docx");
+Make(shySameA,"<w:p><w:r><w:t>Alpha</w:t><w:softHyphen/><w:t>Beta</w:t></w:r></w:p>");
+Make(shySameB,"<w:p><w:r><w:t>Alpha</w:t><w:softHyphen/><w:t>Beta</w:t></w:r></w:p>");
+await eng.ExportWordAsync(shySameA,shySameB,shySameO,"T",true);
+Check(File.Exists(shySameO),"unchanged w:softHyphen was falsely blocked");
+Console.WriteLine("PASS SOFT-HYPHEN UNCHANGED");
+
+
+// 109. Deleting a manual line break must preserve the structural w:br inside w:del.
+// A literal LF in w:delText is not the same WordprocessingML construct.
+var brDelA=Path.Combine(dir,"brDeleteA.docx");var brDelB=Path.Combine(dir,"brDeleteB.docx");var brDelO=Path.Combine(dir,"brDeleteOut.docx");
+Make(brDelA,"<w:p><w:r><w:t>Alpha</w:t><w:br/><w:t>Beta</w:t></w:r></w:p>");
+Make(brDelB,P("AlphaBeta"));
+await eng.ExportWordAsync(brDelA,brDelB,brDelO,"T",true);
+var brDelDoc=Doc(brDelO);
+var brDelNodes=brDelDoc.Descendants(w+"del").ToList();
+Check(brDelNodes.Any(x=>x.Descendants(w+"br").Any()),
+    "deleted manual line break was not represented as w:br inside w:del");
+Console.WriteLine("PASS MANUAL-BREAK DELETION STRUCTURE");
+
+// 110. Deleting a tab must preserve w:tab inside w:del.
+var tabDelA=Path.Combine(dir,"tabDeleteA.docx");var tabDelB=Path.Combine(dir,"tabDeleteB.docx");var tabDelO=Path.Combine(dir,"tabDeleteOut.docx");
+Make(tabDelA,"<w:p><w:r><w:t>Alpha</w:t><w:tab/><w:t>Beta</w:t></w:r></w:p>");
+Make(tabDelB,P("AlphaBeta"));
+await eng.ExportWordAsync(tabDelA,tabDelB,tabDelO,"T",true);
+var tabDelDoc=Doc(tabDelO);
+var tabDelNodes=tabDelDoc.Descendants(w+"del").ToList();
+Check(tabDelNodes.Any(x=>x.Descendants(w+"tab").Any()),
+    "deleted tab was not represented as w:tab inside w:del");
+Console.WriteLine("PASS TAB DELETION STRUCTURE");
+
+// 111. Deleting a no-break hyphen must not silently degrade to ordinary '-' text.
+var nbhDelA=Path.Combine(dir,"nbhDeleteA.docx");var nbhDelB=Path.Combine(dir,"nbhDeleteB.docx");var nbhDelO=Path.Combine(dir,"nbhDeleteOut.docx");
+Make(nbhDelA,"<w:p><w:r><w:t>Alpha</w:t><w:noBreakHyphen/><w:t>Beta</w:t></w:r></w:p>");
+Make(nbhDelB,P("AlphaBeta"));
+var nbhDeleteSafe=false;
+try
+{
+    await eng.ExportWordAsync(nbhDelA,nbhDelB,nbhDelO,"T",true);
+    var nbhDelDoc=Doc(nbhDelO);
+    nbhDeleteSafe=nbhDelDoc.Descendants(w+"del").Any(x=>x.Descendants(w+"noBreakHyphen").Any());
+}
+catch(InvalidOperationException){nbhDeleteSafe=true;}
+Check(nbhDeleteSafe,"deleted no-break hyphen silently degraded to ordinary text");
+Console.WriteLine("PASS NO-BREAK-HYPHEN DELETION SAFETY");
+
+
+// 112-115. Non-paragraph formatting must not silently inherit from physical base B.
+static async Task<bool> FormattingExportSafe(NativeComparisonEngine engine,string a,string b,string o,XNamespace w,string trackedName)
+{
+    try
+    {
+        await engine.ExportWordAsync(a,b,o,"T",true);
+        var doc=Doc(o);
+        return doc.Descendants(w+trackedName).Any();
+    }
+    catch(InvalidOperationException){return true;}
+}
+
+var tblFmtA=Path.Combine(dir,"tableFmtA.docx");var tblFmtB=Path.Combine(dir,"tableFmtB.docx");var tblFmtO=Path.Combine(dir,"tableFmtOut.docx");
+Make(tblFmtA,"<w:tbl><w:tblPr><w:tblW w:w='5000' w:type='dxa'/></w:tblPr><w:tblGrid><w:gridCol/></w:tblGrid><w:tr><w:tc><w:tcPr/><w:p><w:r><w:t>Alpha</w:t></w:r></w:p></w:tc></w:tr></w:tbl>");
+Make(tblFmtB,"<w:tbl><w:tblPr><w:tblW w:w='6000' w:type='dxa'/></w:tblPr><w:tblGrid><w:gridCol/></w:tblGrid><w:tr><w:tc><w:tcPr/><w:p><w:r><w:t>Alpha</w:t></w:r></w:p></w:tc></w:tr></w:tbl>");
+var tblFmtSafe=await FormattingExportSafe(eng,tblFmtA,tblFmtB,tblFmtO,w,"tblPrChange");
+Console.WriteLine("REVIEW TABLE-FORMATTING SAFETY="+tblFmtSafe);
+
+var cellFmtA=Path.Combine(dir,"cellFmtA.docx");var cellFmtB=Path.Combine(dir,"cellFmtB.docx");var cellFmtO=Path.Combine(dir,"cellFmtOut.docx");
+Make(cellFmtA,"<w:tbl><w:tblPr/><w:tblGrid><w:gridCol/></w:tblGrid><w:tr><w:tc><w:tcPr><w:shd w:fill='FFFFFF'/></w:tcPr><w:p><w:r><w:t>Alpha</w:t></w:r></w:p></w:tc></w:tr></w:tbl>");
+Make(cellFmtB,"<w:tbl><w:tblPr/><w:tblGrid><w:gridCol/></w:tblGrid><w:tr><w:tc><w:tcPr><w:shd w:fill='EEEEEE'/></w:tcPr><w:p><w:r><w:t>Alpha</w:t></w:r></w:p></w:tc></w:tr></w:tbl>");
+var cellFmtSafe=await FormattingExportSafe(eng,cellFmtA,cellFmtB,cellFmtO,w,"tcPrChange");
+Console.WriteLine("REVIEW CELL-FORMATTING SAFETY="+cellFmtSafe);
+
+var sectFmtA=Path.Combine(dir,"sectionFmtA.docx");var sectFmtB=Path.Combine(dir,"sectionFmtB.docx");var sectFmtO=Path.Combine(dir,"sectionFmtOut.docx");
+Make(sectFmtA,P("Alpha"));
+Make(sectFmtB,P("Alpha"));
+AddWordXml(sectFmtA,"word/document.xml","<w:document xmlns:w='"+W+"'><w:body>"+P("Alpha")+"<w:sectPr><w:pgMar w:top='1440' w:right='1440' w:bottom='1440' w:left='1440'/></w:sectPr></w:body></w:document>");
+AddWordXml(sectFmtB,"word/document.xml","<w:document xmlns:w='"+W+"'><w:body>"+P("Alpha")+"<w:sectPr><w:pgMar w:top='720' w:right='1440' w:bottom='1440' w:left='1440'/></w:sectPr></w:body></w:document>");
+var sectFmtSafe=await FormattingExportSafe(eng,sectFmtA,sectFmtB,sectFmtO,w,"sectPrChange");
+Console.WriteLine("REVIEW SECTION-FORMATTING SAFETY="+sectFmtSafe);
+
+var styleFmtA=Path.Combine(dir,"styleFmtA.docx");var styleFmtB=Path.Combine(dir,"styleFmtB.docx");var styleFmtO=Path.Combine(dir,"styleFmtOut.docx");
+Make(styleFmtA,"<w:p><w:pPr><w:pStyle w:val='MyStyle'/></w:pPr><w:r><w:t>Alpha</w:t></w:r></w:p>");
+Make(styleFmtB,"<w:p><w:pPr><w:pStyle w:val='MyStyle'/></w:pPr><w:r><w:t>Alpha</w:t></w:r></w:p>");
+AddWordXml(styleFmtA,"word/styles.xml","<w:styles xmlns:w='"+W+"'><w:style w:type='paragraph' w:styleId='MyStyle'><w:name w:val='MyStyle'/><w:rPr><w:b/></w:rPr></w:style></w:styles>");
+AddWordXml(styleFmtB,"word/styles.xml","<w:styles xmlns:w='"+W+"'><w:style w:type='paragraph' w:styleId='MyStyle'><w:name w:val='MyStyle'/><w:rPr><w:i/></w:rPr></w:style></w:styles>");
+var styleFmtSafe=false;
+try{await eng.ExportWordAsync(styleFmtA,styleFmtB,styleFmtO,"T",true);}
+catch(InvalidOperationException){styleFmtSafe=true;}
+Console.WriteLine("REVIEW REFERENCED-STYLE SAFETY="+styleFmtSafe);
+
+Check(tblFmtSafe,"table property change was silently inherited without tracked change or rejection");
+Console.WriteLine("PASS TABLE-FORMATTING EXPORT SAFETY");
+Check(cellFmtSafe,"cell property change was silently inherited without tracked change or rejection");
+Console.WriteLine("PASS CELL-FORMATTING EXPORT SAFETY");
+Check(sectFmtSafe,"section property change was silently inherited without tracked change or rejection");
+Console.WriteLine("PASS SECTION-FORMATTING EXPORT SAFETY");
+Check(styleFmtSafe,"referenced style change was silently inherited without rejection");
+Console.WriteLine("PASS REFERENCED-STYLE EXPORT SAFETY");
+
+
+// 116. Default paragraph style changes affect unstyled surviving paragraphs and must be guarded.
+var defaultStyleA=Path.Combine(dir,"defaultStyleA.docx");var defaultStyleB=Path.Combine(dir,"defaultStyleB.docx");var defaultStyleO=Path.Combine(dir,"defaultStyleOut.docx");
+Make(defaultStyleA,P("Alpha"));Make(defaultStyleB,P("Alpha"));
+AddWordXml(defaultStyleA,"word/styles.xml","<w:styles xmlns:w='"+W+"'><w:style w:type='paragraph' w:default='1' w:styleId='Normal'><w:name w:val='Normal'/><w:rPr><w:b/></w:rPr></w:style></w:styles>");
+AddWordXml(defaultStyleB,"word/styles.xml","<w:styles xmlns:w='"+W+"'><w:style w:type='paragraph' w:default='1' w:styleId='Normal'><w:name w:val='Normal'/><w:rPr><w:i/></w:rPr></w:style></w:styles>");
+var defaultStyleSafe=false;
+try{await eng.ExportWordAsync(defaultStyleA,defaultStyleB,defaultStyleO,"T",true);}
+catch(InvalidOperationException){defaultStyleSafe=true;}
+Check(defaultStyleSafe,"default paragraph style change silently altered unstyled surviving text");
+Console.WriteLine("PASS DEFAULT-STYLE EXPORT SAFETY");
+
+// 117. An inserted duplicate-text row with different formatting must not make the formatting guard
+// pair the new row to the old survivor and falsely reject a legitimate row insertion.
+var dupFmtA=Path.Combine(dir,"dupFmtA.docx");var dupFmtB=Path.Combine(dir,"dupFmtB.docx");var dupFmtO=Path.Combine(dir,"dupFmtOut.docx");
+Make(dupFmtA,"<w:tbl><w:tblPr/><w:tblGrid><w:gridCol/></w:tblGrid><w:tr><w:tc><w:tcPr><w:shd w:fill='FFFFFF'/></w:tcPr><w:p><w:r><w:t>Same</w:t></w:r></w:p></w:tc></w:tr></w:tbl>");
+Make(dupFmtB,"<w:tbl><w:tblPr/><w:tblGrid><w:gridCol/></w:tblGrid><w:tr><w:tc><w:tcPr><w:shd w:fill='EEEEEE'/></w:tcPr><w:p><w:r><w:t>Same</w:t></w:r></w:p></w:tc></w:tr><w:tr><w:tc><w:tcPr><w:shd w:fill='FFFFFF'/></w:tcPr><w:p><w:r><w:t>Same</w:t></w:r></w:p></w:tc></w:tr></w:tbl>");
+var dupFmtExported=true;
+try{await eng.ExportWordAsync(dupFmtA,dupFmtB,dupFmtO,"T",true);}
+catch(InvalidOperationException){dupFmtExported=false;}
+Check(dupFmtExported,"formatting guard falsely rejected duplicate-text row insertion");
+var dupFmtDoc=Doc(dupFmtO);
+Check(dupFmtDoc.Descendants(w+"tr").Any(x=>x.Element(w+"trPr")?.Element(w+"ins") is not null),
+    "duplicate-text inserted row was not tracked at row level");
+Console.WriteLine("PASS DUPLICATE-TEXT ROW INSERTION FORMATTING SAFETY");
+
+
+// 116. A used table style definition change must not silently inherit from B.
+var tblStyleA=Path.Combine(dir,"tblStyleA.docx");var tblStyleB=Path.Combine(dir,"tblStyleB.docx");var tblStyleO=Path.Combine(dir,"tblStyleOut.docx");
+var styledTable="<w:tbl><w:tblPr><w:tblStyle w:val='GridStyle'/></w:tblPr><w:tblGrid><w:gridCol/></w:tblGrid><w:tr><w:tc><w:tcPr/><w:p><w:r><w:t>Alpha</w:t></w:r></w:p></w:tc></w:tr></w:tbl>";
+Make(tblStyleA,styledTable);Make(tblStyleB,styledTable);
+AddWordXml(tblStyleA,"word/styles.xml","<w:styles xmlns:w='"+W+"'><w:style w:type='table' w:styleId='GridStyle'><w:name w:val='GridStyle'/><w:tblPr><w:tblBorders><w:top w:val='single' w:sz='4'/></w:tblBorders></w:tblPr></w:style></w:styles>");
+AddWordXml(tblStyleB,"word/styles.xml","<w:styles xmlns:w='"+W+"'><w:style w:type='table' w:styleId='GridStyle'><w:name w:val='GridStyle'/><w:tblPr><w:tblBorders><w:top w:val='double' w:sz='8'/></w:tblBorders></w:tblPr></w:style></w:styles>");
+var tblStyleSafe=false;
+try{await eng.ExportWordAsync(tblStyleA,tblStyleB,tblStyleO,"T",true);}
+catch(InvalidOperationException){tblStyleSafe=true;}
+Check(tblStyleSafe,"used table style definition change was silently inherited");
+Console.WriteLine("PASS TABLE-STYLE DEFINITION SAFETY");
+
+// 117. Theme palette changes can alter themeColor/themeFont rendering without changing document.xml.
+var themeFmtA=Path.Combine(dir,"themeFmtA.docx");var themeFmtB=Path.Combine(dir,"themeFmtB.docx");var themeFmtO=Path.Combine(dir,"themeFmtOut.docx");
+var themeBody="<w:p><w:r><w:rPr><w:color w:themeColor='accent1'/></w:rPr><w:t>Alpha</w:t></w:r></w:p>";
+Make(themeFmtA,themeBody);Make(themeFmtB,themeBody);
+const string A_NS="http://schemas.openxmlformats.org/drawingml/2006/main";
+AddWordXml(themeFmtA,"word/theme/theme1.xml","<a:theme xmlns:a='"+A_NS+"' name='T'><a:themeElements><a:clrScheme name='C'><a:dk1><a:srgbClr val='000000'/></a:dk1><a:lt1><a:srgbClr val='FFFFFF'/></a:lt1><a:accent1><a:srgbClr val='FF0000'/></a:accent1></a:clrScheme></a:themeElements></a:theme>");
+AddWordXml(themeFmtB,"word/theme/theme1.xml","<a:theme xmlns:a='"+A_NS+"' name='T'><a:themeElements><a:clrScheme name='C'><a:dk1><a:srgbClr val='000000'/></a:dk1><a:lt1><a:srgbClr val='FFFFFF'/></a:lt1><a:accent1><a:srgbClr val='0000FF'/></a:accent1></a:clrScheme></a:themeElements></a:theme>");
+var themeFmtSafe=false;
+try{await eng.ExportWordAsync(themeFmtA,themeFmtB,themeFmtO,"T",true);}
+catch(InvalidOperationException){themeFmtSafe=true;}
+Check(themeFmtSafe,"theme change affecting themeColor was silently inherited");
+Console.WriteLine("PASS THEME-FORMATTING SAFETY");
+
+// 118. Number labels may stay identical while numbering-level layout formatting changes.
+var numFmtA=Path.Combine(dir,"numFmtA.docx");var numFmtB=Path.Combine(dir,"numFmtB.docx");var numFmtO=Path.Combine(dir,"numFmtOut.docx");
+var numberedP="<w:p><w:pPr><w:numPr><w:ilvl w:val='0'/><w:numId w:val='1'/></w:numPr></w:pPr><w:r><w:t>Alpha</w:t></w:r></w:p>";
+Make(numFmtA,numberedP);Make(numFmtB,numberedP);
+AddWordXml(numFmtA,"word/numbering.xml","<w:numbering xmlns:w='"+W+"'><w:abstractNum w:abstractNumId='1'><w:lvl w:ilvl='0'><w:start w:val='1'/><w:numFmt w:val='decimal'/><w:lvlText w:val='%1.'/><w:pPr><w:ind w:left='720' w:hanging='360'/></w:pPr></w:lvl></w:abstractNum><w:num w:numId='1'><w:abstractNumId w:val='1'/></w:num></w:numbering>");
+AddWordXml(numFmtB,"word/numbering.xml","<w:numbering xmlns:w='"+W+"'><w:abstractNum w:abstractNumId='1'><w:lvl w:ilvl='0'><w:start w:val='1'/><w:numFmt w:val='decimal'/><w:lvlText w:val='%1.'/><w:pPr><w:ind w:left='1440' w:hanging='360'/></w:pPr></w:lvl></w:abstractNum><w:num w:numId='1'><w:abstractNumId w:val='1'/></w:num></w:numbering>");
+var numFmtSafe=false;
+try{await eng.ExportWordAsync(numFmtA,numFmtB,numFmtO,"T",true);}
+catch(InvalidOperationException){numFmtSafe=true;}
+Check(numFmtSafe,"numbering layout formatting change was silently inherited");
+Console.WriteLine("PASS NUMBERING-FORMATTING SAFETY");
+
+// 121. A theme change that is not referenced by surviving document formatting must not
+// falsely block tracked export.
+var unusedThemeA=Path.Combine(dir,"unusedThemeA.docx");var unusedThemeB=Path.Combine(dir,"unusedThemeB.docx");var unusedThemeO=Path.Combine(dir,"unusedThemeOut.docx");
+Make(unusedThemeA,P("Alpha"));Make(unusedThemeB,P("Alpha"));
+AddWordXml(unusedThemeA,"word/theme/theme1.xml","<a:theme xmlns:a='"+A_NS+"' name='T'><a:themeElements><a:clrScheme name='C'><a:dk1><a:srgbClr val='000000'/></a:dk1><a:lt1><a:srgbClr val='FFFFFF'/></a:lt1><a:accent1><a:srgbClr val='FF0000'/></a:accent1></a:clrScheme></a:themeElements></a:theme>");
+AddWordXml(unusedThemeB,"word/theme/theme1.xml","<a:theme xmlns:a='"+A_NS+"' name='T'><a:themeElements><a:clrScheme name='C'><a:dk1><a:srgbClr val='000000'/></a:dk1><a:lt1><a:srgbClr val='FFFFFF'/></a:lt1><a:accent1><a:srgbClr val='0000FF'/></a:accent1></a:clrScheme></a:themeElements></a:theme>");
+await eng.ExportWordAsync(unusedThemeA,unusedThemeB,unusedThemeO,"T",true);
+Check(File.Exists(unusedThemeO),"unused theme change was falsely blocked");
+Console.WriteLine("PASS UNUSED-THEME CHANGE ALLOWED");
+
+// 122. Replacing one non-empty numPr with another while the rendered label stays the same
+// must not be silently inherited from B. ApplyTrackedNumberingDiff only emits a revision when
+// the visible label changes.
+var numRefA=Path.Combine(dir,"numRefA.docx");var numRefB=Path.Combine(dir,"numRefB.docx");var numRefO=Path.Combine(dir,"numRefOut.docx");
+var numRefPA="<w:p><w:pPr><w:numPr><w:ilvl w:val='0'/><w:numId w:val='1'/></w:numPr></w:pPr><w:r><w:t>Alpha</w:t></w:r></w:p>";
+var numRefPB="<w:p><w:pPr><w:numPr><w:ilvl w:val='0'/><w:numId w:val='2'/></w:numPr></w:pPr><w:r><w:t>Alpha</w:t></w:r></w:p>";
+Make(numRefA,numRefPA);Make(numRefB,numRefPB);
+var sameNumbering="<w:numbering xmlns:w='"+W+"'><w:abstractNum w:abstractNumId='1'><w:lvl w:ilvl='0'><w:start w:val='1'/><w:numFmt w:val='decimal'/><w:lvlText w:val='%1.'/></w:lvl></w:abstractNum><w:num w:numId='1'><w:abstractNumId w:val='1'/></w:num><w:num w:numId='2'><w:abstractNumId w:val='1'/></w:num></w:numbering>";
+AddWordXml(numRefA,"word/numbering.xml",sameNumbering);AddWordXml(numRefB,"word/numbering.xml",sameNumbering);
+var numRefBlocked=false;
+try{await eng.ExportWordAsync(numRefA,numRefB,numRefO,"T",true);}
+catch(InvalidOperationException){numRefBlocked=true;}
+Check(numRefBlocked,"same-label non-empty numPr replacement was silently inherited from B");
+Console.WriteLine("PASS SAME-LABEL NUMPR REPLACEMENT SAFETY");
+
+// 123. Deleting a page/column/clear break must not silently degrade to an ordinary manual break.
+var pageBreakA=Path.Combine(dir,"pageBreakA.docx");var pageBreakB=Path.Combine(dir,"pageBreakB.docx");var pageBreakO=Path.Combine(dir,"pageBreakOut.docx");
+Make(pageBreakA,"<w:p><w:r><w:t>Alpha</w:t><w:br w:type='page'/><w:t>Beta</w:t></w:r></w:p>");
+Make(pageBreakB,P("AlphaBeta"));
+var pageBreakBlocked=false;
+try{await eng.ExportWordAsync(pageBreakA,pageBreakB,pageBreakO,"T",true);}
+catch(InvalidOperationException){pageBreakBlocked=true;}
+Check(pageBreakBlocked,"page break deletion degraded to an ordinary manual break");
+Console.WriteLine("PASS SPECIAL-BREAK DELETION SAFETY");
+
 Console.WriteLine("ALL REGRESSIONS PASSED");
