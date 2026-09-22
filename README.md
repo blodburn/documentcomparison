@@ -9,12 +9,13 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.20.19**
+**V5.20.20**
 
-- Fix whitespace-only comparison markers so edits such as `동의없이` → `동의 없이` are reported with the changed lexical boundary instead of the meaningless `없이` → `없이`.
-- Detect spacing insertions and deletions before Korean morph-style refinement, preserving accurate character ranges and clickable change locations.
-- Preserve the V5.20.18 structure-first lineage, table, 3-way comparison, atomic export, and Word OpenXML safety behavior without regression.
-- Expand the clean regression suite to 104 adversarial cases, including both Korean spacing insertion and spacing deletion directions.
+- Harden Word Track Changes export so unsupported formatting-only changes are rejected instead of being silently inherited from revised document B. This covers paragraph/run formatting, table/cell/section formatting, referenced/default/table styles, theme-dependent formatting, and numbering layout/appearance.
+- Preserve structural Word controls during tracked revisions: manual breaks and tabs remain `w:br`/`w:tab`; soft hyphen, no-break hyphen, and page/column/clear breaks are guarded when the current string model cannot reproduce them faithfully.
+- Tighten numbering safety so supported numbering insertion/removal remains tracked while same-label `numPr` replacement or untracked numbering-format changes cannot slip through.
+- Avoid false blocking from unused theme changes and repeated duplicate text while keeping the existing structure-first comparison and lineage behavior intact.
+- Expand the clean regression suite to 123 adversarial cases; the full suite passes with zero build warnings/errors before release.
 
 ## Features
 
