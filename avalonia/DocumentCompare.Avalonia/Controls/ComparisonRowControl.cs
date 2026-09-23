@@ -230,7 +230,7 @@ public sealed class ComparisonRowControl : UserControl
         // underline to leak into neighbouring unchanged words.
         var byAnchor = placements.GroupBy(x => MarkerAnchor(raw, x.Start, x.End))
             .ToDictionary(g => g.Key, g => g.ToList());
-        var emittedButtons = new HashSet<(int Anchor, int Num)>();
+        var emittedButtons = new HashSet<int>();
         var cursor = 0;
         foreach (var seg in segments)
         {
@@ -243,7 +243,7 @@ public sealed class ComparisonRowControl : UserControl
                 if (anchor > local)
                     AddStyledPiece(tb, raw.Substring(local, anchor - local), seg.Style, local, placements, bold);
                 foreach (var placement in byAnchor[anchor])
-                    if (emittedButtons.Add((anchor, placement.Num)))
+                    if (emittedButtons.Add(placement.Num))
                         tb.Inlines!.Add(new InlineUIContainer(BuildMarkerBadge(placement)) { BaselineAlignment = BaselineAlignment.Baseline });
                 local = anchor;
             }
@@ -258,7 +258,7 @@ public sealed class ComparisonRowControl : UserControl
         if (byAnchor.TryGetValue(raw.Length, out var tail))
         {
             foreach (var placement in tail)
-                if (emittedButtons.Add((raw.Length, placement.Num)))
+                if (emittedButtons.Add(placement.Num))
                     tb.Inlines!.Add(new InlineUIContainer(BuildMarkerBadge(placement)) { BaselineAlignment = BaselineAlignment.Baseline });
         }
         return tb;

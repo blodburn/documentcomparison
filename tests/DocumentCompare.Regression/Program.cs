@@ -1367,4 +1367,32 @@ catch(InvalidOperationException){pageBreakBlocked=true;}
 Check(pageBreakBlocked,"page break deletion degraded to an ordinary manual break");
 Console.WriteLine("PASS SPECIAL-BREAK DELETION SAFETY");
 
+
+// 124. Multiple word-level edits inside one numbered/circled legal item must remain one
+// reviewer-visible change number. Exact changed spans stay as multiple endpoints under that
+// one logical marker, so ② does not explode into [1]...[6].
+var groupedA=Path.Combine(dir,"groupedItemA.txt");var groupedB=Path.Combine(dir,"groupedItemB.txt");
+File.WriteAllText(groupedA,string.Join("\n",new[]{
+    "제3조(개인정보의 보유기간 및 이용자 탈퇴)",
+    "① 회사는 이용자로부터 수집한 개인정보를 이용자 자격이 유지되는 동안 보유 및 이용합니다.",
+    "② 회사는 관련 법령에 의한 개인정보 보유 사유가 있는 경우에는 제1항에도 불구하고 상법, 전자상거래 등에서의 소비자보호에 관한 법률 등 관계법령의 규정에서 정한 일정한 기간 동안 개인정보를 보관합니다.",
+    "1. 표시·광고에 관한 기록: 6개월",
+    "2. 계약 또는 청약 철회 등에 관한 기록: 5년",
+    "③ 이용자 탈퇴를 신청하시면 해당 계정은 즉시 탈퇴 처리됩니다."
+}));
+File.WriteAllText(groupedB,string.Join("\n",new[]{
+    "제3조(개인정보의 보유기간 및 이용자 탈퇴)",
+    "① 회사는 이용자로부터 수집한 개인정보를 이용자 자격이 유지되는 동안 보유 및 이용합니다.",
+    "② 회사는 관계 법령에 따라 개인정보를 보존할 의무가 있는 경우 제1항에도 불구하고 해당 개인정보에 한하여 법령에서 정한 기간동안 개인정보를 보관할 수 있습니다.",
+    "1. 표시·광고에 관한 기록: 6개월",
+    "2. 계약 또는 청약 철회 등에 관한 기록: 5년",
+    "③ 이용자 탈퇴를 신청하시면 해당 계정은 즉시 탈퇴 처리됩니다."
+}));
+var grouped=await eng.CompareAsync(new[]{groupedA,groupedB},0,"legal",true,true);
+var groupedRow=grouped.Rows.FirstOrDefault(r=>r.Members[0]?.Number=="3") ?? grouped.Rows.First(r=>r.Members.Any(m=>m?.Text.Contains("제3조") == true));
+Check(groupedRow.Markers.Count==1,"numbered-item rewrite fragmented into multiple review markers: "+groupedRow.Markers.Count+" | "+string.Join(" | ",groupedRow.DisplayMessages));
+Check(groupedRow.Markers[0].Message.Contains("② 변경"),"numbered-item label missing from grouped review message: "+groupedRow.Markers[0].Message);
+Check(groupedRow.Markers[0].Endpoints.Count>2,"fine changed spans were not retained under the grouped item marker");
+Console.WriteLine("PASS NUMBERED ITEM CHANGE GROUPING");
+
 Console.WriteLine("ALL REGRESSIONS PASSED");

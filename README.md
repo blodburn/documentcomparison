@@ -9,16 +9,13 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.20.22**
+**V5.20.23**
 
-- Restored fine-grained change markers for heavily edited paragraphs so the review pane matches Word Track Changes more closely.
-- Improved two-document readability with a compact optional C column and wider change-review pane.
-- Reduced UI layout overhead by combining document/change rows and removing global repeated height synchronization.
-
-- Fix Word Track Changes export falsely failing when A and B have ordinary Word formatting/style/layout differences. DOCX→DOCX export again preserves revised document B formatting as intended while tracking content changes.
-- Keep structural/non-text safety guards for relationships, fields, soft/no-break hyphens, and special page/column/clear breaks where lossy reconstruction would be unsafe.
-- Fix the UI status text remaining at `비교 중... 100%` after comparison had already completed.
-- Full regression suite: 123/123 passed with zero build warnings/errors.
+- Treat each numbered/circled legal item (for example `②`, `1.`, `(a)`) as one reviewer-visible change number, even when several words inside that item changed.
+- Preserve the exact fine-grained changed spans under that one marker, so red/blue highlighting stays precise without producing `[1]...[6]` clutter inside a single item.
+- Show the structural item label in the Changes pane (for example `② 변경`, `5. 추가`, `3. 삭제`) so reviewers can understand the change without reconstructing fragments.
+- Render only one `[n]` badge per logical marker in each document column, while all changed spans belonging to that marker remain highlighted.
+- Full regression suite: 124/124 passed with zero build warnings/errors.
 
 ## Features
 
