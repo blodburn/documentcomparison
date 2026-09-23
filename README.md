@@ -14,8 +14,7 @@ It is designed for general documents as well as structured legal, policy, and re
 - Rebalanced changes inside numbered/circled legal items: a heavily edited item is now shown as a few meaningful phrase-level hunks instead of either one whole-item replacement or many word-level fragments.
 - Prefix phrase-level review messages with the structural item label (for example `② 변경`) so every change keeps its clause context.
 - Apply the same compact review anchors to Word Track Changes export, keeping stable unchanged phrases visible between revision blocks instead of producing one visually dense red/blue replacement span.
-- Added regression coverage for the reported 제3조② pattern: the UI resolves it to 2 readable hunks and Word export to 2 del/ins pairs (4 revision nodes).
-- Full regression suite: 125/125 passed with zero build warnings/errors.
+- Full regression suite passed with zero build warnings/errors.
 
 ## Features
 
