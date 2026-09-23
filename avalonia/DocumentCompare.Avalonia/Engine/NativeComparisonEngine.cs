@@ -1181,18 +1181,12 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             var wholePlainRewrite = ap.Label == "본문" && bp.Label == "본문" && oldParts.Count == 1 && newParts.Count == 1 && m.Score < .72;
             var wholeItemRewrite = IsStructuralLabel(ap.Label) && IsStructuralLabel(bp.Label) && m.Score <= .56 && !HasReviewAnchors(ap.Core, bp.Core) && !HasStableEdgeContext(ap.Core, bp.Core);
             if (wholePlainRewrite || wholeItemRewrite)
-            {
                 result.Add(NativeMarker.Change(pair, pairOrder, oldDoc, newDoc, ap.Core.Trim(), bp.Core.Trim(),
                     bodyOffsetOld + ap.CoreStart, bodyOffsetOld + ap.CoreEnd,
                     bodyOffsetNew + bp.CoreStart, bodyOffsetNew + bp.CoreEnd, "body", m.Old, 0));
-            }
             else
-            {
                 result.AddRange(DiffText(ap.Core, bp.Core, bodyOffsetOld + ap.CoreStart, bodyOffsetNew + bp.CoreStart,
-                    oldDoc, newDoc, pair, pairOrder, "body", includePunctuation, m.Old,
-                    compactReview: IsStructuralLabel(ap.Label) && IsStructuralLabel(bp.Label),
-                    itemLabel: IsStructuralLabel(bp.Label) ? bp.Label : null));
-            }
+                    oldDoc, newDoc, pair, pairOrder, "body", includePunctuation, m.Old));
         }
 
         foreach (var i in Enumerable.Range(0, oldParts.Count).Where(i => !usedOld.Contains(i)))
@@ -1203,11 +1197,8 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             { structural.Add($"{pair} · 항/호 이동: {old.HeaderOrBody} {part.Label} → {to.Header} {to.Label}"); continue; }
             bodyChanged = true;
             var newAnchor = bodyOffsetNew + StructuralGapAnchor(oldParts, newParts, matched, i, sourceIsNew: false);
-            result.Add(IsStructuralLabel(part.Label)
-                ? NativeMarker.ItemDelete(pair, pairOrder, oldDoc, newDoc, part.Label, part.Core.Trim(),
-                    bodyOffsetOld + part.Start, bodyOffsetOld + part.CoreEnd, newAnchor, "body", i)
-                : NativeMarker.Delete(pair, pairOrder, oldDoc, newDoc, part.Core.Trim(),
-                    bodyOffsetOld + part.Start, bodyOffsetOld + part.CoreEnd, newAnchor, "body", i));
+            result.Add(NativeMarker.Delete(pair, pairOrder, oldDoc, newDoc, part.Core.Trim(),
+                bodyOffsetOld + part.Start, bodyOffsetOld + part.CoreEnd, newAnchor, "body", i));
         }
         foreach (var j in Enumerable.Range(0, newParts.Count).Where(j => !usedNew.Contains(j)))
         {
@@ -1217,11 +1208,8 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             { structural.Add($"{pair} · 항/호 이동: {from.Header} {from.Label} → {revised.HeaderOrBody} {part.Label}"); continue; }
             bodyChanged = true;
             var oldAnchor = bodyOffsetOld + StructuralGapAnchor(newParts, oldParts, matched, j, sourceIsNew: true);
-            result.Add(IsStructuralLabel(part.Label)
-                ? NativeMarker.ItemInsert(pair, pairOrder, oldDoc, newDoc, part.Label, part.Core.Trim(), oldAnchor,
-                    bodyOffsetNew + part.Start, bodyOffsetNew + part.CoreEnd, "body", j)
-                : NativeMarker.Insert(pair, pairOrder, oldDoc, newDoc, part.Core.Trim(), oldAnchor,
-                    bodyOffsetNew + part.Start, bodyOffsetNew + part.CoreEnd, "body", j));
+            result.Add(NativeMarker.Insert(pair, pairOrder, oldDoc, newDoc, part.Core.Trim(), oldAnchor,
+                bodyOffsetNew + part.Start, bodyOffsetNew + part.CoreEnd, "body", j));
         }
         result = CoalesceLocationReplacements(result, oldDoc, newDoc);
         var substantive = titleChanged || bodyChanged || structureChanged;
@@ -1394,7 +1382,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
 
     private static List<NativeMarker> DiffText(
         string oldText, string newText, int oldBase, int newBase, int oldDoc, int newDoc,
-        string pair, int pairOrder, string part, bool includePunctuation, int itemOrder, bool compactReview = false, string? itemLabel = null)
+        string pair, int pairOrder, string part, bool includePunctuation, int itemOrder)
     {
         if (SemanticEqual(oldText, newText)) return new();
         var whitespace = TryWhitespaceBoundaryDiff(
@@ -1404,14 +1392,11 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         if (korean is not null) return korean;
         var a = LexTokens(oldText); var b = LexTokens(newText);
         var matches = MatcherPairs(a.Select(x => TokenKey(x.Text)).ToArray(), b.Select(x => TokenKey(x.Text)).ToArray());
-        if (compactReview && RawChangeGapCount(a.Count, b.Count, matches) >= 4)
-        {
-            var strong = StrongReviewMatches(a, b, matches);
-            if (strong.Count > 0) matches = strong;
-        }
-        // For structured items with many edits, compactReview keeps only substantial
-        // unchanged runs as separators. This preserves readable phrase-level changes instead
-        // of either a marker per word or one whole-item replacement.
+        // Common glue words must not split one logical rewrite into dozens of markers.
+        // If the fine LCS would create a marker storm, keep only meaningful equal runs as
+        // anchors (the/of/and/및/또는 etc. stay inside the surrounding replacement hunk).
+        // Keep every stable token anchor so the UI follows the same fine-grained change
+        // boundaries as Word Track Changes instead of collapsing a heavily edited paragraph.
         var anchors = new List<(int A, int B)> { (-1, -1) };
         anchors.AddRange(matches);
         anchors.Add((a.Count, b.Count));
@@ -1437,7 +1422,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
                     pair, pairOrder, oldDoc, newDoc, oTrim, nTrim,
                     oldBase + oldStart + oDelta, oldBase + oldEnd,
                     newBase + newStart + nDelta, newBase + newEnd,
-                    part, itemOrder, k, itemLabel));
+                    part, itemOrder, k));
             }
             else if (ot.Length > 0)
             {
@@ -1447,7 +1432,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
                     var anchor = MapBoundary(oldText, newText, piece.Start);
                     result.Add(NativeMarker.Delete(
                         pair, pairOrder, oldDoc, newDoc, piece.Text.Trim(),
-                        oldBase + piece.Start, oldBase + piece.End, newBase + anchor, part, itemOrder, k, itemLabel));
+                        oldBase + piece.Start, oldBase + piece.End, newBase + anchor, part, itemOrder, k));
                 }
             }
             else if (nt.Length > 0)
@@ -1458,7 +1443,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
                     var anchor = MapBoundary(newText, oldText, piece.Start);
                     result.Add(NativeMarker.Insert(
                         pair, pairOrder, oldDoc, newDoc, piece.Text.Trim(),
-                        oldBase + anchor, newBase + piece.Start, newBase + piece.End, part, itemOrder, k, itemLabel));
+                        oldBase + anchor, newBase + piece.Start, newBase + piece.End, part, itemOrder, k));
                 }
             }
         }
@@ -2753,47 +2738,29 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         };
 
         public static NativeMarker Change(string pair, int order, int oldDoc, int newDoc, string oldText, string newText,
-            int oldStart, int oldEnd, int newStart, int newEnd, string part, int itemOrder, int hunkOrder, string? contextLabel = null) => new()
+            int oldStart, int oldEnd, int newStart, int newEnd, string part, int itemOrder, int hunkOrder) => new()
         {
             Pair = pair, PairOrder = order, RelativeDoc = newDoc, TargetDoc = newDoc, Action = "변경", Text = newText,
             CharStart = newStart, CharEnd = newEnd, Part = part, ItemOrder = itemOrder, HunkOrder = hunkOrder,
-            Message = string.IsNullOrWhiteSpace(contextLabel) ? $"변경: “{oldText}” → “{newText}”" : $"{contextLabel} 변경: “{oldText}” → “{newText}”",
+            Message = $"변경: “{oldText}” → “{newText}”",
             Endpoints = new() { new() { TargetDoc = oldDoc, CharStart = oldStart, CharEnd = oldEnd }, new() { TargetDoc = newDoc, CharStart = newStart, CharEnd = newEnd } }
         };
 
-        public static NativeMarker ItemDelete(string pair, int order, int oldDoc, int newDoc, string label, string text,
-            int oldStart, int oldEnd, int newAnchor, string part, int itemOrder) => new()
-        {
-            Pair = pair, PairOrder = order, RelativeDoc = newDoc, TargetDoc = oldDoc, Action = "삭제", Text = text,
-            CharStart = oldStart, CharEnd = oldEnd, Part = part, ItemOrder = itemOrder, HunkOrder = 999,
-            Message = $"{label} 삭제: “{text}”",
-            Endpoints = new() { new() { TargetDoc = oldDoc, CharStart = oldStart, CharEnd = oldEnd }, new() { TargetDoc = newDoc, CharStart = newAnchor, CharEnd = newAnchor } }
-        };
-
-        public static NativeMarker ItemInsert(string pair, int order, int oldDoc, int newDoc, string label, string text,
-            int oldAnchor, int newStart, int newEnd, string part, int itemOrder) => new()
-        {
-            Pair = pair, PairOrder = order, RelativeDoc = newDoc, TargetDoc = newDoc, Action = "추가", Text = text,
-            CharStart = newStart, CharEnd = newEnd, Part = part, ItemOrder = itemOrder, HunkOrder = 999,
-            Message = $"{label} 추가: “{text}”",
-            Endpoints = new() { new() { TargetDoc = oldDoc, CharStart = oldAnchor, CharEnd = oldAnchor }, new() { TargetDoc = newDoc, CharStart = newStart, CharEnd = newEnd } }
-        };
-
         public static NativeMarker Delete(string pair, int order, int oldDoc, int newDoc, string text,
-            int oldStart, int oldEnd, int newAnchor, string part, int itemOrder, int hunkOrder = 999, string? contextLabel = null) => new()
+            int oldStart, int oldEnd, int newAnchor, string part, int itemOrder, int hunkOrder = 999) => new()
         {
             Pair = pair, PairOrder = order, RelativeDoc = newDoc, TargetDoc = oldDoc, Action = "삭제", Text = text,
             CharStart = oldStart, CharEnd = oldEnd, Part = part, ItemOrder = itemOrder, HunkOrder = hunkOrder,
-            Message = string.IsNullOrWhiteSpace(contextLabel) ? $"삭제: “{text}”" : $"{contextLabel} 삭제: “{text}”",
+            Message = $"삭제: “{text}”",
             Endpoints = new() { new() { TargetDoc = oldDoc, CharStart = oldStart, CharEnd = oldEnd }, new() { TargetDoc = newDoc, CharStart = newAnchor, CharEnd = newAnchor } }
         };
 
         public static NativeMarker Insert(string pair, int order, int oldDoc, int newDoc, string text,
-            int oldAnchor, int newStart, int newEnd, string part, int itemOrder, int hunkOrder = 999, string? contextLabel = null) => new()
+            int oldAnchor, int newStart, int newEnd, string part, int itemOrder, int hunkOrder = 999) => new()
         {
             Pair = pair, PairOrder = order, RelativeDoc = newDoc, TargetDoc = newDoc, Action = "추가", Text = text,
             CharStart = newStart, CharEnd = newEnd, Part = part, ItemOrder = itemOrder, HunkOrder = hunkOrder,
-            Message = string.IsNullOrWhiteSpace(contextLabel) ? $"추가: “{text}”" : $"{contextLabel} 추가: “{text}”",
+            Message = $"추가: “{text}”",
             Endpoints = new() { new() { TargetDoc = oldDoc, CharStart = oldAnchor, CharEnd = oldAnchor }, new() { TargetDoc = newDoc, CharStart = newStart, CharEnd = newEnd } }
         };
     }

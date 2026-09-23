@@ -9,11 +9,11 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.20.24**
+**V5.20.25**
 
-- Rebalanced changes inside numbered/circled legal items: a heavily edited item is now shown as a few meaningful phrase-level hunks instead of either one whole-item replacement or many word-level fragments.
-- Prefix phrase-level review messages with the structural item label (for example `② 변경`) so every change keeps its clause context.
-- Apply the same compact review anchors to Word Track Changes export, keeping stable unchanged phrases visible between revision blocks instead of producing one visually dense red/blue replacement span.
+- Decoupled the on-screen review presentation from Word Track Changes export so each output can use the review granularity best suited to its purpose.
+- Restored the finer on-screen change markers used before the recent numbered-item grouping changes.
+- Kept the improved Word export revision grouping and stable-anchor handling.
 - Full regression suite passed with zero build warnings/errors.
 
 ## Features

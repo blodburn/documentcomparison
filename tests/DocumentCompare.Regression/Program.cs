@@ -1368,9 +1368,9 @@ Check(pageBreakBlocked,"page break deletion degraded to an ordinary manual break
 Console.WriteLine("PASS SPECIAL-BREAK DELETION SAFETY");
 
 
-// 124. Multiple word-level edits inside one numbered/circled legal item must remain one
-// reviewer-visible change number. Exact changed spans stay as multiple endpoints under that
-// one logical marker, so ② does not explode into [1]...[6].
+// 124. The on-screen comparison intentionally keeps the fine-grained V5.20.22 review model.
+// Several distinct phrase/word replacements inside one numbered legal item remain separate
+// reviewer markers; Word export is allowed to use a different presentation model.
 var groupedA=Path.Combine(dir,"groupedItemA.txt");var groupedB=Path.Combine(dir,"groupedItemB.txt");
 File.WriteAllText(groupedA,string.Join("\n",new[]{
     "제3조(개인정보의 보유기간 및 이용자 탈퇴)",
@@ -1390,14 +1390,13 @@ File.WriteAllText(groupedB,string.Join("\n",new[]{
 }));
 var grouped=await eng.CompareAsync(new[]{groupedA,groupedB},0,"legal",true,true);
 var groupedRow=grouped.Rows.FirstOrDefault(r=>r.Members[0]?.Number=="3") ?? grouped.Rows.First(r=>r.Members.Any(m=>m?.Text.Contains("제3조") == true));
-Check(groupedRow.Markers.Count is >=2 and <=5,"numbered-item rewrite was over-fragmented or over-collapsed: "+groupedRow.Markers.Count+" | "+string.Join(" | ",groupedRow.DisplayMessages));
-Check(groupedRow.Markers.All(m=>m.Message.Contains("② 변경")),"numbered-item label missing from phrase-level review message: "+string.Join(" | ",groupedRow.Markers.Select(m=>m.Message)));
-Check(groupedRow.Markers.Any(m=>m.Message.Contains("제1항에도 불구하고") == false),"review hunks were not split into readable phrases");
-Console.WriteLine("PASS BALANCED NUMBERED ITEM REVIEW HUNKS: "+groupedRow.Markers.Count+" hunks");
+Check(groupedRow.Markers.Count==6,"V5.20.22 UI review granularity changed: "+groupedRow.Markers.Count+" | "+string.Join(" | ",groupedRow.DisplayMessages));
+Check(groupedRow.Markers.Any(m=>m.Message.Contains("관련")&&m.Message.Contains("관계")),"fine-grained legal-item replacement marker missing");
+Check(groupedRow.Markers.Any(m=>m.Message.Contains("의한 개인정보 보유 사유가")&&m.Message.Contains("따라 개인정보를 보존할 의무가")),"second fine-grained legal-item replacement marker missing");
+Console.WriteLine("PASS V5.20.22 UI REVIEW GRANULARITY");
 
-// 125. Word Track Changes should use the same balanced review granularity for a heavily
-// rewritten legal item: several phrase-level del/ins pairs, not one giant replacement and
-// not a micro-revision for every changed word.
+// 125. Word Track Changes uses its own V5.20.24 export granularity. It may deliberately
+// differ from the on-screen marker count while preserving readable stable anchors.
 var balancedWordA=Path.Combine(dir,"balancedWordA.docx");var balancedWordB=Path.Combine(dir,"balancedWordB.docx");var balancedWordO=Path.Combine(dir,"balancedWordOut.docx");
 var balancedOld="② 회사는 관련 법령에 의한 개인정보 보유 사유가 있는 경우에는 제1항에도 불구하고 상법, 전자상거래 등에서의 소비자보호에 관한 법률 등 관계법령의 규정에서 정한 일정한 기간 동안 개인정보를 보관합니다. 이 경우 회사는 보관하는 정보를 별도 분리 보관하며, 보관기간은 다음 각 호와 같습니다.";
 var balancedNew="② 회사는 관계 법령에 따라 개인정보를 보존할 의무가 있는 경우 제1항에도 불구하고 해당 개인정보에 한하여 법령에서 정한 기간동안 개인정보를 보관할 수 있습니다. 이 경우 회사는 보관하는 정보를 별도 분리 보관하며, 보관기간은 다음 각 호와 같습니다.";
