@@ -13,6 +13,12 @@ internal static class NativeOfficeExporter
     private const string R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
     private static readonly Regex ExportTokenRegex = new(
         @"[가-힣A-Za-z0-9_]+|\s+|[^가-힣A-Za-z0-9_\s]", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly HashSet<string> ExportReviewStopWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "a","an","the","and","or","of","to","in","on","at","by","for","from","with","as","is","are","was","were","be","been","being",
+        "this","that","these","those","it","its","their","there","here","such","any","all","other","between","within","through","under",
+        "및","또는","그","이","저","의","에","에서","으로","로","를","을","은","는","가","이"
+    };
     private static readonly HashSet<string> TrackedRevisionNames = new(StringComparer.Ordinal)
     {
         "ins", "del", "moveFrom", "moveTo", "moveFromRangeStart", "moveFromRangeEnd",
@@ -1133,7 +1139,7 @@ internal static class NativeOfficeExporter
     {
         if (NativeComparisonEngine.SemanticEqual(oldText, newText)) return;
         var a = Tokens(oldText); var b = Tokens(newText);
-        var matches = Lcs(a.Select(x => Key(x.Text)).ToArray(), b.Select(x => Key(x.Text)).ToArray());
+        var matches = CompactReviewMatches(a, b, Lcs(a.Select(x => Key(x.Text)).ToArray(), b.Select(x => Key(x.Text)).ToArray()));
         var anchors = new List<(int A, int B)> { (-1, -1) }; anchors.AddRange(matches); anchors.Add((a.Count, b.Count));
         var inserts = new List<(int Start, int End)>();
         var deletes = new List<(int Anchor, string Text)>();
@@ -2740,7 +2746,7 @@ internal static class NativeOfficeExporter
         var p = new XElement(w + "p");
         if (properties is not null) p.Add(new XElement(properties));
         var a = Tokens(oldText); var b = Tokens(newText);
-        var matches = Lcs(a.Select(x => Key(x.Text)).ToArray(), b.Select(x => Key(x.Text)).ToArray());
+        var matches = CompactReviewMatches(a, b, Lcs(a.Select(x => Key(x.Text)).ToArray(), b.Select(x => Key(x.Text)).ToArray()));
         var anchors = new List<(int A, int B)> { (-1, -1) }; anchors.AddRange(matches); anchors.Add((a.Count, b.Count));
         for (var k = 0; k < anchors.Count - 1; k++)
         {
@@ -2845,6 +2851,41 @@ internal static class NativeOfficeExporter
         if (start >= end) return ""; return source[tokens[start].Start..tokens[end - 1].End];
     }
     private static bool PunctuationOnly(string value) => !string.IsNullOrWhiteSpace(value) && value.Where(x => !char.IsWhiteSpace(x)).All(x => !char.IsLetterOrDigit(x));
+
+    private static List<(int A, int B)> CompactReviewMatches(
+        IReadOnlyList<SpanToken> a, IReadOnlyList<SpanToken> b, IReadOnlyList<(int A, int B)> matches)
+    {
+        var gaps = 0; var pa = -1; var pb = -1;
+        foreach (var m in matches.Append((A: a.Count, B: b.Count)))
+        {
+            if (m.A > pa + 1 || m.B > pb + 1) gaps++;
+            pa = m.A; pb = m.B;
+        }
+        if (gaps < 4) return matches.ToList();
+
+        var kept = new List<(int A, int B)>();
+        for (var i = 0; i < matches.Count;)
+        {
+            var start = i; var end = i + 1;
+            while (end < matches.Count && matches[end].A == matches[end - 1].A + 1 && matches[end].B == matches[end - 1].B + 1)
+                end++;
+            var words = matches.Skip(start).Take(end - start)
+                .Select(x => a[x.A].Text)
+                .Where(x => x.Any(char.IsLetterOrDigit))
+                .ToList();
+            var content = words.Where(x => !ExportReviewStopWords.Contains(Key(x))).ToList();
+            var contentChars = content.Sum(x => x.Length);
+            var hangulChars = words.Sum(x => x.Count(ch => ch is >= '가' and <= '힣'));
+            var strong = words.Count >= 4 ||
+                         (content.Count >= 2 && contentChars >= 13) ||
+                         (words.Count >= 2 && content.Any(x => x.Length >= 11)) ||
+                         (words.Count >= 2 && hangulChars >= 5);
+            if (strong)
+                for (var k = start; k < end; k++) kept.Add(matches[k]);
+            i = end;
+        }
+        return kept.Count > 0 ? kept : matches.ToList();
+    }
 
     private static List<(int A, int B)> Lcs(string[] a, string[] b)
     {

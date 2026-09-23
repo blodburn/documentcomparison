@@ -9,13 +9,13 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.20.23**
+**V5.20.24**
 
-- Treat each numbered/circled legal item (for example `②`, `1.`, `(a)`) as one reviewer-visible change number, even when several words inside that item changed.
-- Preserve the exact fine-grained changed spans under that one marker, so red/blue highlighting stays precise without producing `[1]...[6]` clutter inside a single item.
-- Show the structural item label in the Changes pane (for example `② 변경`, `5. 추가`, `3. 삭제`) so reviewers can understand the change without reconstructing fragments.
-- Render only one `[n]` badge per logical marker in each document column, while all changed spans belonging to that marker remain highlighted.
-- Full regression suite: 124/124 passed with zero build warnings/errors.
+- Rebalanced changes inside numbered/circled legal items: a heavily edited item is now shown as a few meaningful phrase-level hunks instead of either one whole-item replacement or many word-level fragments.
+- Prefix phrase-level review messages with the structural item label (for example `② 변경`) so every change keeps its clause context.
+- Apply the same compact review anchors to Word Track Changes export, keeping stable unchanged phrases visible between revision blocks instead of producing one visually dense red/blue replacement span.
+- Added regression coverage for the reported 제3조② pattern: the UI resolves it to 2 readable hunks and Word export to 2 del/ins pairs (4 revision nodes).
+- Full regression suite: 125/125 passed with zero build warnings/errors.
 
 ## Features
 
