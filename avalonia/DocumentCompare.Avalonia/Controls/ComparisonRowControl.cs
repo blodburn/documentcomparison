@@ -14,6 +14,7 @@ public sealed class ComparisonRowControl : UserControl
 {
     private readonly ComparisonRowVm _row;
     private readonly int _docCount;
+    private readonly int _activeDocumentCount;
     private readonly Action<int, int, int, double>? _markerActivated;
     private readonly UiLanguage _language;
     private readonly Dictionary<int, List<(Control Control, string Role, string Pair)>> _markerVisuals = new();
@@ -68,10 +69,16 @@ public sealed class ComparisonRowControl : UserControl
     private static readonly IBrush SectionBrush = new SolidColorBrush(Color.Parse("#EAF1F7"));
     private static readonly IBrush CellBorderBrush = new SolidColorBrush(Color.Parse("#9AA4B2"));
 
-    public ComparisonRowControl(ComparisonRowVm row, int docCount, Action<int, int, int, double>? markerActivated = null, UiLanguage language = UiLanguage.Korean)
+    public ComparisonRowControl(
+        ComparisonRowVm row,
+        int docCount,
+        Action<int, int, int, double>? markerActivated = null,
+        UiLanguage language = UiLanguage.Korean,
+        int? activeDocumentCount = null)
     {
         _row = row;
         _docCount = docCount;
+        _activeDocumentCount = Math.Clamp(activeDocumentCount ?? docCount, 1, docCount);
         _markerActivated = markerActivated;
         _language = language;
         HorizontalAlignment = HorizontalAlignment.Stretch;
@@ -92,7 +99,12 @@ public sealed class ComparisonRowControl : UserControl
         var grid = new Grid();
         grid.HorizontalAlignment = HorizontalAlignment.Stretch;
         for (var i = 0; i < _docCount; i++)
-            grid.ColumnDefinitions.Add(new ColumnDefinition(new GridLength(1, GridUnitType.Star)));
+        {
+            var width = i < _activeDocumentCount
+                ? new GridLength(1, GridUnitType.Star)
+                : new GridLength(150, GridUnitType.Pixel);
+            grid.ColumnDefinitions.Add(new ColumnDefinition(width));
+        }
         return grid;
     }
 
@@ -153,6 +165,8 @@ public sealed class ComparisonRowControl : UserControl
 
     private Control BuildDocumentCell(int docIndex)
     {
+        if (docIndex >= _activeDocumentCount)
+            return new Border();
         if (docIndex >= _row.Members.Count)
             return new Border();
 

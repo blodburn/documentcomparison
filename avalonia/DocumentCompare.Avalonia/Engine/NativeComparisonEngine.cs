@@ -1395,8 +1395,8 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         // Common glue words must not split one logical rewrite into dozens of markers.
         // If the fine LCS would create a marker storm, keep only meaningful equal runs as
         // anchors (the/of/and/및/또는 etc. stay inside the surrounding replacement hunk).
-        if (RawChangeGapCount(a.Count, b.Count, matches) >= 4)
-            matches = StrongReviewMatches(a, b, matches);
+        // Keep every stable token anchor so the UI follows the same fine-grained change
+        // boundaries as Word Track Changes instead of collapsing a heavily edited paragraph.
         var anchors = new List<(int A, int B)> { (-1, -1) };
         anchors.AddRange(matches);
         anchors.Add((a.Count, b.Count));

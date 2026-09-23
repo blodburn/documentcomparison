@@ -9,7 +9,11 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.20.21**
+**V5.20.22**
+
+- Restored fine-grained change markers for heavily edited paragraphs so the review pane matches Word Track Changes more closely.
+- Improved two-document readability with a compact optional C column and wider change-review pane.
+- Reduced UI layout overhead by combining document/change rows and removing global repeated height synchronization.
 
 - Fix Word Track Changes export falsely failing when A and B have ordinary Word formatting/style/layout differences. DOCX→DOCX export again preserves revised document B formatting as intended while tracking content changes.
 - Keep structural/non-text safety guards for relationships, fields, soft/no-break hyphens, and special page/column/clear breaks where lossy reconstruction would be unsafe.

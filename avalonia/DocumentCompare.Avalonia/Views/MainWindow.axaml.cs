@@ -1,4 +1,3 @@
-using System.Collections.ObjectModel;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Templates;
@@ -20,10 +19,7 @@ public partial class MainWindow : Window
     private CancellationTokenSource? _operationCts;
     private CancellationTokenSource? _exportCts;
     private ComparisonResultVm? _result;
-    private readonly ObservableCollection<ComparisonRowVm> _visibleRows = new();
     private readonly string?[] _selectedPaths = new string?[3];
-    private readonly Dictionary<int, ComparisonRowControl> _documentRows = new();
-    private readonly Dictionary<int, ChangeRowControl> _changeRows = new();
     private readonly Dictionary<int, (string Normal, string Compact)> _searchIndex = new();
     private readonly DispatcherTimer _searchDebounceTimer = new() { Interval = TimeSpan.FromMilliseconds(180) };
     private string[] _lastPaths = Array.Empty<string>();
@@ -48,6 +44,7 @@ public partial class MainWindow : Window
     private ComboBoxItem ModeLegalItem = null!;
     private TextBlock SearchLabel = null!;
     private TextBlock ChangeHeaderText = null!;
+    private Grid DocumentHeaderGrid = null!;
     private Border DropA = null!;
     private Border DropB = null!;
     private Border DropC = null!;
@@ -73,16 +70,10 @@ public partial class MainWindow : Window
     private Grid ResultBody = null!;
     private ScrollViewer DocumentScroll = null!;
     private ItemsControl RowsRepeater = null!;
-    private ItemsControl ChangeRowsRepeater = null!;
-    private bool _rowHeightSyncQueued;
-    private bool _rowHeightSyncRunning;
-    private int _rowHeightSyncRetries;
 
     public MainWindow()
     {
         InitializeComponent();
-        RowsRepeater.ItemsSource = _visibleRows;
-        ChangeRowsRepeater.ItemsSource = _visibleRows;
         RegisterDropZone(DropA, 0, "A");
         RegisterDropZone(DropB, 1, "B");
         RegisterDropZone(DropC, 2, "C");
@@ -93,7 +84,6 @@ public partial class MainWindow : Window
         };
         Opened += async (_, _) => await WarmEngineAsync();
         Closed += (_, _) => _ = _engine.DisposeAsync();
-        ResultBody.SizeChanged += (_, _) => ResetAndQueueRowHeightSync();
         ApplyLanguage();
         UpdateBaseRadios();
     }
@@ -113,6 +103,7 @@ public partial class MainWindow : Window
         ModeLegalItem = Require<ComboBoxItem>("ModeLegalItem");
         SearchLabel = Require<TextBlock>("SearchLabel");
         ChangeHeaderText = Require<TextBlock>("ChangeHeaderText");
+        DocumentHeaderGrid = Require<Grid>("DocumentHeaderGrid");
         DropA = Require<Border>("DropA");
         DropB = Require<Border>("DropB");
         DropC = Require<Border>("DropC");
@@ -138,7 +129,6 @@ public partial class MainWindow : Window
         ResultBody = Require<Grid>("ResultBody");
         DocumentScroll = Require<ScrollViewer>("DocumentScroll");
         RowsRepeater = Require<ItemsControl>("RowsRepeater");
-        ChangeRowsRepeater = Require<ItemsControl>("ChangeRowsRepeater");
     }
 
     private T Require<T>(string name) where T : Control =>
@@ -167,7 +157,7 @@ public partial class MainWindow : Window
 
     private void ApplyLanguage()
     {
-        Title = L("문서 비교기 V5.20.21", "Document Compare V5.20.21");
+        Title = L("문서 비교기 V5.20.22", "Document Compare V5.20.22");
         AppTitleText.Text = L("문서 비교기", "Document Compare");
         CompareButton.Content = L("비교 시작", "Compare");
         CancelButton.Content = L("취소", "Cancel");
@@ -265,9 +255,7 @@ public partial class MainWindow : Window
     {
         _result = null;
         _lastPaths = Array.Empty<string>();
-        _documentRows.Clear();
-        _changeRows.Clear();
-        _visibleRows.Clear();
+        RowsRepeater.ItemsSource = null;
         _searchIndex.Clear();
         ResultBody.IsVisible = false;
         ExcelButton.IsEnabled = false;
@@ -309,7 +297,7 @@ public partial class MainWindow : Window
         if (!string.IsNullOrWhiteSpace(path))
             return $"{letter} · {Path.GetFileName(path)}";
         return optional
-            ? L($"{letter} · 파일 선택 또는 드롭 (선택)", $"{letter} · Choose or drop a file (optional)")
+            ? L($"{letter} · 추가 (선택)", $"{letter} · Add (optional)")
             : L($"{letter} · 파일 선택 또는 드롭", $"{letter} · Choose or drop a file");
     }
 
@@ -324,6 +312,8 @@ public partial class MainWindow : Window
         BaseA.IsEnabled = !string.IsNullOrWhiteSpace(_selectedPaths[0]);
         BaseB.IsEnabled = !string.IsNullOrWhiteSpace(_selectedPaths[1]);
         BaseC.IsEnabled = !string.IsNullOrWhiteSpace(_selectedPaths[2]);
+        BaseC.IsVisible = BaseC.IsEnabled;
+        UpdateDocumentColumnLayout(BaseC.IsEnabled ? 3 : 2);
         CompareACBox.IsEnabled = BaseA.IsEnabled && BaseB.IsEnabled && BaseC.IsEnabled;
         if (!CompareACBox.IsEnabled) CompareACBox.IsChecked = false;
 
@@ -336,6 +326,16 @@ public partial class MainWindow : Window
             else if (BaseB.IsEnabled) BaseB.IsChecked = true;
             else if (BaseC.IsEnabled) BaseC.IsChecked = true;
         }
+    }
+
+    private void UpdateDocumentColumnLayout(int activeDocumentCount)
+    {
+        if (DocumentHeaderGrid.ColumnDefinitions.Count < 3) return;
+        DocumentHeaderGrid.ColumnDefinitions[0].Width = new GridLength(1, GridUnitType.Star);
+        DocumentHeaderGrid.ColumnDefinitions[1].Width = new GridLength(1, GridUnitType.Star);
+        DocumentHeaderGrid.ColumnDefinitions[2].Width = activeDocumentCount >= 3
+            ? new GridLength(1, GridUnitType.Star)
+            : new GridLength(150, GridUnitType.Pixel);
     }
 
     private string[] CurrentPaths()
@@ -438,116 +438,17 @@ public partial class MainWindow : Window
     private void RenderResult(ComparisonResultVm result)
     {
         ResultBody.IsVisible = true;
-        // The left document viewport always has three fixed columns, even for a two-document
-        // comparison, so A/B/C stay aligned with the permanent fourth 변경사항 column.
-        _documentRows.Clear();
-        _changeRows.Clear();
+        var activeDocumentCount = Math.Clamp(result.Names.Count, 2, 3);
+        UpdateDocumentColumnLayout(activeDocumentCount);
         RowsRepeater.ItemTemplate = new FuncDataTemplate<ComparisonRowVm>(
             (row, _) =>
             {
                 if (row is null) return new Border();
-                var control = new ComparisonRowControl(row, 3, NavigateMarker, _language);
-                _documentRows[row.Id] = control;
-                control.SizeChanged += (_, _) => QueueRowHeightSync();
-                return control;
-            }, true);
-        ChangeRowsRepeater.ItemTemplate = new FuncDataTemplate<ComparisonRowVm>(
-            (row, _) =>
-            {
-                if (row is null) return new Border();
-                var control = new ChangeRowControl(row, _language);
-                _changeRows[row.Id] = control;
-                control.SizeChanged += (_, _) => QueueRowHeightSync();
-                return control;
+                return new CombinedComparisonRowControl(row, 3, activeDocumentCount, _language);
             }, true);
         RebuildSearchIndex(result);
         ApplySearch();
         DocumentScroll.Offset = Vector.Zero;
-        Dispatcher.UIThread.Post(QueueRowHeightSync, DispatcherPriority.Background);
-    }
-
-    private void NavigateMarker(int rowId, int num, int sourceDocIndex, double markerLocalY)
-    {
-        // The document column that was clicked becomes the reference axis.  First align
-        // matching markers in the other A/B/C columns inside this article row, then align
-        // the article-scoped change pane to the same row-local eye-line.  The outer master
-        // document scroll is never moved.
-        if (_documentRows.TryGetValue(rowId, out var documentRow))
-            documentRow.AlignMarkerAcrossDocuments(sourceDocIndex, num, markerLocalY);
-        if (_changeRows.TryGetValue(rowId, out var changeRow))
-            changeRow.NavigateTo(num, markerLocalY);
-    }
-
-    private void ResetAndQueueRowHeightSync()
-    {
-        foreach (var row in _documentRows.Values)
-            row.SetAlignedContentHeight(0);
-        _rowHeightSyncRetries = 0;
-        QueueRowHeightSync();
-    }
-
-    private void QueueRowHeightSync()
-    {
-        if (_rowHeightSyncQueued || _rowHeightSyncRunning) return;
-        _rowHeightSyncQueued = true;
-        Dispatcher.UIThread.Post(() =>
-        {
-            _rowHeightSyncQueued = false;
-            SyncRowHeights();
-        }, DispatcherPriority.Background);
-    }
-
-    private void SyncRowHeights()
-    {
-        if (_rowHeightSyncRunning) return;
-        _rowHeightSyncRunning = true;
-        try
-        {
-            var waiting = false;
-            foreach (var row in _visibleRows)
-            {
-                if (!_documentRows.TryGetValue(row.Id, out var documentRow) ||
-                    !_changeRows.TryGetValue(row.Id, out var changeRow) ||
-                    documentRow.ContentAnchor is null)
-                {
-                    waiting = true;
-                    continue;
-                }
-
-                var sectionHeight = documentRow.SectionHeight;
-                var documentHeight = documentRow.ContentHeight;
-                var hasSection = row.SectionHeaders.Any(x => !string.IsNullOrWhiteSpace(x));
-                if (documentHeight <= 0 || hasSection && sectionHeight <= 0)
-                {
-                    waiting = true;
-                    continue;
-                }
-
-                // All four columns share one row height.  Use the tallest natural content
-                // among A/B/C and the full change-message stack so wrapped change text is
-                // never clipped by the next article boundary.  The change pane keeps its
-                // internal runway/scroll behavior, but its viewport is at least tall enough
-                // for every change item in this row.
-                var changeHeight = changeRow.NaturalContentHeight;
-                if (changeHeight <= 0)
-                {
-                    waiting = true;
-                    continue;
-                }
-                var alignedHeight = Math.Max(documentHeight, changeHeight);
-                documentRow.SetAlignedContentHeight(alignedHeight);
-                changeRow.SetAlignedLayout(sectionHeight, alignedHeight);
-            }
-
-            if (waiting && _rowHeightSyncRetries++ < 16)
-                DispatcherTimer.RunOnce(QueueRowHeightSync, TimeSpan.FromMilliseconds(20));
-            else
-                _rowHeightSyncRetries = 0;
-        }
-        finally
-        {
-            _rowHeightSyncRunning = false;
-        }
     }
 
     private void SetBusy(bool busy, string? message = null)
@@ -605,12 +506,7 @@ public partial class MainWindow : Window
                  (compact.Length > 0 && text.Compact.Contains(compact, StringComparison.Ordinal))));
         }
         var rows = filtered.ToList();
-        _documentRows.Clear();
-        _changeRows.Clear();
-        _visibleRows.Clear();
-        foreach (var row in rows) _visibleRows.Add(row);
-        _rowHeightSyncRetries = 0;
-        QueueRowHeightSync();
+        RowsRepeater.ItemsSource = rows;
     }
 
     private async void Excel_Click(object? sender, RoutedEventArgs e)

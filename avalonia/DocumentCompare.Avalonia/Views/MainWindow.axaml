@@ -3,7 +3,7 @@
         x:Class="DocumentCompare.Avalonia.Views.MainWindow"
         Width="1700" Height="980" MinWidth="1050" MinHeight="680"
         Icon="/Assets/DocumentCompare.ico"
-        Title="문서 비교기 V5.20.21">
+        Title="문서 비교기 V5.20.22">
   <Grid RowDefinitions="Auto,Auto,Auto,Auto,*" Margin="10">
     <Menu Grid.Row="0" Margin="-4,-4,-4,6">
       <MenuItem x:Name="HelpMenuItem" Header="도움말">
@@ -52,8 +52,8 @@
     <Grid x:Name="ResultArea" Grid.Row="4" RowDefinitions="Auto,*" ClipToBounds="True">
       <!-- Header uses the exact same 3*:1* nesting as the body.  This avoids the 1px
            star-rounding drift that previously made the header dividers miss the body lines. -->
-      <Grid x:Name="ComparisonHeader" Grid.Row="0" Height="48" ColumnDefinitions="3*,*" Background="#EEF2F6">
-        <Grid Grid.Column="0" ColumnDefinitions="*,*,*">
+      <Grid x:Name="ComparisonHeader" Grid.Row="0" Height="48" ColumnDefinitions="5*,2*" Background="#EEF2F6">
+        <Grid x:Name="DocumentHeaderGrid" Grid.Column="0" ColumnDefinitions="*,*,150">
           <Border Grid.Column="0" BorderBrush="#8E99A8" BorderThickness="1,1,1,1">
             <Grid ColumnDefinitions="*,Auto">
               <Border x:Name="DropA" Grid.Column="0" Background="Transparent" DragDrop.AllowDrop="True"
@@ -116,12 +116,7 @@
       <Grid x:Name="ResultBody" Grid.Row="1" IsVisible="False" ClipToBounds="True">
         <ScrollViewer x:Name="DocumentScroll"
                       VerticalScrollBarVisibility="Visible" HorizontalScrollBarVisibility="Disabled">
-          <Grid ColumnDefinitions="3*,*" HorizontalAlignment="Stretch">
-            <ItemsControl x:Name="RowsRepeater" Grid.Column="0" HorizontalAlignment="Stretch"/>
-            <Border Grid.Column="1" BorderBrush="#8E99A8" BorderThickness="0,0,1,1" Background="White">
-              <ItemsControl x:Name="ChangeRowsRepeater" HorizontalAlignment="Stretch"/>
-            </Border>
-          </Grid>
+          <ItemsControl x:Name="RowsRepeater" HorizontalAlignment="Stretch"/>
         </ScrollViewer>
       </Grid>
     </Grid>
