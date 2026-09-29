@@ -1184,21 +1184,6 @@ public sealed class NativeComparisonEngine : IComparisonEngine
                 result.Add(NativeMarker.Change(pair, pairOrder, oldDoc, newDoc, ap.Core.Trim(), bp.Core.Trim(),
                     bodyOffsetOld + ap.CoreStart, bodyOffsetOld + ap.CoreEnd,
                     bodyOffsetNew + bp.CoreStart, bodyOffsetNew + bp.CoreEnd, "body", m.Old, 0));
-            else if (IsStructuralLabel(ap.Label) && IsStructuralLabel(bp.Label) &&
-                     (DefinitionHead(ap.Core).Length > 0 || DefinitionHead(bp.Core).Length > 0))
-            {
-                // A numbered definition is one review unit. Keep V5.20.22's fine changed
-                // spans for highlighting, but expose one marker/message for the definition
-                // so a terminology rewrite does not become a wall of micro-markers.
-                var detail = DiffText(ap.Core, bp.Core, bodyOffsetOld + ap.CoreStart, bodyOffsetNew + bp.CoreStart,
-                    oldDoc, newDoc, pair, pairOrder, "body", includePunctuation, m.Old);
-                if (detail.Count > 0)
-                    result.Add(NativeMarker.ItemChange(pair, pairOrder, oldDoc, newDoc, ap.Label, bp.Label,
-                        ap.Core.Trim(), bp.Core.Trim(),
-                        bodyOffsetOld + ap.CoreStart, bodyOffsetOld + ap.CoreEnd,
-                        bodyOffsetNew + bp.CoreStart, bodyOffsetNew + bp.CoreEnd,
-                        "body", m.Old, detail));
-            }
             else
                 result.AddRange(DiffText(ap.Core, bp.Core, bodyOffsetOld + ap.CoreStart, bodyOffsetNew + bp.CoreStart,
                     oldDoc, newDoc, pair, pairOrder, "body", includePunctuation, m.Old));
@@ -2760,36 +2745,6 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             Message = $"변경: “{oldText}” → “{newText}”",
             Endpoints = new() { new() { TargetDoc = oldDoc, CharStart = oldStart, CharEnd = oldEnd }, new() { TargetDoc = newDoc, CharStart = newStart, CharEnd = newEnd } }
         };
-
-        public static NativeMarker ItemChange(string pair, int order, int oldDoc, int newDoc,
-            string oldLabel, string newLabel, string oldText, string newText,
-            int oldStart, int oldEnd, int newStart, int newEnd, string part, int itemOrder,
-            IReadOnlyList<NativeMarker> details)
-        {
-            var endpoints = new List<MarkerEndpointVm>();
-            foreach (var ep in details.SelectMany(x => x.Endpoints))
-            {
-                if (endpoints.Any(x => x.TargetDoc == ep.TargetDoc && x.CharStart == ep.CharStart && x.CharEnd == ep.CharEnd))
-                    continue;
-                endpoints.Add(new MarkerEndpointVm { TargetDoc = ep.TargetDoc, CharStart = ep.CharStart, CharEnd = ep.CharEnd });
-            }
-            if (endpoints.Count == 0)
-            {
-                endpoints.Add(new MarkerEndpointVm { TargetDoc = oldDoc, CharStart = oldStart, CharEnd = oldEnd });
-                endpoints.Add(new MarkerEndpointVm { TargetDoc = newDoc, CharStart = newStart, CharEnd = newEnd });
-            }
-            var revisedRanges = endpoints.Where(x => x.TargetDoc == newDoc && x.CharEnd > x.CharStart).ToList();
-            var displayLabel = !string.IsNullOrWhiteSpace(newLabel) ? newLabel : oldLabel;
-            return new NativeMarker
-            {
-                Pair = pair, PairOrder = order, RelativeDoc = newDoc, TargetDoc = newDoc, Action = "변경", Text = newText,
-                CharStart = revisedRanges.Count > 0 ? revisedRanges.Min(x => x.CharStart) : newStart,
-                CharEnd = revisedRanges.Count > 0 ? revisedRanges.Max(x => x.CharEnd) : newEnd,
-                Part = part, ItemOrder = itemOrder, HunkOrder = 0,
-                Message = $"{displayLabel} 변경: “{oldText}” → “{newText}”",
-                Endpoints = endpoints
-            };
-        }
 
         public static NativeMarker Delete(string pair, int order, int oldDoc, int newDoc, string text,
             int oldStart, int oldEnd, int newAnchor, string part, int itemOrder, int hunkOrder = 999) => new()

@@ -1411,25 +1411,52 @@ Check(plainText.Contains("제1항에도 불구하고")&&plainText.Contains("이 
 Console.WriteLine("PASS BALANCED WORD TRACK CHANGES: "+balancedRevisions.Count+" revision nodes");
 
 
-// 126. Definition-list entries need contextual grouping on screen. A quoted definition term
-// with several wording changes should not explode into a marker for every tiny token, while
-// ordinary legal clauses keep the finer V5.20.22 review behavior.
-var defA=Path.Combine(dir,"definitionA.txt");var defB=Path.Combine(dir,"definitionB.txt");
-File.WriteAllText(defA,string.Join("\n",new[]{
-    "제2조(용어의 정의)",
-    "1. “회사”라 함은 모바일 기기를 통하여 서비스를 제공하는 사업자를 의미합니다.",
-    "4. “모바일 기기”란 콘텐츠를 다운로드 받거나 설치하여 사용할 수 있는 기기로서, 휴대폰, 스마트폰, 휴대전화단말기(PDA), 태블릿 등을 의미합니다."
-}));
-File.WriteAllText(defB,string.Join("\n",new[]{
-    "제2조(용어의 정의)",
-    "1. “회사”라 함은 서비스를 제공하는 사업자를 의미합니다.",
-    "4. “기기”란 PC, 휴대전화, 스마트폰, 개인용 디지털 비서(PDA), 태블릿 또는 네트워크를 통해 콘텐츠를 다운로드하거나 설치하거나 이용할 수 있는 기타 기기를 말합니다."
-}));
-var defCmp=await eng.CompareAsync(new[]{defA,defB},0,"legal",true,true);
-var defRow=defCmp.Rows.First(r=>r.Members.Any(m=>m?.Text.Contains("제2조") == true));
-var def4=defRow.Markers.Where(m=>m.Message.StartsWith("4. ",StringComparison.Ordinal)).ToList();
-Check(def4.Count is >=1 and <=3,"definition item review is still over-fragmented: "+def4.Count+" | "+string.Join(" | ",def4.Select(m=>m.Message)));
-Check(def4.All(m=>m.Message.Contains("4. 변경")),"definition item context label missing: "+string.Join(" | ",def4.Select(m=>m.Message)));
-Console.WriteLine("PASS CONTEXTUAL DEFINITION REVIEW GROUPING");
+// 126. Word export keeps the original paragraph presentation for matched paragraphs while
+// inserted text keeps the revised run style and deleted text keeps the original run style.
+var styleOutA=Path.Combine(dir,"styleOutA.docx");var styleOutB=Path.Combine(dir,"styleOutB.docx");var styleOutO=Path.Combine(dir,"styleOut.docx");
+Make(styleOutA,"<w:p><w:pPr><w:spacing w:before='240'/><w:ind w:left='720'/><w:jc w:val='center'/></w:pPr><w:r><w:t xml:space='preserve'>Alpha </w:t></w:r><w:r><w:rPr><w:b/></w:rPr><w:t>OLD</w:t></w:r><w:r><w:t xml:space='preserve'> Omega</w:t></w:r></w:p>");
+Make(styleOutB,"<w:p><w:pPr><w:spacing w:before='0'/><w:ind w:left='0'/><w:jc w:val='left'/></w:pPr><w:r><w:t xml:space='preserve'>Alpha </w:t></w:r><w:r><w:rPr><w:i/></w:rPr><w:t>NEW</w:t></w:r><w:r><w:t xml:space='preserve'> Omega</w:t></w:r></w:p>");
+await eng.ExportWordAsync(styleOutA,styleOutB,styleOutO,"T",true);
+var styleOutDoc=Doc(styleOutO);var styleOutP=styleOutDoc.Descendants(w+"p").First();var styleOutPPr=styleOutP.Element(w+"pPr");
+Check(styleOutPPr?.Element(w+"spacing")?.Attribute(w+"before")?.Value=="240","Word export did not preserve original paragraph spacing");
+Check(styleOutPPr?.Element(w+"ind")?.Attribute(w+"left")?.Value=="720","Word export did not preserve original paragraph indentation");
+Check(styleOutPPr?.Element(w+"jc")?.Attribute(w+"val")?.Value=="center","Word export did not preserve original paragraph alignment");
+var oldDel=styleOutP.Descendants(w+"del").FirstOrDefault(x=>string.Concat(x.Descendants(w+"delText").Select(t=>t.Value)).Contains("OLD"));
+Check(oldDel?.Descendants(w+"rPr").Any(r=>r.Element(w+"b") is not null)==true,"deleted text lost original run formatting");
+var newIns=styleOutP.Descendants(w+"ins").FirstOrDefault(x=>string.Concat(x.Descendants(w+"t").Select(t=>t.Value)).Contains("NEW"));
+Check(newIns?.Descendants(w+"rPr").Any(r=>r.Element(w+"i") is not null)==true,"inserted text lost revised run formatting");
+Console.WriteLine("PASS WORD ORIGINAL PARAGRAPH/RUN STYLE PRESERVATION");
+
+// 127. A wholly deleted paragraph must retain its own original paragraph/run formatting rather
+// than borrowing the nearest surviving paragraph's presentation.
+var delStyleA=Path.Combine(dir,"delStyleA.docx");var delStyleB=Path.Combine(dir,"delStyleB.docx");var delStyleO=Path.Combine(dir,"delStyleOut.docx");
+Make(delStyleA,P("KEEP")+"<w:p><w:pPr><w:spacing w:before='360'/><w:jc w:val='right'/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>DELETED_STYLE</w:t></w:r></w:p>"+P("AFTER"));
+Make(delStyleB,P("KEEP")+P("AFTER"));
+await eng.ExportWordAsync(delStyleA,delStyleB,delStyleO,"T",true);
+var delStyleDoc=Doc(delStyleO);var deletedStyleP=delStyleDoc.Descendants(w+"p").FirstOrDefault(p=>string.Concat(p.Descendants(w+"delText").Select(t=>t.Value)).Contains("DELETED_STYLE"));
+Check(deletedStyleP is not null,"styled deleted paragraph missing from Word export");
+Check(deletedStyleP!.Element(w+"pPr")?.Element(w+"spacing")?.Attribute(w+"before")?.Value=="360","whole deleted paragraph lost original spacing");
+Check(deletedStyleP.Element(w+"pPr")?.Element(w+"jc")?.Attribute(w+"val")?.Value=="right","whole deleted paragraph lost original alignment");
+Check(deletedStyleP.Descendants(w+"del").Descendants(w+"rPr").Any(r=>r.Element(w+"b") is not null),"whole deleted paragraph lost original run formatting");
+Console.WriteLine("PASS WORD WHOLE-DELETION STYLE PRESERVATION");
+
+
+// 128. When both DOCX files reference the same named style, the output keeps the original
+// style definition so the tracked document retains the original document's visual baseline.
+var styleDefA=Path.Combine(dir,"styleDefA.docx");var styleDefB=Path.Combine(dir,"styleDefB.docx");var styleDefO=Path.Combine(dir,"styleDefOut.docx");
+Make(styleDefA,"<w:p><w:pPr><w:pStyle w:val='BodyCustom'/></w:pPr><w:r><w:t>Alpha OLD</w:t></w:r></w:p>");
+Make(styleDefB,"<w:p><w:pPr><w:pStyle w:val='BodyCustom'/></w:pPr><w:r><w:t>Alpha NEW</w:t></w:r></w:p>");
+AddWordXml(styleDefA,"word/styles.xml","<w:styles xmlns:w='"+W+"'><w:docDefaults><w:rPrDefault><w:rPr><w:sz w:val='20'/></w:rPr></w:rPrDefault></w:docDefaults><w:style w:type='paragraph' w:styleId='BodyCustom'><w:name w:val='BodyCustom'/><w:rPr><w:b/></w:rPr></w:style></w:styles>");
+AddWordXml(styleDefB,"word/styles.xml","<w:styles xmlns:w='"+W+"'><w:docDefaults><w:rPrDefault><w:rPr><w:sz w:val='40'/></w:rPr></w:rPrDefault></w:docDefaults><w:style w:type='paragraph' w:styleId='BodyCustom'><w:name w:val='BodyCustom'/><w:rPr><w:i/></w:rPr></w:style></w:styles>");
+await eng.ExportWordAsync(styleDefA,styleDefB,styleDefO,"T",true);
+using(var styleDefZip=ZipFile.OpenRead(styleDefO))
+using(var styleDefStream=styleDefZip.GetEntry("word/styles.xml")!.Open())
+{
+    var styleDefXml=XDocument.Load(styleDefStream);var styleDefRoot=styleDefXml.Root!;
+    var bodyCustom=styleDefRoot.Elements(w+"style").First(x=>x.Attribute(w+"styleId")?.Value=="BodyCustom");
+    Check(bodyCustom.Descendants(w+"b").Any()&&!bodyCustom.Descendants(w+"i").Any(),"Word export did not prefer original named-style definition");
+    Check(styleDefRoot.Descendants(w+"rPrDefault").Descendants(w+"sz").FirstOrDefault()?.Attribute(w+"val")?.Value=="20","Word export did not preserve original default run style");
+}
+Console.WriteLine("PASS WORD ORIGINAL STYLE-DEFINITION PRESERVATION");
 
 Console.WriteLine("ALL REGRESSIONS PASSED");

@@ -310,10 +310,10 @@ internal static class NativeOfficeExporter
         if (Path.GetExtension(originalPath).Equals(".docx", StringComparison.OrdinalIgnoreCase))
             originalParagraphs = ReadDocxParagraphSourcesFromPath(originalPath, w) ??
                                  oldText.Split('\n').Select(x => x.Trim()).Where(x => x.Length > 0)
-                                     .Select(x => new ParagraphSource(x, "body", new ParagraphAddress(-1, -1, -1, -1, -1, -1, -1, -1, -1), new NativeDocumentReader.ParagraphNumberInfo(string.Empty, null, 0))).ToList();
+                                     .Select(x => new ParagraphSource(x, "body", new ParagraphAddress(-1, -1, -1, -1, -1, -1, -1, -1, -1), new NativeDocumentReader.ParagraphNumberInfo(string.Empty, null, 0), null)).ToList();
         else
             originalParagraphs = oldText.Split('\n').Select(x => x.Trim()).Where(x => x.Length > 0)
-                .Select(x => new ParagraphSource(x, "body", new ParagraphAddress(-1, -1, -1, -1, -1, -1, -1, -1, -1), new NativeDocumentReader.ParagraphNumberInfo(string.Empty, null, 0))).ToList();
+                .Select(x => new ParagraphSource(x, "body", new ParagraphAddress(-1, -1, -1, -1, -1, -1, -1, -1, -1), new NativeDocumentReader.ParagraphNumberInfo(string.Empty, null, 0), null)).ToList();
 
         // Reuse the comparison result as high-confidence paragraph anchors.  This keeps Word
         // export on the same article/general-unit lineage as the on-screen comparison.  Exact
@@ -366,11 +366,14 @@ internal static class NativeOfficeExporter
             var op = ops[k];
             if (op.Old >= 0 && op.New >= 0)
             {
+                ApplyOriginalParagraphPresentation(revisedParagraphs[op.New].Paragraph,
+                    originalParagraphs[op.Old].Paragraph, revisedParagraphs[op.New].Numbering, w);
                 ApplyTrackedNumberingDiff(revisedParagraphs[op.New].Paragraph,
                     originalParagraphs[op.Old].Numbering, revisedParagraphs[op.New].Numbering,
                     author, ref revisionId, w);
                 ApplyTrackedTextDiff(revisedParagraphs[op.New].Paragraph, originalParagraphs[op.Old].Text,
-                    revisedParagraphs[op.New].Text, author, ref revisionId, includePunctuation, w);
+                    revisedParagraphs[op.New].Text, author, ref revisionId, includePunctuation, w,
+                    originalParagraphs[op.Old].Paragraph);
                 bCursor = Math.Max(bCursor, op.New + 1);
                 k++;
                 continue;
@@ -396,8 +399,45 @@ internal static class NativeOfficeExporter
                 tableMap, rowMap, cellMap, paragraphMap, author, ref revisionId, w);
         }
 
+        if (originalIsDocx && revisedIsDocx)
+            MergeOriginalStyleDefinitions(originalPath, zip, w);
         ReplaceEntry(zip, "word/document.xml", document.ToString(SaveOptions.DisableFormatting));
         EnsureTrackRevisions(zip);
+    }
+
+    private static void MergeOriginalStyleDefinitions(string originalPath, ZipArchive outputZip, XNamespace w)
+    {
+        var outputEntry = outputZip.GetEntry("word/styles.xml");
+        if (outputEntry is null || !File.Exists(originalPath)) return;
+        using var originalFs = new FileStream(originalPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var originalZip = new ZipArchive(originalFs, ZipArchiveMode.Read);
+        var originalEntry = originalZip.GetEntry("word/styles.xml");
+        if (originalEntry is null) return;
+
+        XDocument originalStyles; XDocument outputStyles;
+        using (var input = originalEntry.Open()) originalStyles = XDocument.Load(input, LoadOptions.PreserveWhitespace);
+        using (var input = outputEntry.Open()) outputStyles = XDocument.Load(input, LoadOptions.PreserveWhitespace);
+        var sourceRoot = originalStyles.Root; var targetRoot = outputStyles.Root;
+        if (sourceRoot is null || targetRoot is null) return;
+
+        var sourceDefaults = sourceRoot.Element(w + "docDefaults");
+        var targetDefaults = targetRoot.Element(w + "docDefaults");
+        if (sourceDefaults is not null)
+        {
+            if (targetDefaults is null) targetRoot.AddFirst(new XElement(sourceDefaults));
+            else targetDefaults.ReplaceWith(new XElement(sourceDefaults));
+        }
+
+        foreach (var sourceStyle in sourceRoot.Elements(w + "style"))
+        {
+            var styleId = sourceStyle.Attribute(w + "styleId")?.Value;
+            if (string.IsNullOrWhiteSpace(styleId)) continue;
+            var targetStyle = targetRoot.Elements(w + "style")
+                .FirstOrDefault(x => string.Equals(x.Attribute(w + "styleId")?.Value, styleId, StringComparison.Ordinal));
+            if (targetStyle is null) targetRoot.Add(new XElement(sourceStyle));
+            else targetStyle.ReplaceWith(new XElement(sourceStyle));
+        }
+        ReplaceEntry(outputZip, "word/styles.xml", outputStyles.ToString(SaveOptions.DisableFormatting));
     }
 
     private static void WriteFlatTrackedBody(XElement body, string oldText, string newText, string author,
@@ -429,7 +469,7 @@ internal static class NativeOfficeExporter
     private sealed record ParagraphAddress(int TopBlock, int Table, int Row, int Cell, int Paragraph,
         int ParentTable, int ParentRow, int ParentCell, int NestedTableOrdinal);
     private sealed record ParagraphSource(string Text, string ContainerKind, ParagraphAddress Address,
-        NativeDocumentReader.ParagraphNumberInfo Numbering);
+        NativeDocumentReader.ParagraphNumberInfo Numbering, XElement? Paragraph);
     private sealed record ParagraphEntry(XElement Paragraph, string Text, string ContainerKind, XElement TopLevelBlock,
         ParagraphAddress Address, XElement? Table, XElement? Row, XElement? Cell,
         NativeDocumentReader.ParagraphNumberInfo Numbering);
@@ -864,7 +904,7 @@ internal static class NativeOfficeExporter
         var numbering = NativeDocumentReader.BuildNumberingContext(zip, w);
         return BodyParagraphs(body, w)
             .Select(p => new ParagraphSource(ParagraphVisibleText(p, w), ParagraphContainerKind(p, body, w),
-                AddressOf(p, body, w), NativeDocumentReader.NumberInfo(p, numbering, w)))
+                AddressOf(p, body, w), NativeDocumentReader.NumberInfo(p, numbering, w), new XElement(p)))
             .Where(x => !string.IsNullOrWhiteSpace(x.Text))
             .ToList();
     }
@@ -1041,15 +1081,16 @@ internal static class NativeOfficeExporter
     }
 
     private static void InsertDeletionAt(XElement paragraph, int offset, string deletedText, string author,
-        ref int id, XNamespace w)
+        ref int id, XNamespace w, IReadOnlyList<StyledTextFragment>? styledFragments = null)
     {
         if (string.IsNullOrEmpty(deletedText)) return;
         var maps = BuildRunMap(paragraph, w);
         if (maps.Count == 0)
         {
             var pPr = paragraph.Element(w + "pPr");
+            var emptyRunFragments = styledFragments is { Count: > 0 } ? styledFragments : new[] { new StyledTextFragment(deletedText, null) };
             var del = new XElement(w + "del", RevisionAttrs(w, id++, author),
-                RunFromLogicalText(deletedText, w, deleted: true));
+                emptyRunFragments.Select(x => RunFromLogicalText(x.Text, w, deleted: true, runProperties: x.RunProperties)));
             if (pPr is null) paragraph.AddFirst(del); else pPr.AddAfterSelf(del);
             return;
         }
@@ -1059,7 +1100,10 @@ internal static class NativeOfficeExporter
         if (targetIndex < 0) targetIndex = maps.Count - 1;
         var target = maps[targetIndex];
         var local = Math.Clamp(offset - target.Start, 0, target.Text.Length);
-        var delNode = new XElement(w + "del", RevisionAttrs(w, id++, author), RunFragment(target.Run, deletedText, w, deleted: true));
+        var fragments = styledFragments is { Count: > 0 } ? styledFragments :
+            new[] { new StyledTextFragment(deletedText, target.Run.Element(w + "rPr") is XElement rp ? new XElement(rp) : null) };
+        var delNode = new XElement(w + "del", RevisionAttrs(w, id++, author),
+            fragments.Select(x => RunFromLogicalText(x.Text, w, deleted: true, runProperties: x.RunProperties)));
         if (local > 0 && local < target.Text.Length)
         {
             target.Run.ReplaceWith(SplitRunAtDeletion(target, local, delNode, w));
@@ -1100,16 +1144,123 @@ internal static class NativeOfficeExporter
             numPr.Add(new XElement(w + "ilvl", new XAttribute(w + "val", current.Level)));
             numPr.Add(new XElement(w + "numId", new XAttribute(w + "val", numId)));
         }
-        var afterNumPr = new HashSet<string>(StringComparer.Ordinal)
-        {
-            "suppressLineNumbers","pBdr","shd","tabs","suppressAutoHyphens","kinsoku","wordWrap",
-            "overflowPunct","topLinePunct","autoSpaceDE","autoSpaceDN","bidi","adjustRightInd","snapToGrid",
-            "spacing","ind","contextualSpacing","mirrorIndents","suppressOverlap","jc","textDirection",
-            "textAlignment","textboxTightWrap","outlineLvl","divId","cnfStyle","rPr","sectPr","pPrChange"
-        };
-        var before = pPr.Elements().FirstOrDefault(x => afterNumPr.Contains(x.Name.LocalName));
-        if (before is null) pPr.Add(numPr); else before.AddBeforeSelf(numPr);
+        InsertNumberingPropertiesInOrder(pPr, numPr);
         return numPr;
+    }
+
+    private static readonly HashSet<string> ParagraphPropertiesAfterNumbering = new(StringComparer.Ordinal)
+    {
+        "suppressLineNumbers","pBdr","shd","tabs","suppressAutoHyphens","kinsoku","wordWrap",
+        "overflowPunct","topLinePunct","autoSpaceDE","autoSpaceDN","bidi","adjustRightInd","snapToGrid",
+        "spacing","ind","contextualSpacing","mirrorIndents","suppressOverlap","jc","textDirection",
+        "textAlignment","textboxTightWrap","outlineLvl","divId","cnfStyle","rPr","sectPr","pPrChange"
+    };
+
+    private static void InsertNumberingPropertiesInOrder(XElement pPr, XElement numPr)
+    {
+        var before = pPr.Elements().FirstOrDefault(x => ParagraphPropertiesAfterNumbering.Contains(x.Name.LocalName));
+        if (before is null) pPr.Add(numPr); else before.AddBeforeSelf(numPr);
+    }
+
+    private static void ApplyOriginalParagraphPresentation(XElement targetParagraph, XElement? originalParagraph,
+        NativeDocumentReader.ParagraphNumberInfo revisedNumbering, XNamespace w)
+    {
+        if (originalParagraph is null) return;
+        var targetPPr = targetParagraph.Element(w + "pPr");
+        var preservedNumPr = targetPPr?.Element(w + "numPr") is XElement np ? new XElement(np) : null;
+        var preservedSectPr = targetPPr?.Element(w + "sectPr") is XElement sp ? new XElement(sp) : null;
+        var sourcePPr = originalParagraph.Element(w + "pPr");
+
+        XElement? merged = sourcePPr is null ? null : new XElement(sourcePPr);
+        if (merged is not null)
+        {
+            merged.Elements(w + "numPr").Remove();
+            merged.Elements(w + "sectPr").Remove();
+            merged.Elements(w + "pPrChange").Remove();
+        }
+
+        if (merged is null && (preservedNumPr is not null || preservedSectPr is not null))
+            merged = new XElement(w + "pPr");
+        if (merged is null)
+        {
+            targetPPr?.Remove();
+            return;
+        }
+
+        if (preservedNumPr is not null) InsertNumberingPropertiesInOrder(merged, preservedNumPr);
+        else if (revisedNumbering.NumId is int numId && numId != 0)
+        {
+            var numPr = new XElement(w + "numPr",
+                new XElement(w + "ilvl", new XAttribute(w + "val", revisedNumbering.Level)),
+                new XElement(w + "numId", new XAttribute(w + "val", numId)));
+            InsertNumberingPropertiesInOrder(merged, numPr);
+        }
+        if (preservedSectPr is not null) merged.Add(preservedSectPr);
+
+        if (targetPPr is null) targetParagraph.AddFirst(merged);
+        else targetPPr.ReplaceWith(merged);
+    }
+
+    private sealed record StyledTextFragment(string Text, XElement? RunProperties);
+
+    private static List<StyledTextFragment> OriginalStyledFragments(XElement? originalParagraph, int start, int end,
+        string fallbackText, XNamespace w)
+    {
+        if (originalParagraph is null || end <= start)
+            return new() { new StyledTextFragment(fallbackText, null) };
+        var fragments = new List<StyledTextFragment>();
+        foreach (var map in BuildRunMap(originalParagraph, w))
+        {
+            var a = Math.Max(start, map.Start); var b = Math.Min(end, map.End);
+            if (b <= a) continue;
+            var text = map.Text[(a - map.Start)..(b - map.Start)];
+            if (text.Length == 0) continue;
+            fragments.Add(new StyledTextFragment(text, map.Run.Element(w + "rPr") is XElement rPr ? new XElement(rPr) : null));
+        }
+        if (fragments.Count == 0 || string.Concat(fragments.Select(x => x.Text)) != fallbackText)
+            return new() { new StyledTextFragment(fallbackText, null) };
+        return fragments;
+    }
+
+    private static XElement PlainParagraphFromSource(ParagraphSource source, XNamespace w)
+    {
+        if (source.Paragraph is null) return PlainParagraph(source.Text, null);
+        var p = new XElement(w + "p");
+        var pPr = source.Paragraph.Element(w + "pPr");
+        if (pPr is not null)
+        {
+            var clone = new XElement(pPr); clone.Elements(w + "pPrChange").Remove(); p.Add(clone);
+        }
+        var added = false;
+        foreach (var map in BuildRunMap(source.Paragraph, w))
+        {
+            p.Add(RunFromLogicalText(map.Text, w, runProperties: map.Run.Element(w + "rPr")));
+            added = true;
+        }
+        if (!added && source.Text.Length > 0) p.Add(RunFromLogicalText(source.Text, w));
+        return p;
+    }
+
+    private static XElement DeletedParagraphFromSource(ParagraphSource source, string author, ref int id, XNamespace w)
+    {
+        if (source.Paragraph is null) return DeletedParagraph(source.Text, author, ref id, null);
+        var p = new XElement(w + "p");
+        var pPr = source.Paragraph.Element(w + "pPr");
+        if (pPr is not null)
+        {
+            var clone = new XElement(pPr); clone.Elements(w + "pPrChange").Remove(); p.Add(clone);
+        }
+        var del = new XElement(w + "del", RevisionAttrs(w, id++, author));
+        var added = false;
+        foreach (var map in BuildRunMap(source.Paragraph, w))
+        {
+            del.Add(RunFromLogicalText(map.Text, w, deleted: true, runProperties: map.Run.Element(w + "rPr")));
+            added = true;
+        }
+        if (!added) del.Add(RunFromLogicalText(source.Text, w, deleted: true));
+        p.Add(del);
+        MarkParagraphMarkRevision(p, inserted: false, author, ref id, w);
+        return p;
     }
 
     private static void ApplyTrackedNumberingDiff(XElement paragraph,
@@ -1135,14 +1286,14 @@ internal static class NativeOfficeExporter
     }
 
     private static void ApplyTrackedTextDiff(XElement paragraph, string oldText, string newText, string author,
-        ref int id, bool includePunctuation, XNamespace w)
+        ref int id, bool includePunctuation, XNamespace w, XElement? originalParagraph = null)
     {
         if (NativeComparisonEngine.SemanticEqual(oldText, newText)) return;
         var a = Tokens(oldText); var b = Tokens(newText);
         var matches = CompactReviewMatches(a, b, Lcs(a.Select(x => Key(x.Text)).ToArray(), b.Select(x => Key(x.Text)).ToArray()));
         var anchors = new List<(int A, int B)> { (-1, -1) }; anchors.AddRange(matches); anchors.Add((a.Count, b.Count));
         var inserts = new List<(int Start, int End)>();
-        var deletes = new List<(int Anchor, string Text)>();
+        var deletes = new List<(int Anchor, int OldStart, int OldEnd, string Text)>();
         for (var k = 0; k < anchors.Count - 1; k++)
         {
             var left = anchors[k]; var right = anchors[k + 1];
@@ -1159,13 +1310,15 @@ internal static class NativeOfficeExporter
             if (oldChunk.Length > 0)
             {
                 var anchor = bi < b.Count ? b[bi].Start : newText.Length;
-                deletes.Add((anchor, oldChunk));
+                var os = a[ai].Start; var oe = a[aj - 1].End;
+                deletes.Add((anchor, os, oe, oldChunk));
             }
         }
 
         // Deletions first: inserting w:del does not change the visible B text offsets.
         foreach (var d in deletes.OrderByDescending(x => x.Anchor))
-            InsertDeletionAt(paragraph, d.Anchor, d.Text, author, ref id, w);
+            InsertDeletionAt(paragraph, d.Anchor, d.Text, author, ref id, w,
+                OriginalStyledFragments(originalParagraph, d.OldStart, d.OldEnd, d.Text, w));
         MarkInsertionRanges(paragraph, inserts, author, ref id, w);
     }
 
@@ -1231,9 +1384,8 @@ internal static class NativeOfficeExporter
         var cell = new XElement(w + "tc");
         var tcPr = template?.Element(w + "tcPr"); if (tcPr is not null) cell.Add(new XElement(tcPr));
         MarkTableCellRevision(cell, inserted: false, author, ref id, w);
-        var pPr = template?.Descendants(w + "p").FirstOrDefault()?.Element(w + "pPr");
         foreach (var source in sources.OrderBy(x => x.Address.Paragraph))
-            cell.Add(PlainParagraph(source.Text, pPr is null ? null : new XElement(pPr)));
+            cell.Add(PlainParagraphFromSource(source, w));
         if (!cell.Elements(w + "p").Any()) cell.Add(new XElement(w + "p"));
 
         if (before is not null) StructuralChildBoundary(before, row).AddBeforeSelf(cell);
@@ -1284,9 +1436,8 @@ internal static class NativeOfficeExporter
             if (cellSources.Count == 0) tc.Add(new XElement(w + "p"));
             else
             {
-                var pPr = templateCell?.Descendants(w + "p").FirstOrDefault()?.Element(w + "pPr");
                 foreach (var source in cellSources)
-                    tc.Add(PlainParagraph(source.Text, pPr is null ? null : new XElement(pPr)));
+                    tc.Add(PlainParagraphFromSource(source, w));
             }
             row.Add(tc);
         }
@@ -1329,8 +1480,7 @@ internal static class NativeOfficeExporter
 
         var target = before ?? after ??
             sameCell.FirstOrDefault(x => x.Address.Paragraph >= source.Address.Paragraph) ?? sameCell[^1];
-        var pPr = target.Paragraph.Element(w + "pPr");
-        var deleted = DeletedParagraph(source.Text, author, ref id, pPr is null ? null : new XElement(pPr));
+        var deleted = DeletedParagraphFromSource(source, author, ref id, w);
         if (before is not null) before.Paragraph.AddBeforeSelf(deleted);
         else if (after is not null) after.Paragraph.AddAfterSelf(deleted);
         else if (target.Address.Paragraph >= source.Address.Paragraph) target.Paragraph.AddBeforeSelf(deleted);
@@ -1400,7 +1550,7 @@ internal static class NativeOfficeExporter
     {
         if (revisedParagraphs.Count == 0)
         {
-            var deleted = DeletedParagraph(source.Text, author, ref id, null);
+            var deleted = DeletedParagraphFromSource(source, author, ref id, w);
             var sectPr = body.Elements(w + "sectPr").LastOrDefault();
             if (afterCursor is not null) afterCursor.AddAfterSelf(deleted);
             else if (sectPr is null) body.Add(deleted); else sectPr.AddBeforeSelf(deleted);
@@ -1409,8 +1559,7 @@ internal static class NativeOfficeExporter
         }
         var pastEnd = nextBIndex >= revisedParagraphs.Count;
         var anchor = revisedParagraphs[pastEnd ? revisedParagraphs.Count - 1 : nextBIndex];
-        var styleSource = anchor.Paragraph.Element(w + "pPr");
-        var deletedP = DeletedParagraph(source.Text, author, ref id, styleSource is null ? null : new XElement(styleSource));
+        var deletedP = DeletedParagraphFromSource(source, author, ref id, w);
         // Never inject a fallback deletion into a table/textbox/SDT merely because it is the
         // nearest visible paragraph; use the top-level B block as the safe structural boundary.
         var boundary = anchor.TopLevelBlock;

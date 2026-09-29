@@ -9,11 +9,12 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.20.26**
+**V5.20.27**
 
-- Improved on-screen review grouping for numbered definition entries so terminology rewrites remain easy to scan without losing precise changed-span highlighting.
-- Kept the finer review behavior for ordinary legal clauses and the separate Word export presentation.
-- Full regression suite passed with zero build warnings/errors.
+- Restored the on-screen comparison behavior from V5.20.25.
+- Improved Word export to preserve the original document's paragraph presentation where safe.
+- Preserved original formatting for deleted text and deleted paragraphs while keeping revised formatting for inserted text.
+- Improved preservation of original named styles and default styles in exported Word documents.
 
 ## Features
 
