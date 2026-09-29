@@ -9,11 +9,10 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.20.25**
+**V5.20.26**
 
-- Decoupled the on-screen review presentation from Word Track Changes export so each output can use the review granularity best suited to its purpose.
-- Restored the finer on-screen change markers used before the recent numbered-item grouping changes.
-- Kept the improved Word export revision grouping and stable-anchor handling.
+- Improved on-screen review grouping for numbered definition entries so terminology rewrites remain easy to scan without losing precise changed-span highlighting.
+- Kept the finer review behavior for ordinary legal clauses and the separate Word export presentation.
 - Full regression suite passed with zero build warnings/errors.
 
 ## Features

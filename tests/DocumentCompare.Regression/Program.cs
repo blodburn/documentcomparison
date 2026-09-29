@@ -1410,4 +1410,26 @@ var plainText=string.Concat(balancedDoc.Descendants(w+"t").Where(t=>!t.Ancestors
 Check(plainText.Contains("제1항에도 불구하고")&&plainText.Contains("이 경우 회사는 보관하는 정보를 별도 분리 보관하며"),"Word review lost stable unchanged anchors between change hunks");
 Console.WriteLine("PASS BALANCED WORD TRACK CHANGES: "+balancedRevisions.Count+" revision nodes");
 
+
+// 126. Definition-list entries need contextual grouping on screen. A quoted definition term
+// with several wording changes should not explode into a marker for every tiny token, while
+// ordinary legal clauses keep the finer V5.20.22 review behavior.
+var defA=Path.Combine(dir,"definitionA.txt");var defB=Path.Combine(dir,"definitionB.txt");
+File.WriteAllText(defA,string.Join("\n",new[]{
+    "제2조(용어의 정의)",
+    "1. “회사”라 함은 모바일 기기를 통하여 서비스를 제공하는 사업자를 의미합니다.",
+    "4. “모바일 기기”란 콘텐츠를 다운로드 받거나 설치하여 사용할 수 있는 기기로서, 휴대폰, 스마트폰, 휴대전화단말기(PDA), 태블릿 등을 의미합니다."
+}));
+File.WriteAllText(defB,string.Join("\n",new[]{
+    "제2조(용어의 정의)",
+    "1. “회사”라 함은 서비스를 제공하는 사업자를 의미합니다.",
+    "4. “기기”란 PC, 휴대전화, 스마트폰, 개인용 디지털 비서(PDA), 태블릿 또는 네트워크를 통해 콘텐츠를 다운로드하거나 설치하거나 이용할 수 있는 기타 기기를 말합니다."
+}));
+var defCmp=await eng.CompareAsync(new[]{defA,defB},0,"legal",true,true);
+var defRow=defCmp.Rows.First(r=>r.Members.Any(m=>m?.Text.Contains("제2조") == true));
+var def4=defRow.Markers.Where(m=>m.Message.StartsWith("4. ",StringComparison.Ordinal)).ToList();
+Check(def4.Count is >=1 and <=3,"definition item review is still over-fragmented: "+def4.Count+" | "+string.Join(" | ",def4.Select(m=>m.Message)));
+Check(def4.All(m=>m.Message.Contains("4. 변경")),"definition item context label missing: "+string.Join(" | ",def4.Select(m=>m.Message)));
+Console.WriteLine("PASS CONTEXTUAL DEFINITION REVIEW GROUPING");
+
 Console.WriteLine("ALL REGRESSIONS PASSED");
