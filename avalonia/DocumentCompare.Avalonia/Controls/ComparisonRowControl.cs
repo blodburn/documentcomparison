@@ -66,7 +66,10 @@ public sealed class ComparisonRowControl : UserControl
         new SolidColorBrush(Color.Parse("#B14D63")),
         new SolidColorBrush(Color.Parse("#64748B")),
     };
+    // Hierarchy and article titles use distinct neutral fills so the document structure can be
+    // scanned without confusing structural emphasis with change-marker colors.
     private static readonly IBrush SectionBrush = new SolidColorBrush(Color.Parse("#EAF1F7"));
+    private static readonly IBrush ArticleHeaderBrush = new SolidColorBrush(Color.Parse("#F1F1F1"));
     private static readonly IBrush CellBorderBrush = new SolidColorBrush(Color.Parse("#9AA4B2"));
 
     public ComparisonRowControl(
@@ -189,7 +192,31 @@ public sealed class ComparisonRowControl : UserControl
         var headerSegments = _row.HeaderSegments.Count > docIndex ? _row.HeaderSegments[docIndex] : new List<SegmentVm>();
         var bodySegments = _row.BodySegments.Count > docIndex ? _row.BodySegments[docIndex] : new List<SegmentVm>();
         if (!string.IsNullOrWhiteSpace(member.Header))
-            stack.Children.Add(BuildRichText(member.Header, headerSegments, docIndex, "header", true));
+        {
+            var headerText = BuildRichText(member.Header, headerSegments, docIndex, "header", true);
+            if (string.Equals(member.Kind, "section", StringComparison.Ordinal))
+            {
+                stack.Children.Add(new Border
+                {
+                    Background = SectionBrush,
+                    Padding = new Thickness(5, 2),
+                    Child = headerText
+                });
+            }
+            else if (string.Equals(member.Kind, "article", StringComparison.Ordinal))
+            {
+                stack.Children.Add(new Border
+                {
+                    Background = ArticleHeaderBrush,
+                    Padding = new Thickness(5, 2),
+                    Child = headerText
+                });
+            }
+            else
+            {
+                stack.Children.Add(headerText);
+            }
+        }
         if (!string.IsNullOrWhiteSpace(member.Body))
             stack.Children.Add(BuildRichText(member.Body, bodySegments, docIndex, "body", false));
         return stack;

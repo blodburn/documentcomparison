@@ -394,9 +394,10 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     {
         var units = new List<NativeUnit>();
         var body = new List<string>();
+        var loose = new List<string>();
         string? header = null, number = null, title = null;
         var sections = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var preamble = new List<string>();
+        var looseSeq = 0;
         var lines = text.Split('\n');
         var falseArticleLines = FalseEnglishArticleHeaderLines(lines);
 
@@ -411,11 +412,20 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             if (level is "part" or "장") { sections.Remove("chapter"); sections.Remove("절"); sections.Remove("관"); }
             else if (level is "chapter" or "절") sections.Remove("관");
         }
+        void FlushLoose()
+        {
+            if (loose.Count == 0) return;
+            var b = string.Join("\n", loose).Trim();
+            loose.Clear();
+            if (b.Length == 0) return;
+            looseSeq++;
+            units.Add(NativeUnit.Create(units.Count, $"p{looseSeq}", string.Empty, string.Empty, b, CurrentSection(), "block"));
+        }
         void FlushArticle()
         {
             if (header is null) return;
             var b = string.Join("\n", body).Trim(); body.Clear();
-            units.Add(NativeUnit.Create(units.Count, number ?? string.Empty, title ?? string.Empty, header, b, CurrentSection()));
+            units.Add(NativeUnit.Create(units.Count, number ?? string.Empty, title ?? string.Empty, header, b, CurrentSection(), "article"));
             header = number = title = null;
         }
         string? NextTitle(ref int i)
@@ -441,13 +451,16 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             if (eh.Success || kh.Success)
             {
                 FlushArticle();
+                FlushLoose();
                 if (eh.Success)
                 {
                     var level = eh.Groups["level"].Value.ToLowerInvariant();
                     var num = eh.Groups["num"].Value;
                     var t = eh.Groups["title"].Value.Trim();
                     if (t.Length == 0) t = NextTitle(ref i) ?? string.Empty;
-                    SetSection(level, char.ToUpperInvariant(level[0]) + level[1..] + " " + num + (t.Length > 0 ? ". " + t : string.Empty));
+                    var label = char.ToUpperInvariant(level[0]) + level[1..] + " " + num + (t.Length > 0 ? ". " + t : string.Empty);
+                    SetSection(level, label);
+                    units.Add(NativeUnit.Create(units.Count, $"{level}:{num}", t, label, string.Empty, CurrentSection(), "section"));
                 }
                 else
                 {
@@ -455,7 +468,9 @@ public sealed class NativeComparisonEngine : IComparisonEngine
                     var num = kh.Groups["num"].Value;
                     var t = (kh.Groups["p"].Value + kh.Groups["b"].Value + kh.Groups["title"].Value).Trim();
                     if (t.Length == 0) t = NextTitle(ref i) ?? string.Empty;
-                    SetSection(level, $"제{num}{level}" + (t.Length > 0 ? " " + t : string.Empty));
+                    var label = $"제{num}{level}" + (t.Length > 0 ? " " + t : string.Empty);
+                    SetSection(level, label);
+                    units.Add(NativeUnit.Create(units.Count, $"{level}:{num}", t, label, string.Empty, CurrentSection(), "section"));
                 }
                 continue;
             }
@@ -464,6 +479,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             if (km.Success || em.Success)
             {
                 FlushArticle();
+                FlushLoose();
                 if (km.Success)
                 {
                     number = km.Groups[2].Success ? $"{km.Groups[1].Value}의{km.Groups[2].Value}" : km.Groups[1].Value;
@@ -486,19 +502,13 @@ public sealed class NativeComparisonEngine : IComparisonEngine
                 continue;
             }
 
-            if (header is null) preamble.Add(line); else body.Add(line);
+            if (header is null) loose.Add(line); else body.Add(line);
         }
         FlushArticle();
-
-        // Python V2.8 excludes preamble from legal article comparison once real articles exist.
-        if (units.Count > 0) return units;
-        foreach (var line in preamble)
-        {
-            if (EnglishHierarchy.IsMatch(line) || KoreanHierarchy.IsMatch(line)) continue;
-            units.Add(NativeUnit.Create(units.Count, $"p{units.Count + 1}", $"문단 {units.Count + 1}", $"문단 {units.Count + 1}", line, string.Empty));
-        }
+        FlushLoose();
         return units;
     }
+
 
     private static (string Number, string Header)? GenericHeading(string line)
     {
@@ -823,21 +833,92 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             var r = mapping[bi]; mapping[bi] = r with { Mode = "moved" };
         }
 
-        // Preamble maps only to preamble and never participates in article lineage.
-        var preA = Enumerable.Range(0, a.Count).Where(i => !IsLegalArticle(a[i])).ToList();
-        var preB = Enumerable.Range(0, b.Count).Where(i => !IsLegalArticle(b[i]) && !usedB.Contains(i)).ToList();
-        foreach (var ai in preA)
+        // Everything outside articles remains part of the legal comparison.  Preamble/body
+        // blocks and explicit chapter/part headings are aligned separately so they cannot be
+        // swallowed by article lineage matching.
+        foreach (var match in MatchNonArticleUnits(a, b, usedB, token))
         {
-            var best = preB.Where(j => !usedB.Contains(j))
-                .Select(j => (J: j, S: Similarity(a[ai].Body, b[j].Body)))
-                .OrderByDescending(z => z.S).FirstOrDefault();
-            if (best != default && best.S >= .48)
-            {
-                mapping[ai] = new UnitMatch(ai, best.J, best.S, "same"); usedB.Add(best.J);
-            }
+            mapping[match.Base] = match;
+            usedB.Add(match.Other);
         }
 
         return mapping.Values.OrderBy(z => z.Base).ToList();
+    }
+
+    private static List<UnitMatch> MatchNonArticleUnits(IReadOnlyList<NativeUnit> a, IReadOnlyList<NativeUnit> b,
+        IReadOnlySet<int> alreadyUsedB, CancellationToken token)
+    {
+        var aa = Enumerable.Range(0, a.Count).Where(i => !IsLegalArticle(a[i])).ToList();
+        var bb = Enumerable.Range(0, b.Count).Where(i => !IsLegalArticle(b[i]) && !alreadyUsedB.Contains(i)).ToList();
+        if (aa.Count == 0 || bb.Count == 0) return new();
+
+        double Score(int ai, int bj)
+        {
+            var x = a[ai]; var y = b[bj];
+            if (!string.Equals(x.Kind, y.Kind, StringComparison.Ordinal)) return 0;
+            var sim = Similarity(x.Text, y.Text);
+            if (x.Kind == "section")
+            {
+                if (string.Equals(x.Number, y.Number, StringComparison.OrdinalIgnoreCase)) sim = Math.Max(sim, .88);
+                else if (x.Title.Length > 0 && y.Title.Length > 0) sim = Math.Max(sim, .70 * Similarity(x.Title, y.Title));
+            }
+            return sim;
+        }
+        double Threshold(int ai, int bj)
+        {
+            var x = a[ai]; var y = b[bj];
+            if (!string.Equals(x.Kind, y.Kind, StringComparison.Ordinal)) return 2.0;
+            if (x.Kind == "section" && string.Equals(x.Number, y.Number, StringComparison.OrdinalIgnoreCase)) return .30;
+            return .48;
+        }
+
+        const double gap = .48;
+        const byte M = 1, D = 2, I = 3;
+        var n = aa.Count; var m = bb.Count;
+        var prev = new byte[n + 1, m + 1];
+        var prior = new double[m + 1];
+        var current = new double[m + 1];
+        for (var j = 1; j <= m; j++) { prior[j] = prior[j - 1] + gap; prev[0, j] = I; }
+        for (var i = 1; i <= n; i++)
+        {
+            token.ThrowIfCancellationRequested();
+            current[0] = prior[0] + gap; prev[i, 0] = D;
+            for (var j = 1; j <= m; j++)
+            {
+                var sim = Score(aa[i - 1], bb[j - 1]);
+                var threshold = Threshold(aa[i - 1], bb[j - 1]);
+                var matchCost = sim >= threshold ? .94 * (1.0 - sim) : 1.08;
+                var mc = prior[j - 1] + matchCost;
+                var dc = prior[j] + gap;
+                var ic = current[j - 1] + gap;
+                if (mc <= dc && mc <= ic) { current[j] = mc; prev[i, j] = M; }
+                else if (dc <= ic) { current[j] = dc; prev[i, j] = D; }
+                else { current[j] = ic; prev[i, j] = I; }
+            }
+            (prior, current) = (current, prior);
+        }
+
+        var ops = new List<(byte Op, int A, int B)>();
+        var xPos = n; var yPos = m;
+        while (xPos > 0 || yPos > 0)
+        {
+            var op = prev[xPos, yPos];
+            if (op == M) { ops.Add((M, xPos - 1, yPos - 1)); xPos--; yPos--; }
+            else if (op == D) { ops.Add((D, xPos - 1, -1)); xPos--; }
+            else { ops.Add((I, -1, yPos - 1)); yPos--; }
+        }
+        ops.Reverse();
+
+        var result = new List<UnitMatch>();
+        foreach (var op in ops)
+        {
+            if (op.Op != M) continue;
+            var ai = aa[op.A]; var bj = bb[op.B];
+            var sim = Score(ai, bj);
+            if (sim < Threshold(ai, bj)) continue;
+            result.Add(new UnitMatch(ai, bj, sim, "same"));
+        }
+        return result;
     }
 
     private static List<UnitMatch> MatchGenericUnits(IReadOnlyList<NativeUnit> a, IReadOnlyList<NativeUnit> b, CancellationToken token)
@@ -916,7 +997,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     }
 
     private static bool IsLegalArticle(NativeUnit u) =>
-        u.Header.Length > 0 && u.Number.Length > 0 && !u.Number.StartsWith('p') && !u.Number.StartsWith('g');
+        string.Equals(u.Kind, "article", StringComparison.Ordinal);
 
     private static readonly HashSet<string> TitleStopWords = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -1067,8 +1148,9 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             if (old is null && revised is null) continue;
             if (old is null)
             {
-                structural.Add($"{pair} · 상태: 조 신규");
-                structural.Add($"{pair} · 조 추가: {revised!.HeaderOrBody}");
+                var unitLabel = revised!.Kind == "article" ? "조" : revised.Kind == "section" ? "장/절" : "본문 블록";
+                structural.Add($"{pair} · 상태: {unitLabel} 신규");
+                structural.Add($"{pair} · {unitLabel} 추가: {revised.HeaderOrBody}");
                 if (revised.Header.Length > 0)
                     nativeMarkers.Add(NativeMarker.Insert(pair, order, oldDoc, newDoc, revised.Header, 0, 0, revised.Header.Length, "header", -2, -2));
                 if (revised.Body.Length > 0)
@@ -1080,8 +1162,9 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             }
             if (revised is null)
             {
-                structural.Add($"{pair} · 상태: 조 삭제");
-                structural.Add($"{pair} · 조 삭제: {old.HeaderOrBody}");
+                var unitLabel = old.Kind == "article" ? "조" : old.Kind == "section" ? "장/절" : "본문 블록";
+                structural.Add($"{pair} · 상태: {unitLabel} 삭제");
+                structural.Add($"{pair} · {unitLabel} 삭제: {old.HeaderOrBody}");
                 if (old.Header.Length > 0)
                     nativeMarkers.Add(NativeMarker.Delete(pair, order, oldDoc, newDoc, old.Header, 0, old.Header.Length, 0, "header", -2, -2));
                 if (old.Body.Length > 0)
@@ -1214,8 +1297,16 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         result = CoalesceLocationReplacements(result, oldDoc, newDoc);
         var substantive = titleChanged || bodyChanged || structureChanged;
         if (articleMoved) structural.Insert(0, $"{pair} · 상태: {(substantive ? "조 이동+변경" : "조 이동")}");
-        else if (structureChanged) structural.Insert(0, $"{pair} · 상태: 조 구조변경");
-        else if (titleChanged || bodyChanged) structural.Insert(0, $"{pair} · 상태: 조 변경");
+        else if (IsLegalArticle(old) && IsLegalArticle(revised))
+        {
+            if (structureChanged) structural.Insert(0, $"{pair} · 상태: 조 구조변경");
+            else if (titleChanged || bodyChanged) structural.Insert(0, $"{pair} · 상태: 조 변경");
+        }
+        else if (titleChanged || bodyChanged || structureChanged)
+        {
+            var unitLabel = old.Kind == "section" || revised.Kind == "section" ? "장/절" : "본문 블록";
+            structural.Insert(0, $"{pair} · 상태: {unitLabel} 변경");
+        }
         return result;
     }
 
@@ -2421,6 +2512,11 @@ public sealed class NativeComparisonEngine : IComparisonEngine
 
     private static void ApplySectionHeaders(IReadOnlyList<ComparisonRowVm> rows, int count)
     {
+        if (rows.Any(r => r.Members.Any(m => string.Equals(m?.Kind, "section", StringComparison.Ordinal))))
+        {
+            foreach (var row in rows) row.SectionHeaders = Enumerable.Repeat<string?>(null, count).ToList();
+            return;
+        }
         var previous = new string?[count];
         foreach (var row in rows)
         {
@@ -2674,6 +2770,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     private sealed class NativeUnit
     {
         public int Index { get; init; }
+        public string Kind { get; init; } = "block";
         public string Number { get; init; } = "";
         public string Title { get; init; } = "";
         public string Header { get; init; } = "";
@@ -2683,11 +2780,11 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         public string HeaderOrBody => Header.Length > 0 ? Header : Body;
         public string NormalizedBody => Normalize(Body);
         public string NormalizedText => Normalize(Text);
-        public static NativeUnit Create(int index, string number, string title, string header, string body, string section) =>
-            new() { Index = index, Number = number, Title = title, Header = header, Body = body, Section = section };
+        public static NativeUnit Create(int index, string number, string title, string header, string body, string section, string kind = "block") =>
+            new() { Index = index, Kind = kind, Number = number, Title = title, Header = header, Body = body, Section = section };
         public MemberVm ToViewModel() => new()
         {
-            Index = Index, Kind = "article", Number = Number, Title = Title, Header = Header,
+            Index = Index, Kind = Kind, Number = Number, Title = Title, Header = Header,
             Body = Body, Text = Text, Section = Section
         };
     }

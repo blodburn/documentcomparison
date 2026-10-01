@@ -9,12 +9,13 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.20.27**
+**V5.20.28**
 
-- Restored the on-screen comparison behavior from V5.20.25.
-- Improved Word export to preserve the original document's paragraph presentation where safe.
-- Preserved original formatting for deleted text and deleted paragraphs while keeping revised formatting for inserted text.
-- Improved preservation of original named styles and default styles in exported Word documents.
+- Legal/article comparison now compares the entire document; article boundaries define alignment units instead of excluding non-article content.
+- Document titles, dates, introductions, and other text before the first article remain in the comparison.
+- Chapter/part/section headings are explicit comparison units, so hierarchy-title edits are detected.
+- Chapter/section headings use a light-blue highlight and article headings use a distinct light-gray highlight.
+- Word export style-preservation behavior from V5.20.27 is unchanged.
 
 ## Features
 

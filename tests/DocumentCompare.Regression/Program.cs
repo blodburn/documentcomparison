@@ -1459,4 +1459,49 @@ using(var styleDefStream=styleDefZip.GetEntry("word/styles.xml")!.Open())
 }
 Console.WriteLine("PASS WORD ORIGINAL STYLE-DEFINITION PRESERVATION");
 
+
+// 129. Legal/article mode divides the document at articles, but must still compare all content
+// before the first article.  Preamble/title/date/intro text may not disappear from the result.
+var fullLegalA=Path.Combine(dir,"fullLegalA.txt");var fullLegalB=Path.Combine(dir,"fullLegalB.txt");
+File.WriteAllText(fullLegalA,string.Join("\n",new[]{
+    "슈퍼캣 개인정보 처리방침",
+    "2022-09-08",
+    "주식회사 슈퍼캣은 이용자에게 최상의 서비스를 제공하고자 합니다.",
+    "회사는 이용자의 개인정보를 안전하게 처리합니다.",
+    "제1조(수집하는 이용자의 개인정보 항목 및 수집방법)",
+    "① 회사는 서비스 제공에 필요한 정보를 수집합니다."
+}),new UTF8Encoding(false));
+File.WriteAllText(fullLegalB,string.Join("\n",new[]{
+    "슈퍼캣 개인정보 처리방침",
+    "2026-11-09",
+    "주식회사 슈퍼캣은 이용자에게 최상의 서비스를 제공하고자 합니다.",
+    "회사는 이용자의 개인정보를 안전하고 투명하게 처리합니다.",
+    "제1조(수집하는 이용자의 개인정보 항목 및 수집방법)",
+    "① 회사는 서비스 제공에 필요한 정보를 수집합니다."
+}),new UTF8Encoding(false));
+var fullLegal=await eng.CompareAsync(new[]{fullLegalA,fullLegalB},0,"legal",true,true);
+Check(fullLegal.Rows.Count>=2,"legal comparison dropped the preamble block");
+var preambleRow=fullLegal.Rows.FirstOrDefault(r=>r.Members.Any(m=>m?.Text.Contains("슈퍼캣 개인정보 처리방침")==true));
+Check(preambleRow is not null,"legal comparison result does not contain document preamble/title");
+Check(preambleRow!.Members[0]?.Kind=="block"&&preambleRow.Members[1]?.Kind=="block","preamble was not represented as a non-article block");
+Check(preambleRow.Markers.Count>0&&preambleRow.DisplayMessages.Any(m=>m.Contains("2022-09-08")||m.Contains("2026-11-09")||m.Contains("투명")),"preamble changes were not compared");
+var firstArticleRow=fullLegal.Rows.FirstOrDefault(r=>r.Members.Any(m=>m?.Kind=="article"));
+Check(firstArticleRow is not null&&fullLegal.Rows.IndexOf(preambleRow)<fullLegal.Rows.IndexOf(firstArticleRow),"preamble was not kept before the first article");
+Console.WriteLine("PASS LEGAL FULL-DOCUMENT PREAMBLE COMPARISON");
+
+// 130. Chapter/part headings are real comparison units, not decoration.  This both catches
+// hierarchy-title edits and lets the UI render chapter and article headings with different fills.
+var hierarchyA=Path.Combine(dir,"hierarchyA.txt");var hierarchyB=Path.Combine(dir,"hierarchyB.txt");
+File.WriteAllText(hierarchyA,"제1장 총칙\n제1조(목적)\n① 이 규정은 목적을 정합니다.",new UTF8Encoding(false));
+File.WriteAllText(hierarchyB,"제1장 일반사항\n제1조(목적)\n① 이 규정은 목적을 정합니다.",new UTF8Encoding(false));
+var hierarchyCmp=await eng.CompareAsync(new[]{hierarchyA,hierarchyB},0,"legal",true,true);
+var hierarchyRow=hierarchyCmp.Rows.FirstOrDefault(r=>r.Members.Any(m=>m?.Kind=="section"));
+Check(hierarchyRow is not null,"chapter heading was not emitted as a comparison unit");
+Check(hierarchyRow!.Members[0]?.Header.Contains("제1장")==true&&hierarchyRow.Members[1]?.Header.Contains("제1장")==true,"chapter heading text missing");
+Check(hierarchyRow.Markers.Count>0,"chapter title edit was not detected");
+Check(!hierarchyCmp.Rows.Any(r=>r.SectionHeaders.Any(x=>!string.IsNullOrWhiteSpace(x))),"legacy section strip duplicated explicit chapter rows");
+var hierarchyArticle=hierarchyCmp.Rows.FirstOrDefault(r=>r.Members.Any(m=>m?.Kind=="article"));
+Check(hierarchyArticle is not null,"article row disappeared when chapter rows were emitted");
+Console.WriteLine("PASS LEGAL HIERARCHY COMPARISON UNITS");
+
 Console.WriteLine("ALL REGRESSIONS PASSED");
