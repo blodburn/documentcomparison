@@ -1411,21 +1411,21 @@ Check(plainText.Contains("제1항에도 불구하고")&&plainText.Contains("이 
 Console.WriteLine("PASS BALANCED WORD TRACK CHANGES: "+balancedRevisions.Count+" revision nodes");
 
 
-// 126. Word export keeps the original paragraph presentation for matched paragraphs while
-// inserted text keeps the revised run style and deleted text keeps the original run style.
+// 126. Word export uses revised document B as the final visual baseline for matched paragraphs.
+// Deleted text keeps A's direct run style, while inserted/surviving content keeps B's style.
 var styleOutA=Path.Combine(dir,"styleOutA.docx");var styleOutB=Path.Combine(dir,"styleOutB.docx");var styleOutO=Path.Combine(dir,"styleOut.docx");
 Make(styleOutA,"<w:p><w:pPr><w:spacing w:before='240'/><w:ind w:left='720'/><w:jc w:val='center'/></w:pPr><w:r><w:t xml:space='preserve'>Alpha </w:t></w:r><w:r><w:rPr><w:b/></w:rPr><w:t>OLD</w:t></w:r><w:r><w:t xml:space='preserve'> Omega</w:t></w:r></w:p>");
 Make(styleOutB,"<w:p><w:pPr><w:spacing w:before='0'/><w:ind w:left='0'/><w:jc w:val='left'/></w:pPr><w:r><w:t xml:space='preserve'>Alpha </w:t></w:r><w:r><w:rPr><w:i/></w:rPr><w:t>NEW</w:t></w:r><w:r><w:t xml:space='preserve'> Omega</w:t></w:r></w:p>");
 await eng.ExportWordAsync(styleOutA,styleOutB,styleOutO,"T",true);
 var styleOutDoc=Doc(styleOutO);var styleOutP=styleOutDoc.Descendants(w+"p").First();var styleOutPPr=styleOutP.Element(w+"pPr");
-Check(styleOutPPr?.Element(w+"spacing")?.Attribute(w+"before")?.Value=="240","Word export did not preserve original paragraph spacing");
-Check(styleOutPPr?.Element(w+"ind")?.Attribute(w+"left")?.Value=="720","Word export did not preserve original paragraph indentation");
-Check(styleOutPPr?.Element(w+"jc")?.Attribute(w+"val")?.Value=="center","Word export did not preserve original paragraph alignment");
+Check(styleOutPPr?.Element(w+"spacing")?.Attribute(w+"before")?.Value=="0","Word export did not preserve revised paragraph spacing");
+Check(styleOutPPr?.Element(w+"ind")?.Attribute(w+"left")?.Value=="0","Word export did not preserve revised paragraph indentation");
+Check(styleOutPPr?.Element(w+"jc")?.Attribute(w+"val")?.Value=="left","Word export did not preserve revised paragraph alignment");
 var oldDel=styleOutP.Descendants(w+"del").FirstOrDefault(x=>string.Concat(x.Descendants(w+"delText").Select(t=>t.Value)).Contains("OLD"));
 Check(oldDel?.Descendants(w+"rPr").Any(r=>r.Element(w+"b") is not null)==true,"deleted text lost original run formatting");
 var newIns=styleOutP.Descendants(w+"ins").FirstOrDefault(x=>string.Concat(x.Descendants(w+"t").Select(t=>t.Value)).Contains("NEW"));
 Check(newIns?.Descendants(w+"rPr").Any(r=>r.Element(w+"i") is not null)==true,"inserted text lost revised run formatting");
-Console.WriteLine("PASS WORD ORIGINAL PARAGRAPH/RUN STYLE PRESERVATION");
+Console.WriteLine("PASS WORD REVISED PARAGRAPH BASELINE + DELETED RUN STYLE");
 
 // 127. A wholly deleted paragraph must retain its own original paragraph/run formatting rather
 // than borrowing the nearest surviving paragraph's presentation.
@@ -1441,8 +1441,8 @@ Check(deletedStyleP.Descendants(w+"del").Descendants(w+"rPr").Any(r=>r.Element(w
 Console.WriteLine("PASS WORD WHOLE-DELETION STYLE PRESERVATION");
 
 
-// 128. When both DOCX files reference the same named style, the output keeps the original
-// style definition so the tracked document retains the original document's visual baseline.
+// 128. When both DOCX files reference the same named style, the output keeps B's style
+// definition and docDefaults. Accepting all revisions must therefore render like revised B.
 var styleDefA=Path.Combine(dir,"styleDefA.docx");var styleDefB=Path.Combine(dir,"styleDefB.docx");var styleDefO=Path.Combine(dir,"styleDefOut.docx");
 Make(styleDefA,"<w:p><w:pPr><w:pStyle w:val='BodyCustom'/></w:pPr><w:r><w:t>Alpha OLD</w:t></w:r></w:p>");
 Make(styleDefB,"<w:p><w:pPr><w:pStyle w:val='BodyCustom'/></w:pPr><w:r><w:t>Alpha NEW</w:t></w:r></w:p>");
@@ -1454,10 +1454,10 @@ using(var styleDefStream=styleDefZip.GetEntry("word/styles.xml")!.Open())
 {
     var styleDefXml=XDocument.Load(styleDefStream);var styleDefRoot=styleDefXml.Root!;
     var bodyCustom=styleDefRoot.Elements(w+"style").First(x=>x.Attribute(w+"styleId")?.Value=="BodyCustom");
-    Check(bodyCustom.Descendants(w+"b").Any()&&!bodyCustom.Descendants(w+"i").Any(),"Word export did not prefer original named-style definition");
-    Check(styleDefRoot.Descendants(w+"rPrDefault").Descendants(w+"sz").FirstOrDefault()?.Attribute(w+"val")?.Value=="20","Word export did not preserve original default run style");
+    Check(bodyCustom.Descendants(w+"i").Any()&&!bodyCustom.Descendants(w+"b").Any(),"Word export overwrote revised named-style definition with original style");
+    Check(styleDefRoot.Descendants(w+"rPrDefault").Descendants(w+"sz").FirstOrDefault()?.Attribute(w+"val")?.Value=="40","Word export overwrote revised docDefaults with original defaults");
 }
-Console.WriteLine("PASS WORD ORIGINAL STYLE-DEFINITION PRESERVATION");
+Console.WriteLine("PASS WORD REVISED STYLE-DEFINITION BASELINE");
 
 
 // 129. Legal/article mode divides the document at articles, but must still compare all content
@@ -1503,5 +1503,34 @@ Check(!hierarchyCmp.Rows.Any(r=>r.SectionHeaders.Any(x=>!string.IsNullOrWhiteSpa
 var hierarchyArticle=hierarchyCmp.Rows.FirstOrDefault(r=>r.Members.Any(m=>m?.Kind=="article"));
 Check(hierarchyArticle is not null,"article row disappeared when chapter rows were emitted");
 Console.WriteLine("PASS LEGAL HIERARCHY COMPARISON UNITS");
+
+
+// 131. Regression for the privacy-policy table screenshot: A may carry paragraph shading and a
+// table-style definition that differ from B. Export must not reapply those A properties to live B
+// content. The revised table indentation/style and B header-cell presentation must survive intact.
+var tableBaseA=Path.Combine(dir,"tableBaseA.docx");var tableBaseB=Path.Combine(dir,"tableBaseB.docx");var tableBaseO=Path.Combine(dir,"tableBaseOut.docx");
+var tableA="<w:tbl><w:tblPr><w:tblStyle w:val='PrivacyTable'/><w:tblInd w:w='0' w:type='dxa'/></w:tblPr><w:tblGrid><w:gridCol w:w='1800'/><w:gridCol w:w='2100'/><w:gridCol w:w='2100'/></w:tblGrid><w:tr>"+
+    "<w:tc><w:tcPr><w:shd w:fill='F2F2F2'/></w:tcPr><w:p><w:pPr><w:shd w:fill='FFFFFF'/><w:jc w:val='center'/></w:pPr><w:r><w:t>구분</w:t></w:r></w:p></w:tc>"+
+    "<w:tc><w:tcPr><w:shd w:fill='F2F2F2'/></w:tcPr><w:p><w:pPr><w:shd w:fill='FFFFFF'/><w:jc w:val='center'/></w:pPr><w:r><w:t>책임자 및 담당부서</w:t></w:r></w:p></w:tc>"+
+    "<w:tc><w:tcPr><w:shd w:fill='F2F2F2'/></w:tcPr><w:p><w:pPr><w:shd w:fill='FFFFFF'/><w:jc w:val='center'/></w:pPr><w:r><w:t>연락처 OLD</w:t></w:r></w:p></w:tc></w:tr></w:tbl>";
+var tableB="<w:tbl><w:tblPr><w:tblStyle w:val='PrivacyTable'/><w:tblInd w:w='720' w:type='dxa'/></w:tblPr><w:tblGrid><w:gridCol w:w='1800'/><w:gridCol w:w='2100'/><w:gridCol w:w='2100'/></w:tblGrid><w:tr>"+
+    "<w:tc><w:tcPr><w:shd w:fill='F2F2F2'/></w:tcPr><w:p><w:pPr><w:jc w:val='center'/></w:pPr><w:r><w:t>구분</w:t></w:r></w:p></w:tc>"+
+    "<w:tc><w:tcPr><w:shd w:fill='F2F2F2'/></w:tcPr><w:p><w:pPr><w:jc w:val='center'/></w:pPr><w:r><w:t>책임자 및 담당부서</w:t></w:r></w:p></w:tc>"+
+    "<w:tc><w:tcPr><w:shd w:fill='F2F2F2'/></w:tcPr><w:p><w:pPr><w:jc w:val='center'/></w:pPr><w:r><w:t>연락처 NEW</w:t></w:r></w:p></w:tc></w:tr></w:tbl>";
+Make(tableBaseA,tableA);Make(tableBaseB,tableB);
+AddWordXml(tableBaseA,"word/styles.xml","<w:styles xmlns:w='"+W+"'><w:style w:type='table' w:styleId='PrivacyTable'><w:name w:val='PrivacyTable'/><w:tblPr><w:tblInd w:w='0' w:type='dxa'/></w:tblPr></w:style></w:styles>");
+AddWordXml(tableBaseB,"word/styles.xml","<w:styles xmlns:w='"+W+"'><w:style w:type='table' w:styleId='PrivacyTable'><w:name w:val='PrivacyTable'/><w:tblPr><w:tblInd w:w='720' w:type='dxa'/></w:tblPr></w:style></w:styles>");
+await eng.ExportWordAsync(tableBaseA,tableBaseB,tableBaseO,"T",true);
+var tableBaseDoc=Doc(tableBaseO);var tableBaseTbl=tableBaseDoc.Descendants(w+"tbl").First();
+Check(tableBaseTbl.Element(w+"tblPr")?.Element(w+"tblInd")?.Attribute(w+"w")?.Value=="720","tracked export changed revised table indentation");
+var tableBaseHeaderPs=tableBaseTbl.Descendants(w+"tr").First().Descendants(w+"p").ToList();
+Check(tableBaseHeaderPs.All(p=>p.Element(w+"pPr")?.Element(w+"shd") is null),"tracked export reapplied original white paragraph shading over revised gray header cells");
+using(var tableBaseZip=ZipFile.OpenRead(tableBaseO))
+using(var tableBaseStyleStream=tableBaseZip.GetEntry("word/styles.xml")!.Open())
+{
+    var tableBaseStyles=XDocument.Load(tableBaseStyleStream);var privacyStyle=tableBaseStyles.Root!.Elements(w+"style").First(x=>x.Attribute(w+"styleId")?.Value=="PrivacyTable");
+    Check(privacyStyle.Descendants(w+"tblInd").FirstOrDefault()?.Attribute(w+"w")?.Value=="720","tracked export overwrote revised table-style indentation with original style");
+}
+Console.WriteLine("PASS WORD REVISED TABLE/HEADER STYLE BASELINE");
 
 Console.WriteLine("ALL REGRESSIONS PASSED");

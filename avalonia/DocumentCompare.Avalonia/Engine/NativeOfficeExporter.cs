@@ -366,8 +366,10 @@ internal static class NativeOfficeExporter
             var op = ops[k];
             if (op.Old >= 0 && op.New >= 0)
             {
-                ApplyOriginalParagraphPresentation(revisedParagraphs[op.New].Paragraph,
-                    originalParagraphs[op.Old].Paragraph, revisedParagraphs[op.New].Numbering, w);
+                // B (the revised document) is the physical/visual baseline.  A tracked-change
+                // document must render like B after accepting all revisions, so never replace
+                // the surviving B paragraph properties with A's presentation here.  Deleted
+                // fragments still carry A's direct run/paragraph formatting below.
                 ApplyTrackedNumberingDiff(revisedParagraphs[op.New].Paragraph,
                     originalParagraphs[op.Old].Numbering, revisedParagraphs[op.New].Numbering,
                     author, ref revisionId, w);
@@ -400,13 +402,18 @@ internal static class NativeOfficeExporter
         }
 
         if (originalIsDocx && revisedIsDocx)
-            MergeOriginalStyleDefinitions(originalPath, zip, w);
+            ImportMissingOriginalStyleDefinitions(originalPath, zip, w);
         ReplaceEntry(zip, "word/document.xml", document.ToString(SaveOptions.DisableFormatting));
         EnsureTrackRevisions(zip);
     }
 
-    private static void MergeOriginalStyleDefinitions(string originalPath, ZipArchive outputZip, XNamespace w)
+    private static void ImportMissingOriginalStyleDefinitions(string originalPath, ZipArchive outputZip, XNamespace w)
     {
+        // The output package is a clone of revised document B.  Existing B styles and docDefaults
+        // are part of B's final appearance and therefore must not be replaced by A.  We only add
+        // A-only named styles so wholly deleted content can still resolve style references that do
+        // not exist in B.  Conflicting IDs intentionally keep B's definition; deleted content also
+        // carries its original direct pPr/rPr formatting where available.
         var outputEntry = outputZip.GetEntry("word/styles.xml");
         if (outputEntry is null || !File.Exists(originalPath)) return;
         using var originalFs = new FileStream(originalPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
@@ -420,24 +427,20 @@ internal static class NativeOfficeExporter
         var sourceRoot = originalStyles.Root; var targetRoot = outputStyles.Root;
         if (sourceRoot is null || targetRoot is null) return;
 
-        var sourceDefaults = sourceRoot.Element(w + "docDefaults");
-        var targetDefaults = targetRoot.Element(w + "docDefaults");
-        if (sourceDefaults is not null)
-        {
-            if (targetDefaults is null) targetRoot.AddFirst(new XElement(sourceDefaults));
-            else targetDefaults.ReplaceWith(new XElement(sourceDefaults));
-        }
-
+        var existingIds = targetRoot.Elements(w + "style")
+            .Select(x => x.Attribute(w + "styleId")?.Value)
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .ToHashSet(StringComparer.Ordinal);
+        var changed = false;
         foreach (var sourceStyle in sourceRoot.Elements(w + "style"))
         {
             var styleId = sourceStyle.Attribute(w + "styleId")?.Value;
-            if (string.IsNullOrWhiteSpace(styleId)) continue;
-            var targetStyle = targetRoot.Elements(w + "style")
-                .FirstOrDefault(x => string.Equals(x.Attribute(w + "styleId")?.Value, styleId, StringComparison.Ordinal));
-            if (targetStyle is null) targetRoot.Add(new XElement(sourceStyle));
-            else targetStyle.ReplaceWith(new XElement(sourceStyle));
+            if (string.IsNullOrWhiteSpace(styleId) || !existingIds.Add(styleId)) continue;
+            targetRoot.Add(new XElement(sourceStyle));
+            changed = true;
         }
-        ReplaceEntry(outputZip, "word/styles.xml", outputStyles.ToString(SaveOptions.DisableFormatting));
+        if (changed)
+            ReplaceEntry(outputZip, "word/styles.xml", outputStyles.ToString(SaveOptions.DisableFormatting));
     }
 
     private static void WriteFlatTrackedBody(XElement body, string oldText, string newText, string author,
@@ -1160,45 +1163,6 @@ internal static class NativeOfficeExporter
     {
         var before = pPr.Elements().FirstOrDefault(x => ParagraphPropertiesAfterNumbering.Contains(x.Name.LocalName));
         if (before is null) pPr.Add(numPr); else before.AddBeforeSelf(numPr);
-    }
-
-    private static void ApplyOriginalParagraphPresentation(XElement targetParagraph, XElement? originalParagraph,
-        NativeDocumentReader.ParagraphNumberInfo revisedNumbering, XNamespace w)
-    {
-        if (originalParagraph is null) return;
-        var targetPPr = targetParagraph.Element(w + "pPr");
-        var preservedNumPr = targetPPr?.Element(w + "numPr") is XElement np ? new XElement(np) : null;
-        var preservedSectPr = targetPPr?.Element(w + "sectPr") is XElement sp ? new XElement(sp) : null;
-        var sourcePPr = originalParagraph.Element(w + "pPr");
-
-        XElement? merged = sourcePPr is null ? null : new XElement(sourcePPr);
-        if (merged is not null)
-        {
-            merged.Elements(w + "numPr").Remove();
-            merged.Elements(w + "sectPr").Remove();
-            merged.Elements(w + "pPrChange").Remove();
-        }
-
-        if (merged is null && (preservedNumPr is not null || preservedSectPr is not null))
-            merged = new XElement(w + "pPr");
-        if (merged is null)
-        {
-            targetPPr?.Remove();
-            return;
-        }
-
-        if (preservedNumPr is not null) InsertNumberingPropertiesInOrder(merged, preservedNumPr);
-        else if (revisedNumbering.NumId is int numId && numId != 0)
-        {
-            var numPr = new XElement(w + "numPr",
-                new XElement(w + "ilvl", new XAttribute(w + "val", revisedNumbering.Level)),
-                new XElement(w + "numId", new XAttribute(w + "val", numId)));
-            InsertNumberingPropertiesInOrder(merged, numPr);
-        }
-        if (preservedSectPr is not null) merged.Add(preservedSectPr);
-
-        if (targetPPr is null) targetParagraph.AddFirst(merged);
-        else targetPPr.ReplaceWith(merged);
     }
 
     private sealed record StyledTextFragment(string Text, XElement? RunProperties);

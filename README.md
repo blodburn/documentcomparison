@@ -9,13 +9,14 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.20.28**
+**V5.20.29**
 
-- Legal/article comparison now compares the entire document; article boundaries define alignment units instead of excluding non-article content.
-- Document titles, dates, introductions, and other text before the first article remain in the comparison.
-- Chapter/part/section headings are explicit comparison units, so hierarchy-title edits are detected.
-- Chapter/section headings use a light-blue highlight and article headings use a distinct light-gray highlight.
-- Word export style-preservation behavior from V5.20.27 is unchanged.
+- Word Track Changes now keeps the revised document as the final visual baseline for surviving content.
+- Accepting all revisions no longer reapplies original paragraph spacing, indentation, alignment, shading, named styles, or document defaults over the revised document.
+- Fixed table layout regressions where exported tracked documents could lose the revised table indent or show white paragraph shading over gray header cells.
+- Deleted text and wholly deleted paragraphs still retain original direct formatting where available.
+- Original named styles that do not exist in the revised document are imported without overwriting revised style definitions.
+- Full-document legal comparison and chapter/article highlighting from V5.20.28 are retained.
 
 ## Features
 
