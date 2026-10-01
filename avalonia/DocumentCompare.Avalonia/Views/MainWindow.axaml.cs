@@ -157,7 +157,7 @@ public partial class MainWindow : Window
 
     private void ApplyLanguage()
     {
-        Title = L("문서 비교기 V5.20.29", "Document Compare V5.20.29");
+        Title = L("문서 비교기 V5.20.30", "Document Compare V5.20.30");
         AppTitleText.Text = L("문서 비교기", "Document Compare");
         CompareButton.Content = L("비교 시작", "Compare");
         CancelButton.Content = L("취소", "Cancel");
@@ -572,7 +572,11 @@ public partial class MainWindow : Window
     private (int Original, int Revised)? DefaultWordPair()
     {
         if (_lastPaths.Length != 2) return null;
-        return _lastBaseIndex == 0 ? (0, 1) : (1, 0);
+        // The selected comparison base is the final/revised document. Word Track Changes must
+        // therefore clone that document and reconstruct the non-base document as the old state.
+        // The previous direction did the exact opposite, which made the exported DOCX inherit
+        // the pre-change table/layout styling even though the UI base was the changed document.
+        return _lastBaseIndex == 0 ? (1, 0) : (0, 1);
     }
 
     private async Task<string?> PickSavePathAsync(string title, string suggestedName, string typeName, string pattern)

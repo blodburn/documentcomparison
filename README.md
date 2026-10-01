@@ -9,14 +9,12 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.20.29**
+**V5.20.30**
 
-- Word Track Changes now keeps the revised document as the final visual baseline for surviving content.
-- Accepting all revisions no longer reapplies original paragraph spacing, indentation, alignment, shading, named styles, or document defaults over the revised document.
-- Fixed table layout regressions where exported tracked documents could lose the revised table indent or show white paragraph shading over gray header cells.
-- Deleted text and wholly deleted paragraphs still retain original direct formatting where available.
-- Original named styles that do not exist in the revised document are imported without overwriting revised style definitions.
-- Full-document legal comparison and chapter/article highlighting from V5.20.28 are retained.
+- Fixed Word Track Changes direction when a comparison base is selected. The selected base document is now treated as the revised/final document, and the other document as the original/previous document.
+- This fixes the case where a changed-after document was selected as the comparison base but Word export accidentally cloned the changed-before document and therefore kept the wrong table/layout styling.
+- For 3-way Word export, the dialog now defaults the selected comparison base to the revised/final side.
+- Revised-document visual baseline fixes from V5.20.29 are retained.
 
 ## Features
 

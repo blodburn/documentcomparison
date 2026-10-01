@@ -60,13 +60,13 @@ public sealed class HelpDialog : Window
 
     private static string BuildGuide(UiLanguage language) => language == UiLanguage.Korean
         ? """
-문서 비교기 V5.20.29 · 간단 사용설명서
+문서 비교기 V5.20.30 · 간단 사용설명서
 
 1. 문서 불러오기
 A/B/C 제목 영역을 클릭하거나 DOCX/TXT 파일을 해당 영역에 드롭합니다. A와 B는 필수이고 C는 선택입니다.
 
 2. 기준 문서 선택
-A/B/C 오른쪽의 ‘기준’을 선택합니다. 기준 문서는 행 정렬과 비교 화면의 기준축으로 사용됩니다.
+A/B/C 오른쪽의 ‘기준’을 선택합니다. 기준 문서는 행 정렬과 비교 화면의 기준축이며, Word 변경추적 내보내기에서는 기본적으로 변경 후(최종) 문서로 사용됩니다.
 
 3. 비교 실행
 ‘비교 시작’을 누릅니다. ‘비교 방식’은 자동/일반 문서/법률·규정 중 선택할 수 있습니다. 3개 문서를 사용할 때 필요하면 A↔C 추가 비교를 켤 수 있습니다.
@@ -90,7 +90,7 @@ Copyright © 2026 blodburn. All rights reserved.
 This software is proprietary and is not open source.
 """
         : """
-Document Compare V5.20.29 · Quick Guide
+Document Compare V5.20.30 · Quick Guide
 
 1. Load documents
 Click the A/B/C header area or drop DOCX/TXT files onto it. A and B are required; C is optional.

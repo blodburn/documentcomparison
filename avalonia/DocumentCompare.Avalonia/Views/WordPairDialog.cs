@@ -34,8 +34,9 @@ public sealed class WordPairDialog : Window
         _pairCombo.HorizontalAlignment = HorizontalAlignment.Stretch;
         _pairCombo.MinWidth = 560;
 
-        var defaultRevised = Enumerable.Range(0, names.Count).FirstOrDefault(i => i != Math.Clamp(baseIndex, 0, names.Count - 1));
-        var defaultPair = (Original: Math.Clamp(baseIndex, 0, names.Count - 1), Revised: defaultRevised);
+        var defaultRevised = Math.Clamp(baseIndex, 0, names.Count - 1);
+        var defaultOriginal = Enumerable.Range(0, names.Count).FirstOrDefault(i => i != defaultRevised);
+        var defaultPair = (Original: defaultOriginal, Revised: defaultRevised);
         var defaultIndex = _pairs.FindIndex(p => p == defaultPair);
         _pairCombo.SelectedIndex = defaultIndex >= 0 ? defaultIndex : 0;
 
@@ -62,7 +63,7 @@ public sealed class WordPairDialog : Window
             {
                 new TextBlock
                 {
-                    Text = UiLocalization.T(language, "변경 전 → 변경 후 방향을 드롭다운에서 선택하세요.", "Choose the original → revised direction from the dropdown."),
+                    Text = UiLocalization.T(language, "기준 문서는 변경 후(최종) 문서로 기본 선택됩니다. 필요하면 변경 전 → 변경 후 방향을 바꾸세요.", "The base document is selected as the revised/final document by default. Change the original → revised direction if needed."),
                     TextWrapping = TextWrapping.Wrap
                 },
                 new TextBlock { Text = UiLocalization.T(language, "비교 조합", "Comparison pair"), FontWeight = FontWeight.SemiBold },
