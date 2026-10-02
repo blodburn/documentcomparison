@@ -1574,6 +1574,19 @@ using(var excelStructZip=ZipFile.OpenRead(excelStructO))
     Check(!leftTexts.Any(x=>x.Contains("① ")&&x.Contains("1. ")&&x.Contains("2. ")),"Excel still collapsed 항/호 into one article row");
     Check(rows.All(r=>r.Attribute("customHeight")?.Value=="1"&&double.TryParse(r.Attribute("ht")?.Value,System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture,out var h)&&h>=21),"Excel data rows do not expose all wrapped text heights");
     Check(sheetRoot.Element(sx+"autoFilter")?.Attribute("ref")?.Value.StartsWith("A1:C",StringComparison.Ordinal)==true,"Excel filter range is not A:C");
+    var itemRow=rows.First(r=>RowCellText(r,0).StartsWith("① ",StringComparison.Ordinal));
+    Check(itemRow.Elements(sx+"c").Take(3).All(c=>c.Attribute("s")?.Value=="4"),"Excel body/item cells are not using the dedicated wrapped style");
+}
+using(var excelStructStyleZip=ZipFile.OpenRead(excelStructO))
+using(var styleStream=excelStructStyleZip.GetEntry("xl/styles.xml")!.Open())
+{
+    XNamespace sx="http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+    var styles=XDocument.Load(styleStream);
+    var xfs=styles.Root!.Element(sx+"cellXfs")!.Elements(sx+"xf").ToList();
+    Check(xfs.Count>=5,"Excel wrapped body style missing");
+    var bodyAlignment=xfs[4].Element(sx+"alignment");
+    Check(bodyAlignment?.Attribute("wrapText")?.Value=="1"&&bodyAlignment?.Attribute("vertical")?.Value=="top",
+        "Excel body style does not force wrapped/top-aligned text");
 }
 using(var excelStructDoc=SpreadsheetDocument.Open(excelStructO,false))
 {
@@ -1605,6 +1618,8 @@ using(var excel3Zip=ZipFile.OpenRead(excel3O))
     Check(headers.Count==4&&headers[0].StartsWith("A ·")&&headers[1].StartsWith("B ·")&&headers[2].StartsWith("C ·")&&headers[3]=="변경사항",
         "three-way Excel headers are not A/B/C/Changes: "+string.Join(" | ",headers));
     Check(root.Element(sx+"autoFilter")?.Attribute("ref")?.Value.StartsWith("A1:D",StringComparison.Ordinal)==true,"three-way Excel filter range is not A:D");
+    var dataRows=root.Element(sx+"sheetData")!.Elements(sx+"row").Skip(1).ToList();
+    Check(dataRows.SelectMany(r=>r.Elements(sx+"c")).Where(c=>c.Attribute("s")?.Value=="4").Any(),"three-way Excel body cells are not using wrapped style");
 }
 using(var excel3Doc=SpreadsheetDocument.Open(excel3O,false))
 {

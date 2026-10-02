@@ -175,11 +175,12 @@ internal static class NativeOfficeExporter
     <border><left style="thin"><color rgb="FFD9E1F2"/></left><right style="thin"><color rgb="FFD9E1F2"/></right><top style="thin"><color rgb="FFD9E1F2"/></top><bottom style="thin"><color rgb="FFD9E1F2"/></bottom><diagonal/></border>
   </borders>
   <cellStyleXfs count="1"><xf/></cellStyleXfs>
-  <cellXfs count="4">
-    <xf fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
+  <cellXfs count="5">
+    <xf fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1"/>
     <xf fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>
     <xf fontId="2" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
     <xf fontId="2" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
+    <xf fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment horizontal="left" vertical="top" wrapText="1" shrinkToFit="0"/></xf>
   </cellXfs>
 </styleSheet>
 """);
@@ -220,7 +221,7 @@ internal static class NativeOfficeExporter
                 var rightSegments = ExcelLineSegments(sourceRow, pair.Right, pair.Label, right, line.Part, line.RightStart, line.RightEnd, line.RightText);
                 var changes = string.Join("\n", ExcelLineMessages(sourceRow, pair, left, right, line));
                 var height = EstimateExcelRowHeight(new[] { line.LeftText, line.RightText }, changes, line.Kind, 64);
-                var style = line.Kind == "article" ? 2 : line.Kind == "section" ? 3 : 0;
+                var style = line.Kind == "article" ? 2 : line.Kind == "section" ? 3 : 4;
                 xml.Append($"<row r=\"{rowNumber}\" ht=\"{height:0.0}\" customHeight=\"1\">");
                 RichCell(xml, rowNumber, 0, leftSegments, style);
                 RichCell(xml, rowNumber, 1, rightSegments, style);
@@ -270,7 +271,7 @@ internal static class NativeOfficeExporter
             {
                 token.ThrowIfCancellationRequested();
                 rowNumber++;
-                var style = line.Kind == "article" ? 2 : line.Kind == "section" ? 3 : 0;
+                var style = line.Kind == "article" ? 2 : line.Kind == "section" ? 3 : 4;
                 var changes = string.Join("\n", ExcelThreeWayMessages(sourceRow, line));
                 var height = EstimateExcelRowHeight(line.Texts, changes, line.Kind, 42);
                 // Replace the row start emitted below after height is known.
