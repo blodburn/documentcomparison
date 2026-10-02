@@ -9,11 +9,10 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.21.4**
+**V5.21.5**
 
-- Version History now reconstructs DOCX table rows and cells in the document preview instead of showing table content as pipe-delimited text.
-- Table column proportions, horizontal cell spans, cell shading, and the existing text-change markers are preserved in the preview where available.
-- Table/Cell formatting changes continue to appear in the right-side change summary.
+- Fixed Version History change-marker numbering so markers continue sequentially across the entire selected document instead of restarting at 1 for each structural row.
+- The document preview and the right-side change list now share the same global marker sequence.
 
 ## Features
 

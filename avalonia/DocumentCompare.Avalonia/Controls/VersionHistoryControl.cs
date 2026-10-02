@@ -430,6 +430,7 @@ public sealed class VersionHistoryControl : UserControl
             var styleMap = VersionDocumentStyleMap.Load(current.Path);
             var tableMap = VersionDocxTableMap.Load(current.Path);
             var result = await _engine.CompareAsync(new[] { previous.Path, current.Path }, 1, "auto", false, true, token);
+            VersionHistoryMarkerNumbering.ReindexGlobally(result);
             foreach (var row in result.Rows)
                 _preview.Children.Add(new VersionPreviewRowControl(row, 1, styleMap, formatAnchors, tableMap));
 

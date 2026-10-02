@@ -1700,4 +1700,21 @@ Check(vhTableRow is not null&&vhTableRow.Cells.Count==3&&vhTableRow.ColumnWidths
 Check(vhTableRow!.Cells[0].Shading=="#E7E6E6"&&vhTableRow.Cells[1].Text=="담당부서","version table preview did not preserve cell content/shading");
 Console.WriteLine("PASS VERSION HISTORY TABLE RENDER MODEL");
 
+// 141. Version-history markers are globally numbered across rows. The core comparison engine
+// numbers markers within each row for the quick-compare UI, but the single-document version
+// preview needs one monotonically increasing sequence for the whole document.
+var numberingResult=new ComparisonResultVm
+{
+    Rows=new List<ComparisonRowVm>
+    {
+        new(){Id=1,Markers=new List<MarkerVm>{new(){Num=1,Action="변경",Message="first"},new(){Num=2,Action="변경",Message="second"}}},
+        new(){Id=2,Markers=new List<MarkerVm>{new(){Num=1,Action="변경",Message="third"}}},
+        new(){Id=3,Markers=new List<MarkerVm>{new(){Num=1,Action="추가",Message="fourth"},new(){Num=2,Action="삭제",Message="fifth"}}}
+    }
+};
+VersionHistoryMarkerNumbering.ReindexGlobally(numberingResult);
+var globalNums=numberingResult.Rows.SelectMany(x=>x.Markers).Select(x=>x.Num).ToArray();
+Check(globalNums.SequenceEqual(new[]{1,2,3,4,5}),"version-history marker numbering restarted per row: "+string.Join(",",globalNums));
+Console.WriteLine("PASS VERSION HISTORY GLOBAL MARKER NUMBERING");
+
 Console.WriteLine("ALL REGRESSIONS PASSED");
