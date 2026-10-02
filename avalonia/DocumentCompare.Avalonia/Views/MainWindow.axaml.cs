@@ -169,7 +169,7 @@ public partial class MainWindow : Window
 
     private void ApplyLanguage()
     {
-        Title = L("문서 비교기 V5.21.6", "Document Compare V5.21.6");
+        Title = L("문서 비교기 V5.21.7", "Document Compare V5.21.7");
         AppTitleText.Text = L("문서 비교기", "Document Compare");
         QuickCompareModeButton.Content = L("빠른 비교", "Quick compare");
         VersionHistoryModeButton.Content = L("버전 관리", "Version history");

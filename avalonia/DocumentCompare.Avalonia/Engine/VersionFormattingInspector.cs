@@ -28,7 +28,7 @@ public static class VersionFormattingInspector
             var result = new List<VersionChangeVm>();
             CompareParagraphs(oldDoc, newDoc, result);
             CompareTables(oldDoc, newDoc, result);
-            CompareNamedStyles(oldZip, newZip, result);
+            CompareNamedStyles(oldZip, newZip, newDoc, result);
             return result;
         }
         catch
@@ -142,12 +142,12 @@ public static class VersionFormattingInspector
         {
             if (i >= oldTables.Count)
             {
-                output.Add(new VersionChangeVm { Category = "표", Title = $"표 {i + 1} 추가", Detail = TableSummary(newTables[i]) });
+                output.Add(new VersionChangeVm { Category = "표", Title = $"표 {i + 1} 추가", Detail = TableSummary(newTables[i]), AnchorText = TableAnchor(newTables[i]) });
                 continue;
             }
             if (i >= newTables.Count)
             {
-                output.Add(new VersionChangeVm { Category = "표", Title = $"표 {i + 1} 삭제", Detail = TableSummary(oldTables[i]) });
+                output.Add(new VersionChangeVm { Category = "표", Title = $"표 {i + 1} 삭제", Detail = TableSummary(oldTables[i]), AnchorText = TableAnchor(oldTables[i]) });
                 continue;
             }
 
@@ -165,11 +165,11 @@ public static class VersionFormattingInspector
                 .Count(c => Canonical(oldCells[c].Element(W + "tcPr")) != Canonical(newCells[c].Element(W + "tcPr")));
             if (changedCells > 0) details.Add($"셀 서식 {changedCells}개 변경");
             if (details.Count > 0)
-                output.Add(new VersionChangeVm { Category = "표", Title = $"표 {i + 1} 변경", Detail = string.Join(" · ", details) });
+                output.Add(new VersionChangeVm { Category = "표", Title = $"표 {i + 1} 변경", Detail = string.Join(" · ", details), AnchorText = TableAnchor(newTable) });
         }
     }
 
-    private static void CompareNamedStyles(ZipArchive oldZip, ZipArchive newZip, List<VersionChangeVm> output)
+    private static void CompareNamedStyles(ZipArchive oldZip, ZipArchive newZip, XDocument newDoc, List<VersionChangeVm> output)
     {
         var oldStyles = Load(oldZip, "word/styles.xml")?.Root;
         var newStyles = Load(newZip, "word/styles.xml")?.Root;
@@ -189,11 +189,33 @@ public static class VersionFormattingInspector
             {
                 Category = "스타일",
                 Title = "Word 스타일 정의 변경",
-                Detail = $"{name}\n{DescribeDelta(oldDescription, newDescription)}"
+                Detail = $"{name}\n{DescribeDelta(oldDescription, newDescription)}",
+                AnchorText = FindStyleAnchor(newDoc, id)
             });
         }
     }
 
+
+    private static string? TableAnchor(XElement table)
+    {
+        return table.Descendants(W + "p")
+            .Select(p => string.Concat(p.Descendants(W + "t").Select(x => x.Value)).Trim())
+            .FirstOrDefault(x => x.Length > 0);
+    }
+
+    private static string? FindStyleAnchor(XDocument doc, string styleId)
+    {
+        foreach (var p in doc.Descendants(W + "p"))
+        {
+            var paragraphStyle = p.Element(W + "pPr")?.Element(W + "pStyle")?.Attribute(W + "val")?.Value;
+            var runUsesStyle = p.Descendants(W + "rPr").Elements(W + "rStyle")
+                .Any(x => string.Equals(x.Attribute(W + "val")?.Value, styleId, StringComparison.Ordinal));
+            if (!string.Equals(paragraphStyle, styleId, StringComparison.Ordinal) && !runUsesStyle) continue;
+            var text = string.Concat(p.Descendants(W + "t").Select(x => x.Value)).Trim();
+            if (text.Length > 0) return text;
+        }
+        return null;
+    }
 
     private static string StyleDescription(XElement style)
     {

@@ -9,12 +9,12 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.21.6**
+**V5.21.7**
 
-- Version History change numbers are now clickable in the document preview and jump the right-side change list to the matching item.
-- Change cards in the right panel can also navigate back to the matching document location when a document anchor is available.
-- Structural, character/paragraph formatting, table, and Word style changes now participate in the same global change-number sequence as text changes.
-- Numbered structural/formatting changes with a document location are surfaced in the document preview as supplemental change markers.
+- Version History change numbers now follow the document from top to bottom across text, structure, formatting, table, and Word style changes instead of appending structural/formatting changes after content changes.
+- Deleted after-version rows now display their change-number badges, so deletion numbers no longer disappear from the document preview.
+- Multi-line changes show their review badge only at the true change start instead of repeating the same number on every continued line.
+- Table and named-style formatting changes now carry document anchors when one can be resolved, improving their ordering and navigation in Version History.
 
 ## Features
 

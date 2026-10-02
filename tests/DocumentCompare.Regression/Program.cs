@@ -1733,4 +1733,54 @@ Check(allChangeNumbers[2].Category=="구조"&&allChangeNumbers[3].Category=="문
     "version-history numbering changed supplemental change ordering/categories");
 Console.WriteLine("PASS VERSION HISTORY ALL CHANGE TYPES NUMBERED");
 
+// 143. Version History uses one top-to-bottom sequence across content and structural changes.
+var orderedResult=new ComparisonResultVm
+{
+    Rows=new List<ComparisonRowVm>
+    {
+        new()
+        {
+            Id=10, Changed=true,
+            Members=new List<MemberVm?>{new(){Text="old title"},new(){Text="new title"}},
+            Markers=new List<MarkerVm>{new(){Num=1,Action="변경",Message="title",TargetDoc=1,CharStart=2,CharEnd=5,Endpoints=new(){new(){TargetDoc=1,CharStart=2,CharEnd=5}}}}
+        },
+        new()
+        {
+            Id=20, Changed=true,
+            Members=new List<MemberVm?>{new(){Text="old article"},new(){Header="Article 1",Body="changed body",Text="Article 1\nchanged body"}},
+            DisplayMessages=new List<string>{"상태: 조 변경"},
+            Markers=new List<MarkerVm>{new(){Num=1,Action="변경",Message="body",TargetDoc=1,CharStart=20,CharEnd=25,Endpoints=new(){new(){TargetDoc=1,CharStart=20,CharEnd=25}}}}
+        },
+        new()
+        {
+            Id=30, Changed=true,
+            Members=new List<MemberVm?>{new(){Text="deleted text"},null},
+            Markers=new List<MarkerVm>{new(){Num=1,Action="삭제",Message="deleted",TargetDoc=0,CharStart=0,CharEnd=12}}
+        }
+    }
+};
+var orderedChanges=VersionHistoryChangeSequencer.Sequence(orderedResult,Array.Empty<VersionChangeVm>(),1);
+Check(orderedChanges.Select(x=>x.MarkerNumber).SequenceEqual(new int?[]{1,2,3,4}),
+    "document-order version numbering is not contiguous: "+string.Join(",",orderedChanges.Select(x=>x.MarkerNumber)));
+Check(orderedChanges[0].Category=="내용"&&orderedChanges[1].Category=="구조"&&orderedChanges[1].RowId==20&&orderedChanges[2].Category=="내용"&&orderedChanges[3].Category=="내용",
+    "structural change was appended after document content instead of staying at its row position");
+Check(orderedResult.Rows[0].Markers.Single().Num==1&&orderedResult.Rows[1].Markers.Single().Num==3&&orderedResult.Rows[2].Markers.Single().Num==4,
+    "rendered marker numbers did not receive the unified document-order sequence");
+Console.WriteLine("PASS VERSION HISTORY DOCUMENT-ORDER CHANGE SEQUENCE");
+
+// 144. Anchored formatting/style changes are inserted at their document location instead of being appended globally.
+var anchoredResult=new ComparisonResultVm
+{
+    Rows=new List<ComparisonRowVm>
+    {
+        new(){Id=1,Members=new List<MemberVm?>{new(){Text="Heading"},new(){Text="Heading"}}},
+        new(){Id=2,Members=new List<MemberVm?>{new(){Text="Body paragraph"},new(){Text="Body paragraph"}},Markers=new List<MarkerVm>{new(){Num=1,Action="변경",Message="text",TargetDoc=1,CharStart=8,CharEnd=12,Endpoints=new(){new(){TargetDoc=1,CharStart=8,CharEnd=12}}}}}
+    }
+};
+var anchoredFormatting=new List<VersionChangeVm>{new(){Category="문자서식",Title="글자 서식 변경",AnchorText="Body paragraph",Detail="size"}};
+var anchoredChanges=VersionHistoryChangeSequencer.Sequence(anchoredResult,anchoredFormatting,1);
+Check(anchoredChanges.Count==2&&anchoredChanges[0].Category=="문자서식"&&anchoredChanges[0].MarkerNumber==1&&anchoredChanges[1].Category=="내용"&&anchoredChanges[1].MarkerNumber==2,
+    "anchored formatting change was not sequenced at its document position");
+Console.WriteLine("PASS VERSION HISTORY ANCHORED FORMAT ORDER");
+
 Console.WriteLine("ALL REGRESSIONS PASSED");

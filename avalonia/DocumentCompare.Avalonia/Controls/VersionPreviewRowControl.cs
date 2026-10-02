@@ -11,7 +11,7 @@ namespace DocumentCompare.Avalonia.Controls;
 
 public sealed class VersionPreviewRowControl : UserControl
 {
-    private sealed record LocalMark(int Num, int Start, int End, string Role);
+    private sealed record LocalMark(int Num, int Start, int End, string Role, bool ShowBadge = true);
     private readonly ComparisonRowVm _row;
     private readonly int _docIndex;
     private readonly VersionDocumentStyleMap? _styleMap;
@@ -55,11 +55,29 @@ public sealed class VersionPreviewRowControl : UserControl
         if (member is null)
         {
             if (!_row.Changed) return new Border();
+            var deleted = new StackPanel { Spacing = 4 };
+            var numbers = _row.Markers.Select(x => x.Num)
+                .Concat(_supplementalNumbers)
+                .Where(x => x > 0)
+                .Distinct()
+                .OrderBy(x => x)
+                .ToList();
+            if (numbers.Count > 0)
+            {
+                var badges = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+                foreach (var num in numbers) badges.Children.Add(BuildMarkerBadge(num));
+                deleted.Children.Add(badges);
+            }
+            deleted.Children.Add(new TextBlock
+            {
+                Text = "이 위치의 내용이 이전 버전에서 삭제되었습니다.",
+                Foreground = DeleteBrush, FontStyle = FontStyle.Italic, FontSize = 12
+            });
             return new Border
             {
                 BorderBrush = new SolidColorBrush(Color.Parse("#E4B4B4")), BorderThickness = new Thickness(0,0,0,1),
                 Background = new SolidColorBrush(Color.Parse("#FFF7F7")), Padding = new Thickness(12,7),
-                Child = new TextBlock { Text = "이 위치의 내용이 이전 버전에서 삭제되었습니다.", Foreground = DeleteBrush, FontStyle = FontStyle.Italic, FontSize = 12 }
+                Child = deleted
             };
         }
 
@@ -86,7 +104,13 @@ public sealed class VersionPreviewRowControl : UserControl
             var line = lines[i].TrimEnd('\r');
             var lineEnd = offset + line.Length;
             var marks = all.Where(p => (p.End > p.Start && p.Start < lineEnd && p.End > offset) || (p.Start == p.End && p.Start >= offset && p.Start <= lineEnd))
-                .Select(p => new LocalMark(p.Num, Math.Clamp(p.Start - offset, 0, line.Length), Math.Clamp(p.End - offset, 0, line.Length), p.Role)).ToList();
+                .Select(p => new LocalMark(
+                    p.Num,
+                    Math.Clamp(p.Start - offset, 0, line.Length),
+                    Math.Clamp(p.End - offset, 0, line.Length),
+                    p.Role,
+                    p.Start >= offset && p.Start <= lineEnd))
+                .ToList();
             var tableRow = _tableMap?.Take(line);
             if (tableRow is not null)
             {
@@ -131,7 +155,12 @@ public sealed class VersionPreviewRowControl : UserControl
             var end = start + cell.Text.Length;
             var localMarks = marks
                 .Where(m => (m.End > m.Start && m.Start < end && m.End > start) || (m.Start == m.End && m.Start >= start && m.Start <= end))
-                .Select(m => new LocalMark(m.Num, Math.Clamp(m.Start - start, 0, cell.Text.Length), Math.Clamp(m.End - start, 0, cell.Text.Length), m.Role))
+                .Select(m => new LocalMark(
+                    m.Num,
+                    Math.Clamp(m.Start - start, 0, cell.Text.Length),
+                    Math.Clamp(m.End - start, 0, cell.Text.Length),
+                    m.Role,
+                    m.ShowBadge && m.Start >= start && m.Start <= end))
                 .ToList();
             var formatChanged = _formatAnchors.Contains(VersionDocumentStyleMap.Normalize(cell.Text));
             var content = BuildLine(cell.Text, localMarks, false, cell.ParagraphStyle);
@@ -197,7 +226,7 @@ public sealed class VersionPreviewRowControl : UserControl
 
     private void AddBadges(TextBlock tb, List<LocalMark> marks, HashSet<(int,int)> emitted, int position)
     {
-        foreach (var m in marks.Where(x => x.Start == position))
+        foreach (var m in marks.Where(x => x.ShowBadge && x.Start == position))
         {
             if (!emitted.Add((position,m.Num))) continue;
             tb.Inlines!.Add(new InlineUIContainer(BuildMarkerBadge(m.Num))

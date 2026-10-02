@@ -430,8 +430,7 @@ public sealed class VersionHistoryControl : UserControl
             var styleMap = VersionDocumentStyleMap.Load(current.Path);
             var tableMap = VersionDocxTableMap.Load(current.Path);
             var result = await _engine.CompareAsync(new[] { previous.Path, current.Path }, 1, "auto", false, true, token);
-            VersionHistoryMarkerNumbering.ReindexGlobally(result);
-            var changeItems = BuildChangeItems(result, formattingItems);
+            var changeItems = VersionHistoryChangeSequencer.Sequence(result, formattingItems, 1);
             var contentNumbers = result.Rows.SelectMany(x => x.Markers).Select(x => x.Num).ToHashSet();
             var supplementalByRow = changeItems
                 .Where(x => x.RowId.HasValue && x.MarkerNumber.HasValue && !contentNumbers.Contains(x.MarkerNumber.Value))
@@ -456,80 +455,6 @@ public sealed class VersionHistoryControl : UserControl
             _changeSummary.Text = "버전 비교 실패";
             _changes.Children.Add(Message(ex.Message, "#C62828"));
         }
-    }
-
-    private static List<VersionChangeVm> BuildChangeItems(ComparisonResultVm result, IReadOnlyList<VersionChangeVm> formattingItems)
-    {
-        var items = new List<VersionChangeVm>();
-        foreach (var row in result.Rows)
-        {
-            foreach (var marker in row.Markers.OrderBy(x => x.Num))
-            {
-                items.Add(new VersionChangeVm
-                {
-                    Category = marker.StructuralNumber ? "구조" : "내용",
-                    Title = marker.Action,
-                    Detail = marker.Message,
-                    MarkerNumber = marker.Num,
-                    RowId = row.Id
-                });
-            }
-        }
-
-        var seenStructural = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var row in result.Rows)
-        {
-            foreach (var message in row.DisplayMessages
-                         .Where(x => x.Contains("상태:", StringComparison.Ordinal) ||
-                                     x.Contains("이동", StringComparison.Ordinal) ||
-                                     x.Contains("구조", StringComparison.Ordinal)))
-            {
-                var detail = message.TrimStart('•', ' ');
-                if (!seenStructural.Add(detail)) continue;
-                var member = row.Members.Count > 1 ? row.Members[1] : null;
-                items.Add(new VersionChangeVm
-                {
-                    Category = "구조",
-                    Title = "구조 변경",
-                    Detail = detail,
-                    RowId = row.Id,
-                    AnchorText = member?.Header ?? member?.Body
-                });
-            }
-        }
-
-        foreach (var source in formattingItems)
-        {
-            var rowId = FindRowId(result, source.AnchorText, 1);
-            items.Add(new VersionChangeVm
-            {
-                Category = source.Category,
-                Title = source.Title,
-                Detail = source.Detail,
-                AnchorText = source.AnchorText,
-                RowId = rowId
-            });
-        }
-        return VersionHistoryChangeNumbering.EnsureNumbered(items);
-    }
-
-    private static int? FindRowId(ComparisonResultVm result, string? anchorText, int docIndex)
-    {
-        var anchor = VersionDocumentStyleMap.Normalize(anchorText);
-        if (anchor.Length == 0) return null;
-        foreach (var row in result.Rows)
-        {
-            var member = row.Members.Count > docIndex ? row.Members[docIndex] : null;
-            if (member is null) continue;
-            foreach (var candidate in new[] { member.Header, member.Body, member.Text })
-            {
-                var normalized = VersionDocumentStyleMap.Normalize(candidate);
-                if (normalized.Length == 0) continue;
-                if (normalized.Contains(anchor, StringComparison.Ordinal) || anchor.Contains(normalized, StringComparison.Ordinal))
-                    return row.Id;
-            }
-        }
-        return null;
     }
 
     private void RenderChanges(List<VersionChangeVm> items)
