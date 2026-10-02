@@ -9,13 +9,12 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.20.35**
+**V5.20.36**
 
-- Refreshed the main comparison UI with clearer visual hierarchy and grouped actions/settings.
-- The primary compare action is visually emphasized while export and secondary actions use lighter styles.
-- Two-document comparisons now hide the unused C column completely; document C can be added explicitly with the new add-document action.
-- Search, comparison options, status, and progress are reorganized into dedicated areas for easier scanning.
-- Comparison and change-review borders were softened while existing chapter/article/change colors remain intact.
+- Increased visual separation between the page background and the document-comparison card.
+- Document header bands now use a slightly deeper blue-gray fill so rounded card boundaries are easier to see.
+- The Changes header uses a nearby neutral tone to remain distinct from the document headers without adding visual noise.
+- The comparison card border is slightly stronger while preserving the existing light UI style.
 
 ## Features
 

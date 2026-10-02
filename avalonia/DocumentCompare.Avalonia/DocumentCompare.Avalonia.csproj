@@ -6,9 +6,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>DocumentCompare</AssemblyName>
     <RootNamespace>DocumentCompare.Avalonia</RootNamespace>
-    <Version>5.20.35</Version>
-    <AssemblyVersion>5.20.35</AssemblyVersion>
-    <FileVersion>5.20.35</FileVersion>
+    <Version>5.20.36</Version>
+    <AssemblyVersion>5.20.36</AssemblyVersion>
+    <FileVersion>5.20.36</FileVersion>
     <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
     <AvaloniaNameGeneratorIsEnabled>false</AvaloniaNameGeneratorIsEnabled>
     <ApplicationIcon>Assets\DocumentCompare.ico</ApplicationIcon>
