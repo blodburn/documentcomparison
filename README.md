@@ -9,11 +9,11 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.21.10**
+**V5.21.11**
 
-- Version History no longer labels ordinary article/body text edits as structural changes.
-- Structural change cards are now reserved for real hierarchy changes such as article/item movement, item-label changes, hierarchy split/merge, structural additions, and structural deletions.
-- Structural change titles/details are more explicit so the user can see what actually changed.
+- Increased the Version History preview's safe line-height floor so mixed Korean/Latin text and larger runs are not clipped.
+- Added vertical breathing room around preview lines instead of relying only on Word paragraph line-height values.
+- Increased table-cell vertical padding and minimum height for the same readability fix.
 
 ## Features
 

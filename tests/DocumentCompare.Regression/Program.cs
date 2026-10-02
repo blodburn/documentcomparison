@@ -1807,9 +1807,10 @@ var clippedParagraph=new VersionParagraphVisualStyle
     }
 };
 var safeHeight=VersionPreviewLayoutPolicy.ResolveLineHeight(clippedParagraph,13);
-Check(safeHeight>=40.9,"version preview line-height floor did not protect large glyphs: "+safeHeight);
+Check(safeHeight>=48,"version preview line-height floor did not protect large glyphs: "+safeHeight);
 var roomyParagraph=new VersionParagraphVisualStyle{Text="본문",LineHeight=48,DefaultRun=new VersionRunVisualStyle{FontSize=13}};
 Check(Math.Abs(VersionPreviewLayoutPolicy.ResolveLineHeight(roomyParagraph,13)-48)<.01,"existing roomy Word line height was not preserved");
+Check(VersionPreviewLayoutPolicy.ResolveLineHeight(null,13)>=20,"default preview line height is still too tight for mixed Korean/Latin text");
 Console.WriteLine("PASS VERSION HISTORY SAFE LINE HEIGHT");
 
 // 146. A plain article/content status is not a structural change; only concrete hierarchy/move/add/delete changes are.

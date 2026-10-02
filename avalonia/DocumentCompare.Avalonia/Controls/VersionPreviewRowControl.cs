@@ -96,7 +96,7 @@ public sealed class VersionPreviewRowControl : UserControl
     private Control BuildPart(string raw, string part, bool fallbackBold)
     {
         var all = _row.PlacementsFor(_docIndex, part).OrderBy(x => x.Start).ThenBy(x => x.Num).ToList();
-        var panel = new StackPanel { Spacing = 1 };
+        var panel = new StackPanel { Spacing = 3 };
         var offset = 0;
         var lines = raw.Split('\n');
         for (var i = 0; i < lines.Length; i++)
@@ -120,14 +120,18 @@ public sealed class VersionPreviewRowControl : UserControl
             }
             var style = _styleMap?.Take(line);
             var text = BuildLine(line, marks, fallbackBold, style);
-            Control item = text;
+            Control item = new Border
+            {
+                Padding = new Thickness(0, 2, 0, 2),
+                Child = text
+            };
             if (_formatAnchors.Contains(VersionDocumentStyleMap.Normalize(line)))
             {
                 item = new Border
                 {
                     BorderBrush = FormatBrush, BorderThickness = new Thickness(3,0,0,0),
                     Background = new SolidColorBrush(Color.FromArgb(0x16,0x7C,0x3A,0xED)),
-                    Padding = new Thickness(6,2,4,2), Child = text
+                    Padding = new Thickness(6,3,4,3), Child = text
                 };
             }
             panel.Children.Add(item);
@@ -169,8 +173,8 @@ public sealed class VersionPreviewRowControl : UserControl
                 BorderBrush = formatChanged ? FormatBrush : new SolidColorBrush(Color.Parse("#7B8794")),
                 BorderThickness = new Thickness(formatChanged ? 2 : 1),
                 Background = string.IsNullOrWhiteSpace(cell.Shading) ? Brushes.White : Brush(cell.Shading, Brushes.White),
-                Padding = new Thickness(7, 6),
-                MinHeight = 32,
+                Padding = new Thickness(7, 8),
+                MinHeight = 36,
                 Child = content
             };
             Grid.SetColumn(border, Math.Min(column, Math.Max(0, totalSpan - 1)));

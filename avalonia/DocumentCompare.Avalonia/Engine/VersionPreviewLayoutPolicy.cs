@@ -2,8 +2,8 @@ namespace DocumentCompare.Avalonia.Engine;
 
 public static class VersionPreviewLayoutPolicy
 {
-    private const double NaturalLineFactor = 1.28;
-    private const double MinimumLineHeight = 17.0;
+    private const double NaturalLineFactor = 1.50;
+    private const double MinimumLineHeight = 20.0;
 
     public static double ResolveLineHeight(VersionParagraphVisualStyle? paragraph, double fallbackFontSize = 13.0)
     {
