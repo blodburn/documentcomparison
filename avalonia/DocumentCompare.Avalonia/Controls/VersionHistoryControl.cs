@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Documents;
 using Avalonia.Layout;
 using Avalonia.Interactivity;
 using Avalonia.Input;
@@ -495,7 +496,7 @@ public sealed class VersionHistoryControl : UserControl
             });
             body.Children.Add(header);
             if (!string.IsNullOrWhiteSpace(item.Detail))
-                body.Children.Add(new TextBlock { Text = item.Detail, TextWrapping = TextWrapping.Wrap, FontSize = 11.5, Foreground = new SolidColorBrush(Color.Parse("#475569")) });
+                body.Children.Add(BuildDetailText(item.Detail));
 
             var card = new Border
             {
@@ -515,6 +516,48 @@ public sealed class VersionHistoryControl : UserControl
             }
             _changes.Children.Add(card);
         }
+    }
+
+    private static TextBlock BuildDetailText(string detail)
+    {
+        var tb = new TextBlock
+        {
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 11.5,
+            Foreground = new SolidColorBrush(Color.Parse("#475569"))
+        };
+        var i = 0;
+        while (i < detail.Length)
+        {
+            var hash = detail.IndexOf('#', i);
+            if (hash < 0 || hash + 7 > detail.Length)
+            {
+                tb.Inlines!.Add(new Run(detail[i..]));
+                break;
+            }
+            var code = detail.Substring(hash, 7);
+            var valid = code.Skip(1).All(Uri.IsHexDigit);
+            if (!valid)
+            {
+                tb.Inlines!.Add(new Run(detail[i..(hash + 1)]));
+                i = hash + 1;
+                continue;
+            }
+            if (hash > i) tb.Inlines!.Add(new Run(detail[i..hash]));
+            tb.Inlines!.Add(new InlineUIContainer(new Border
+            {
+                Width = 11,
+                Height = 11,
+                Background = new SolidColorBrush(Color.Parse(code)),
+                BorderBrush = new SolidColorBrush(Color.Parse("#94A3B8")),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(2),
+                Margin = new Thickness(2, 0, 3, 0)
+            }));
+            tb.Inlines!.Add(new Run(code.ToUpperInvariant()));
+            i = hash + 7;
+        }
+        return tb;
     }
 
     private void ScrollToChange(int markerNumber)

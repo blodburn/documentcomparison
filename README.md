@@ -9,12 +9,11 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.21.7**
+**V5.21.8**
 
-- Version History change numbers now follow the document from top to bottom across text, structure, formatting, table, and Word style changes instead of appending structural/formatting changes after content changes.
-- Deleted after-version rows now display their change-number badges, so deletion numbers no longer disappear from the document preview.
-- Multi-line changes show their review badge only at the true change start instead of repeating the same number on every continued line.
-- Table and named-style formatting changes now carry document anchors when one can be resolved, improving their ordering and navigation in Version History.
+- Improved Version History formatting details so Word line spacing is shown in readable units instead of raw document values.
+- Font colors are shown with a standard hex value and a matching color swatch.
+- Base-style inheritance now shows the readable Word style name when available.
 
 ## Features
 

@@ -177,14 +177,16 @@ public static class VersionFormattingInspector
         var oldMap = oldStyles.Elements(W + "style")
             .Where(x => x.Attribute(W + "styleId") is not null)
             .ToDictionary(x => x.Attribute(W + "styleId")!.Value, x => x, StringComparer.Ordinal);
+        var oldNames = StyleNames(oldStyles);
+        var newNames = StyleNames(newStyles);
         foreach (var style in newStyles.Elements(W + "style"))
         {
             var id = style.Attribute(W + "styleId")?.Value;
             if (string.IsNullOrWhiteSpace(id) || !oldMap.TryGetValue(id, out var oldStyle)) continue;
             if (Canonical(oldStyle) == Canonical(style)) continue;
             var name = style.Element(W + "name")?.Attribute(W + "val")?.Value ?? id;
-            var oldDescription = StyleDescription(oldStyle);
-            var newDescription = StyleDescription(style);
+            var oldDescription = StyleDescription(oldStyle, oldNames);
+            var newDescription = StyleDescription(style, newNames);
             output.Add(new VersionChangeVm
             {
                 Category = "스타일",
@@ -217,7 +219,17 @@ public static class VersionFormattingInspector
         return null;
     }
 
-    private static string StyleDescription(XElement style)
+    private static Dictionary<string, string> StyleNames(XElement stylesRoot)
+    {
+        return stylesRoot.Elements(W + "style")
+            .Where(x => x.Attribute(W + "styleId") is not null)
+            .ToDictionary(
+                x => x.Attribute(W + "styleId")!.Value,
+                x => x.Element(W + "name")?.Attribute(W + "val")?.Value ?? x.Attribute(W + "styleId")!.Value,
+                StringComparer.Ordinal);
+    }
+
+    private static string StyleDescription(XElement style, IReadOnlyDictionary<string, string> styleNames)
     {
         var parts = new List<string>();
         var p = ParagraphDescription(style.Element(W + "pPr"));
@@ -225,7 +237,13 @@ public static class VersionFormattingInspector
         if (p != "기본 문단 서식") parts.Add(p);
         if (r != "기본 문자 서식") parts.Add(r);
         var basedOn = style.Element(W + "basedOn")?.Attribute(W + "val")?.Value;
-        if (!string.IsNullOrWhiteSpace(basedOn)) parts.Add($"기반 스타일={basedOn}");
+        if (!string.IsNullOrWhiteSpace(basedOn))
+        {
+            var readable = styleNames.TryGetValue(basedOn, out var name) && !string.IsNullOrWhiteSpace(name)
+                ? (string.Equals(name, basedOn, StringComparison.Ordinal) ? name : $"{name} ({basedOn})")
+                : $"ID {basedOn}";
+            parts.Add($"기반 스타일={readable}");
+        }
         return parts.Count == 0 ? "기본 스타일" : string.Join(", ", parts);
     }
 
@@ -238,7 +256,7 @@ public static class VersionFormattingInspector
         var spacing = pPr.Element(W + "spacing");
         Add(parts, "앞간격", Twips(spacing?.Attribute(W + "before")?.Value));
         Add(parts, "뒤간격", Twips(spacing?.Attribute(W + "after")?.Value));
-        Add(parts, "줄간격", spacing?.Attribute(W + "line")?.Value);
+        Add(parts, "줄간격", LineSpacing(spacing));
         var ind = pPr.Element(W + "ind");
         Add(parts, "왼쪽들여쓰기", Twips(ind?.Attribute(W + "left")?.Value));
         Add(parts, "첫줄", Twips(ind?.Attribute(W + "firstLine")?.Value));
@@ -255,9 +273,30 @@ public static class VersionFormattingInspector
         if (rPr.Element(W + "b") is not null) parts.Add("굵게");
         if (rPr.Element(W + "i") is not null) parts.Add("기울임");
         Add(parts, "밑줄", rPr.Element(W + "u")?.Attribute(W + "val")?.Value);
-        Add(parts, "색상", rPr.Element(W + "color")?.Attribute(W + "val")?.Value);
+        Add(parts, "색상", ColorValue(rPr.Element(W + "color")?.Attribute(W + "val")?.Value));
         Add(parts, "강조", rPr.Element(W + "highlight")?.Attribute(W + "val")?.Value);
         return parts.Count == 0 ? "기본 문자 서식" : string.Join(", ", parts);
+    }
+
+    private static string? LineSpacing(XElement? spacing)
+    {
+        var raw = spacing?.Attribute(W + "line")?.Value;
+        if (!double.TryParse(raw, out var line)) return raw;
+        var rule = spacing?.Attribute(W + "lineRule")?.Value ?? "auto";
+        return rule switch
+        {
+            "exact" => $"{line / 20:0.##}pt (고정)",
+            "atLeast" => $"최소 {line / 20:0.##}pt",
+            _ => $"{line / 240:0.##}줄"
+        };
+    }
+
+    private static string? ColorValue(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return value;
+        if (string.Equals(value, "auto", StringComparison.OrdinalIgnoreCase)) return "자동";
+        var ok = value.Length == 6 && value.All(c => char.IsDigit(c) || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f'));
+        return ok ? "#" + value.ToUpperInvariant() : value;
     }
 
     private static void Add(List<string> parts, string name, string? value)

@@ -1658,6 +1658,18 @@ var vhStyle=VersionFormattingInspector.Compare(vhStyleA,vhStyleB);
 Check(vhStyle.Any(x=>x.Category=="스타일"&&x.Detail.Contains("BodyCustom")&&x.Detail.Contains("10pt")&&x.Detail.Contains("12pt")),"version history did not describe named-style definition change");
 Console.WriteLine("PASS VERSION HISTORY NAMED-STYLE DIFF");
 
+// 136b. Version-history style descriptions use human-readable Word units and style names.
+var vhReadableA=Path.Combine(dir,"vhReadableA.docx");var vhReadableB=Path.Combine(dir,"vhReadableB.docx");
+Make(vhReadableA,"<w:p><w:pPr><w:pStyle w:val='BodyCustom'/></w:pPr><w:r><w:t>Readable style</w:t></w:r></w:p>");
+Make(vhReadableB,"<w:p><w:pPr><w:pStyle w:val='BodyCustom'/></w:pPr><w:r><w:t>Readable style</w:t></w:r></w:p>");
+AddWordXml(vhReadableA,"word/styles.xml","<w:styles xmlns:w='"+W+"'><w:style w:type='paragraph' w:styleId='a'><w:name w:val='기본 본문'/></w:style><w:style w:type='paragraph' w:styleId='BodyCustom'><w:name w:val='본문'/><w:basedOn w:val='a'/><w:pPr><w:spacing w:line='240'/></w:pPr><w:rPr><w:color w:val='000000'/></w:rPr></w:style></w:styles>");
+AddWordXml(vhReadableB,"word/styles.xml","<w:styles xmlns:w='"+W+"'><w:style w:type='paragraph' w:styleId='a'><w:name w:val='기본 본문'/></w:style><w:style w:type='paragraph' w:styleId='BodyCustom'><w:name w:val='본문'/><w:basedOn w:val='a'/><w:pPr><w:spacing w:line='384'/></w:pPr><w:rPr><w:color w:val='434343'/></w:rPr></w:style></w:styles>");
+var vhReadable=VersionFormattingInspector.Compare(vhReadableA,vhReadableB);
+var readableDetail=vhReadable.First(x=>x.Category=="스타일").Detail;
+Check(readableDetail.Contains("줄간격=1.6줄")&&readableDetail.Contains("색상=#434343")&&readableDetail.Contains("기반 스타일=기본 본문 (a)"),
+    "version history style description is not human-readable: "+readableDetail);
+Console.WriteLine("PASS VERSION HISTORY READABLE STYLE VALUES");
+
 // 137. Version-history preview resolves paragraph style inheritance into visible font/alignment.
 var vhPreview=Path.Combine(dir,"vhPreview.docx");
 Make(vhPreview,"<w:p><w:pPr><w:pStyle w:val='BodyCustom'/></w:pPr><w:r><w:t>Styled preview</w:t></w:r></w:p>");
