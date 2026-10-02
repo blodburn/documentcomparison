@@ -4,6 +4,7 @@ using Avalonia.Controls.Templates;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml;
+using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using DocumentCompare.Avalonia.Controls;
@@ -38,6 +39,10 @@ public partial class MainWindow : Window
     private MenuItem KoreanLanguageMenuItem = null!;
     private MenuItem EnglishLanguageMenuItem = null!;
     private TextBlock AppTitleText = null!;
+    private Button QuickCompareModeButton = null!;
+    private Button VersionHistoryModeButton = null!;
+    private Grid QuickCompareWorkspace = null!;
+    private ContentControl VersionHistoryHost = null!;
     private TextBlock ModeLabel = null!;
     private ComboBoxItem ModeAutoItem = null!;
     private ComboBoxItem ModeGeneralItem = null!;
@@ -98,6 +103,11 @@ public partial class MainWindow : Window
         KoreanLanguageMenuItem = Require<MenuItem>("KoreanLanguageMenuItem");
         EnglishLanguageMenuItem = Require<MenuItem>("EnglishLanguageMenuItem");
         AppTitleText = Require<TextBlock>("AppTitleText");
+        QuickCompareModeButton = Require<Button>("QuickCompareModeButton");
+        VersionHistoryModeButton = Require<Button>("VersionHistoryModeButton");
+        QuickCompareWorkspace = Require<Grid>("QuickCompareWorkspace");
+        VersionHistoryHost = Require<ContentControl>("VersionHistoryHost");
+        VersionHistoryHost.Content = new VersionHistoryControl();
         ModeLabel = Require<TextBlock>("ModeLabel");
         ModeAutoItem = Require<ComboBoxItem>("ModeAutoItem");
         ModeGeneralItem = Require<ComboBoxItem>("ModeGeneralItem");
@@ -159,8 +169,10 @@ public partial class MainWindow : Window
 
     private void ApplyLanguage()
     {
-        Title = L("문서 비교기 V5.20.36", "Document Compare V5.20.36");
+        Title = L("문서 비교기 V5.21.0", "Document Compare V5.21.0");
         AppTitleText.Text = L("문서 비교기", "Document Compare");
+        QuickCompareModeButton.Content = L("빠른 비교", "Quick compare");
+        VersionHistoryModeButton.Content = L("버전 관리", "Version history");
         CompareButton.Content = L("비교 시작", "Compare");
         CancelButton.Content = L("취소", "Cancel");
         ExcelButton.Content = L("Excel 내보내기", "Export Excel");
@@ -201,6 +213,37 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             StatusText.Text = L("엔진 준비 필요: ", "Engine setup required: ") + CompactError(ex);
+        }
+    }
+
+    private void QuickCompareMode_Click(object? sender, RoutedEventArgs e) => SetWorkspaceMode(versionHistory: false);
+
+    private void VersionHistoryMode_Click(object? sender, RoutedEventArgs e) => SetWorkspaceMode(versionHistory: true);
+
+    private void SetWorkspaceMode(bool versionHistory)
+    {
+        QuickCompareWorkspace.IsVisible = !versionHistory;
+        VersionHistoryHost.IsVisible = versionHistory;
+        if (versionHistory)
+        {
+            VersionHistoryModeButton.Background = new SolidColorBrush(Color.Parse("#2563EB"));
+            VersionHistoryModeButton.Foreground = Brushes.White;
+            VersionHistoryModeButton.BorderBrush = new SolidColorBrush(Color.Parse("#1D4ED8"));
+            QuickCompareModeButton.Background = Brushes.White;
+            QuickCompareModeButton.Foreground = new SolidColorBrush(Color.Parse("#334155"));
+            QuickCompareModeButton.BorderBrush = new SolidColorBrush(Color.Parse("#CBD5E1"));
+            StatusText.Text = L("버전 관리 · 버전을 선택하면 직전 버전과의 차이를 표시합니다.", "Version history · Select a version to compare it with the previous version.");
+        }
+        else
+        {
+            QuickCompareModeButton.Background = new SolidColorBrush(Color.Parse("#2563EB"));
+            QuickCompareModeButton.Foreground = Brushes.White;
+            QuickCompareModeButton.BorderBrush = new SolidColorBrush(Color.Parse("#1D4ED8"));
+            VersionHistoryModeButton.Background = Brushes.White;
+            VersionHistoryModeButton.Foreground = new SolidColorBrush(Color.Parse("#334155"));
+            VersionHistoryModeButton.BorderBrush = new SolidColorBrush(Color.Parse("#CBD5E1"));
+            if (_result is null)
+                StatusText.Text = L("준비됨 · A/B 문서를 선택하세요. 필요하면 C 문서를 추가할 수 있습니다.", "Ready · Choose documents A/B. Add document C if needed.");
         }
     }
 

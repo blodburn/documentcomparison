@@ -4,7 +4,7 @@
         Width="1700" Height="980" MinWidth="1050" MinHeight="680"
         Icon="/Assets/DocumentCompare.ico"
         Background="#F7F9FC"
-        Title="문서 비교기 V5.20.36">
+        Title="문서 비교기 V5.21.0">
   <Grid RowDefinitions="Auto,Auto,Auto,Auto,*" Margin="12">
     <Menu Grid.Row="0" Margin="-4,-4,-4,8" Background="Transparent">
       <MenuItem x:Name="HelpMenuItem" Header="도움말">
@@ -16,16 +16,21 @@
       </MenuItem>
     </Menu>
 
-    <Grid Grid.Row="1" ColumnDefinitions="*,Auto" Margin="2,0,2,10">
+    <Grid Grid.Row="1" ColumnDefinitions="Auto,Auto,Auto,*,Auto" Margin="2,0,2,10">
       <TextBlock x:Name="AppTitleText" Grid.Column="0" Text="문서 비교기"
-                 FontSize="24" FontWeight="SemiBold" VerticalAlignment="Center"/>
-      <Border Grid.Column="1" Classes="statusPill" VerticalAlignment="Center">
+                 FontSize="24" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,22,0"/>
+      <Button x:Name="QuickCompareModeButton" Grid.Column="1" Classes="primaryAction" Content="빠른 비교"
+              MinWidth="100" HorizontalContentAlignment="Center" Click="QuickCompareMode_Click"/>
+      <Button x:Name="VersionHistoryModeButton" Grid.Column="2" Classes="secondaryAction" Content="버전 관리"
+              MinWidth="100" Margin="8,0,0,0" HorizontalContentAlignment="Center" Click="VersionHistoryMode_Click"/>
+      <Border Grid.Column="4" Classes="statusPill" VerticalAlignment="Center">
         <TextBlock x:Name="StatusText" Text="준비됨" FontSize="12.5"
                    TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" MaxWidth="720"/>
       </Border>
     </Grid>
 
-    <Border Grid.Row="2" Classes="toolbarSurface" Margin="0,0,0,8">
+    <Grid x:Name="QuickCompareWorkspace" Grid.Row="2" Grid.RowSpan="3" RowDefinitions="Auto,Auto,*">
+    <Border Grid.Row="0" Classes="toolbarSurface" Margin="0,0,0,8">
       <Grid RowDefinitions="Auto,Auto">
         <Grid Grid.Row="0" ColumnDefinitions="Auto,Auto,Auto,Auto,Auto,*">
           <Button x:Name="CompareButton" Grid.Column="0" Classes="primaryAction"
@@ -58,10 +63,10 @@
       </Grid>
     </Border>
 
-    <ProgressBar x:Name="CompareProgress" Grid.Row="3" Height="5" Minimum="0" Maximum="100" Value="0"
+    <ProgressBar x:Name="CompareProgress" Grid.Row="1" Height="5" Minimum="0" Maximum="100" Value="0"
                  IsVisible="False" Margin="2,0,2,8"/>
 
-    <Border Grid.Row="4" Classes="resultFrame" ClipToBounds="True">
+    <Border Grid.Row="2" Classes="resultFrame" ClipToBounds="True">
       <Grid x:Name="ResultArea" RowDefinitions="Auto,*" ClipToBounds="True">
         <Grid x:Name="ComparisonHeader" Grid.Row="0" Height="50" ColumnDefinitions="5*,2*" Background="#EAF0F6">
           <Grid x:Name="DocumentHeaderGrid" Grid.Column="0" ColumnDefinitions="*,*,0">
@@ -128,5 +133,8 @@
         </Grid>
       </Grid>
     </Border>
+    </Grid>
+
+    <ContentControl x:Name="VersionHistoryHost" Grid.Row="2" Grid.RowSpan="3" IsVisible="False"/>
   </Grid>
 </Window>

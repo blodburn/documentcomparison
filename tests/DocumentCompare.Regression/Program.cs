@@ -1629,4 +1629,33 @@ using(var excel3Doc=SpreadsheetDocument.Open(excel3O,false))
 }
 Console.WriteLine("PASS EXCEL THREE-WAY 80/3 + 20 LAYOUT");
 
+
+// 134. Version history formatting inspection: identical text with a direct font-size change
+// must be reported as formatting, not disappear because the content text is unchanged.
+var vhFmtA=Path.Combine(dir,"vhFmtA.docx");var vhFmtB=Path.Combine(dir,"vhFmtB.docx");
+Make(vhFmtA,"<w:p><w:r><w:rPr><w:sz w:val='20'/></w:rPr><w:t>Version text</w:t></w:r></w:p>");
+Make(vhFmtB,"<w:p><w:r><w:rPr><w:sz w:val='28'/></w:rPr><w:t>Version text</w:t></w:r></w:p>");
+var vhFmt=VersionFormattingInspector.Compare(vhFmtA,vhFmtB);
+Check(vhFmt.Any(x=>x.Category=="문자서식"&&x.Detail.Contains("10pt")&&x.Detail.Contains("14pt")),"version history did not detect font-size change: "+string.Join(" | ",vhFmt.Select(x=>x.Category+":"+x.Detail)));
+Console.WriteLine("PASS VERSION HISTORY FONT-SIZE DIFF");
+
+// 135. Version history formatting inspection: table/cell presentation changes are first-class
+// version changes even when visible cell text is identical.
+var vhTblA=Path.Combine(dir,"vhTblA.docx");var vhTblB=Path.Combine(dir,"vhTblB.docx");
+Make(vhTblA,"<w:tbl><w:tblPr><w:tblInd w:w='0' w:type='dxa'/></w:tblPr><w:tblGrid><w:gridCol w:w='2400'/></w:tblGrid><w:tr><w:tc><w:tcPr><w:shd w:fill='FFFFFF'/></w:tcPr>"+P("Same cell")+"</w:tc></w:tr></w:tbl>");
+Make(vhTblB,"<w:tbl><w:tblPr><w:tblInd w:w='720' w:type='dxa'/></w:tblPr><w:tblGrid><w:gridCol w:w='2400'/></w:tblGrid><w:tr><w:tc><w:tcPr><w:shd w:fill='F2F2F2'/></w:tcPr>"+P("Same cell")+"</w:tc></w:tr></w:tbl>");
+var vhTbl=VersionFormattingInspector.Compare(vhTblA,vhTblB);
+Check(vhTbl.Any(x=>x.Category=="표"&&x.Title.Contains("표 1")&&(x.Detail.Contains("표 속성")||x.Detail.Contains("셀 서식"))),"version history did not detect table formatting change: "+string.Join(" | ",vhTbl.Select(x=>x.Category+":"+x.Detail)));
+Console.WriteLine("PASS VERSION HISTORY TABLE FORMAT DIFF");
+
+// 136. Version history formatting inspection: named Word style-definition edits are retained
+// as their own audit entry rather than being mistaken for a content change.
+var vhStyleA=Path.Combine(dir,"vhStyleA.docx");var vhStyleB=Path.Combine(dir,"vhStyleB.docx");
+Make(vhStyleA,P("Styled text"));Make(vhStyleB,P("Styled text"));
+AddWordXml(vhStyleA,"word/styles.xml","<w:styles xmlns:w='"+W+"'><w:style w:type='paragraph' w:styleId='BodyCustom'><w:name w:val='BodyCustom'/><w:rPr><w:sz w:val='20'/></w:rPr></w:style></w:styles>");
+AddWordXml(vhStyleB,"word/styles.xml","<w:styles xmlns:w='"+W+"'><w:style w:type='paragraph' w:styleId='BodyCustom'><w:name w:val='BodyCustom'/><w:rPr><w:sz w:val='24'/></w:rPr></w:style></w:styles>");
+var vhStyle=VersionFormattingInspector.Compare(vhStyleA,vhStyleB);
+Check(vhStyle.Any(x=>x.Category=="스타일"&&x.Detail.Contains("BodyCustom")),"version history did not detect named-style definition change");
+Console.WriteLine("PASS VERSION HISTORY NAMED-STYLE DIFF");
+
 Console.WriteLine("ALL REGRESSIONS PASSED");
