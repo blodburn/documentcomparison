@@ -1582,20 +1582,36 @@ using(var excelStructDoc=SpreadsheetDocument.Open(excelStructO,false))
 }
 Console.WriteLine("PASS EXCEL STRUCTURAL ROWS + 1280 40/40/20 LAYOUT");
 
-// 133. Three-document comparisons use one three-column review sheet per compared pair instead of
-// growing horizontally beyond the requested A/B/changes 40/40/20 layout.
+// 133. Three-document Excel comparison keeps A/B/C together on one review sheet. The 80%
+// document area is divided equally across the three documents and the remaining 20% is Changes.
 var excel3A=Path.Combine(dir,"excel3A.txt");var excel3B=Path.Combine(dir,"excel3B.txt");var excel3C=Path.Combine(dir,"excel3C.txt");var excel3O=Path.Combine(dir,"excel3.xlsx");
-File.WriteAllText(excel3A,"제1조(목적)\n① Alpha",new UTF8Encoding(false));
-File.WriteAllText(excel3B,"제1조(목적)\n① Beta",new UTF8Encoding(false));
-File.WriteAllText(excel3C,"제1조(목적)\n① Gamma",new UTF8Encoding(false));
+File.WriteAllText(excel3A,"제1조(목적)\n① Alpha\n1. A-one",new UTF8Encoding(false));
+File.WriteAllText(excel3B,"제1조(목적)\n① Beta\n1. B-one",new UTF8Encoding(false));
+File.WriteAllText(excel3C,"제1조(목적)\n① Gamma\n1. C-one",new UTF8Encoding(false));
 var excel3Cmp=await eng.CompareAsync(new[]{excel3A,excel3B,excel3C},0,"legal",true,true);
 await eng.ExportExcelAsync(excel3Cmp,excel3O);
+using(var excel3Zip=ZipFile.OpenRead(excel3O))
+{
+    XNamespace sx="http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+    using var sheetStream=excel3Zip.GetEntry("xl/worksheets/sheet1.xml")!.Open();
+    var sheetXml=XDocument.Load(sheetStream);var root=sheetXml.Root!;
+    var cols=root.Element(sx+"cols")!.Elements(sx+"col").ToList();
+    Check(cols.Count==4,"three-way Excel is not A/B/C/Changes four-column layout");
+    var widths=cols.Select(c=>double.Parse(c.Attribute("width")!.Value,System.Globalization.CultureInfo.InvariantCulture)).ToArray();
+    Check(Math.Abs(widths[0]-48.00)<.15&&Math.Abs(widths[1]-48.00)<.15&&Math.Abs(widths[2]-48.14)<.15&&Math.Abs(widths[3]-35.86)<.15,
+        "three-way Excel 80/3 + 20 widths changed: "+string.Join(",",widths.Select(x=>x.ToString("0.00"))));
+    var firstRow=root.Element(sx+"sheetData")!.Elements(sx+"row").First();
+    var headers=firstRow.Elements(sx+"c").Select(c=>string.Concat(c.Descendants(sx+"t").Select(t=>t.Value))).ToList();
+    Check(headers.Count==4&&headers[0].StartsWith("A ·")&&headers[1].StartsWith("B ·")&&headers[2].StartsWith("C ·")&&headers[3]=="변경사항",
+        "three-way Excel headers are not A/B/C/Changes: "+string.Join(" | ",headers));
+    Check(root.Element(sx+"autoFilter")?.Attribute("ref")?.Value.StartsWith("A1:D",StringComparison.Ordinal)==true,"three-way Excel filter range is not A:D");
+}
 using(var excel3Doc=SpreadsheetDocument.Open(excel3O,false))
 {
-    var names=excel3Doc.WorkbookPart!.Workbook.Sheets!.Elements<DocumentFormat.OpenXml.Spreadsheet.Sheet>().Select(x=>x.Name!.Value).ToList();
-    Check(names.SequenceEqual(new[]{"A-B","B-C","A-C"}),"three-way Excel pair sheets changed: "+string.Join(",",names));
-    Check(excel3Doc.WorkbookPart.WorksheetParts.Count()==3,"three-way Excel did not create one sheet per pair");
+    Check(excel3Doc.WorkbookPart!.WorksheetParts.Count()==1,"three-way Excel should use one combined comparison sheet");
+    var errors=new OpenXmlValidator().Validate(excel3Doc).ToList();
+    Check(errors.Count==0,"three-way Excel package invalid: "+string.Join(" | ",errors.Take(8).Select(e=>e.Description)));
 }
-Console.WriteLine("PASS EXCEL THREE-WAY PAIR SHEETS");
+Console.WriteLine("PASS EXCEL THREE-WAY 80/3 + 20 LAYOUT");
 
 Console.WriteLine("ALL REGRESSIONS PASSED");

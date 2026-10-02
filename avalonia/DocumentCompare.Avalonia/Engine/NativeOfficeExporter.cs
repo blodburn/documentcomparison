@@ -123,47 +123,38 @@ internal static class NativeOfficeExporter
         using var fs = new FileStream(outputPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
         using var zip = new ZipArchive(fs, ZipArchiveMode.Create);
 
-        var pairs = result.ComparedPairs.Count > 0
-            ? result.ComparedPairs
-            : result.Names.Count >= 2
-                ? new List<ComparisonPairVm> { new() { Left = 0, Right = 1, Label = "A↔B" } }
-                : new List<ComparisonPairVm>();
-        if (pairs.Count == 0)
-            throw new InvalidOperationException("Excel 내보내기에 사용할 비교 조합이 없습니다.");
+        if (result.Names.Count < 2)
+            throw new InvalidOperationException("Excel 내보내기에는 최소 2개의 비교 문서가 필요합니다.");
 
-        var contentTypes = new StringBuilder();
-        contentTypes.Append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">");
-        contentTypes.Append("<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/>");
-        contentTypes.Append("<Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>");
-        for (var i = 0; i < pairs.Count; i++)
-            contentTypes.Append($"<Override PartName=\"/xl/worksheets/sheet{i + 1}.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>");
-        contentTypes.Append("<Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/></Types>");
-        Put(zip, "[Content_Types].xml", contentTypes.ToString());
-
+        Put(zip, "[Content_Types].xml", """
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+</Types>
+""");
         Put(zip, "_rels/.rels", """
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
 </Relationships>
 """);
-
-        var workbook = new StringBuilder();
-        workbook.Append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><sheets>");
-        for (var i = 0; i < pairs.Count; i++)
-        {
-            var sheetName = pairs.Count == 1 ? "Comparison" : pairs[i].Label.Replace("↔", "-");
-            workbook.Append($"<sheet name=\"{Esc(sheetName)}\" sheetId=\"{i + 1}\" r:id=\"rId{i + 1}\"/>");
-        }
-        workbook.Append("</sheets></workbook>");
-        Put(zip, "xl/workbook.xml", workbook.ToString());
-
-        var workbookRels = new StringBuilder();
-        workbookRels.Append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">");
-        for (var i = 0; i < pairs.Count; i++)
-            workbookRels.Append($"<Relationship Id=\"rId{i + 1}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet{i + 1}.xml\"/>");
-        workbookRels.Append($"<Relationship Id=\"rId{pairs.Count + 1}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/></Relationships>");
-        Put(zip, "xl/_rels/workbook.xml.rels", workbookRels.ToString());
-
+        Put(zip, "xl/workbook.xml", """
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets><sheet name="Comparison" sheetId="1" r:id="rId1"/></sheets>
+</workbook>
+""");
+        Put(zip, "xl/_rels/workbook.xml.rels", """
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>
+""");
         Put(zip, "xl/styles.xml", """
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
@@ -193,28 +184,18 @@ internal static class NativeOfficeExporter
 </styleSheet>
 """);
 
-        for (var i = 0; i < pairs.Count; i++)
-        {
-            token.ThrowIfCancellationRequested();
-            Put(zip, $"xl/worksheets/sheet{i + 1}.xml", BuildExcelPairSheet(result, pairs[i], token));
-        }
+        var sheet = result.Names.Count >= 3
+            ? BuildExcelThreeWaySheet(result, token)
+            : BuildExcelPairSheet(result, result.ComparedPairs.FirstOrDefault() ?? new ComparisonPairVm { Left = 0, Right = 1, Label = "A↔B" }, token);
+        Put(zip, "xl/worksheets/sheet1.xml", sheet);
     }
 
     private static string BuildExcelPairSheet(ComparisonResultVm result, ComparisonPairVm pair, CancellationToken token)
     {
-        const int canvasPixels = 1280;
-        const int leftPixels = canvasPixels * 40 / 100;   // 512 px
-        const int rightPixels = canvasPixels * 40 / 100;  // 512 px
-        const int changesPixels = canvasPixels * 20 / 100; // 256 px
-        var xml = new StringBuilder(1024 * 48);
-        xml.Append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">");
-        xml.Append("<sheetViews><sheetView workbookViewId=\"0\" zoomScale=\"100\"><pane ySplit=\"1\" topLeftCell=\"A2\" activePane=\"bottomLeft\" state=\"frozen\"/></sheetView></sheetViews>");
-        xml.Append("<sheetFormatPr defaultRowHeight=\"15\"/>");
-        xml.Append("<cols>");
-        xml.Append($"<col min=\"1\" max=\"1\" width=\"{ExcelWidthForPixels(leftPixels):0.00}\" customWidth=\"1\"/>");
-        xml.Append($"<col min=\"2\" max=\"2\" width=\"{ExcelWidthForPixels(rightPixels):0.00}\" customWidth=\"1\"/>");
-        xml.Append($"<col min=\"3\" max=\"3\" width=\"{ExcelWidthForPixels(changesPixels):0.00}\" customWidth=\"1\"/>");
-        xml.Append("</cols><sheetData>");
+        const int leftPixels = 512;
+        const int rightPixels = 512;
+        const int changesPixels = 256;
+        var xml = BeginExcelSheet(new[] { leftPixels, rightPixels, changesPixels });
 
         var rowNumber = 1;
         xml.Append("<row r=\"1\" ht=\"30\" customHeight=\"1\">");
@@ -237,9 +218,8 @@ internal static class NativeOfficeExporter
                 rowNumber++;
                 var leftSegments = ExcelLineSegments(sourceRow, pair.Left, pair.Label, left, line.Part, line.LeftStart, line.LeftEnd, line.LeftText);
                 var rightSegments = ExcelLineSegments(sourceRow, pair.Right, pair.Label, right, line.Part, line.RightStart, line.RightEnd, line.RightText);
-                var messages = ExcelLineMessages(sourceRow, pair, left, right, line);
-                var changes = string.Join("\n", messages);
-                var height = EstimateExcelRowHeight(line.LeftText, line.RightText, changes, line.Kind);
+                var changes = string.Join("\n", ExcelLineMessages(sourceRow, pair, left, right, line));
+                var height = EstimateExcelRowHeight(new[] { line.LeftText, line.RightText }, changes, line.Kind, 64);
                 var style = line.Kind == "article" ? 2 : line.Kind == "section" ? 3 : 0;
                 xml.Append($"<row r=\"{rowNumber}\" ht=\"{height:0.0}\" customHeight=\"1\">");
                 RichCell(xml, rowNumber, 0, leftSegments, style);
@@ -249,8 +229,138 @@ internal static class NativeOfficeExporter
             }
         }
 
-        xml.Append($"</sheetData><autoFilter ref=\"A1:C{Math.Max(1, rowNumber)}\"/></worksheet>");
+        EndExcelSheet(xml, 3, rowNumber);
         return xml.ToString();
+    }
+
+    private sealed class ExcelThreeWayLine
+    {
+        public string Kind { get; init; } = "block";
+        public string Part { get; init; } = "body";
+        public string[] Labels { get; } = new string[3];
+        public string[] Texts { get; } = new string[3];
+        public int[] Starts { get; } = { -1, -1, -1 };
+        public int[] Ends { get; } = { -1, -1, -1 };
+        public int? BcIndex { get; set; }
+    }
+
+    private static string BuildExcelThreeWaySheet(ComparisonResultVm result, CancellationToken token)
+    {
+        const int canvasPixels = 1280;
+        const int changesPixels = 256; // 20%
+        const int documentPixels = canvasPixels - changesPixels; // 80%
+        // 80% is divided across A/B/C. Integer pixels are 341 + 341 + 342 = 1024.
+        var widths = new[] { documentPixels / 3, documentPixels / 3, documentPixels - 2 * (documentPixels / 3), changesPixels };
+        var xml = BeginExcelSheet(widths);
+
+        var rowNumber = 1;
+        xml.Append("<row r=\"1\" ht=\"30\" customHeight=\"1\">");
+        for (var doc = 0; doc < 3; doc++)
+            Cell(xml, rowNumber, doc, $"{(char)('A' + doc)} · {result.Names.ElementAtOrDefault(doc) ?? string.Empty}", 1);
+        Cell(xml, rowNumber, 3, "변경사항", 1);
+        xml.Append("</row>");
+
+        foreach (var sourceRow in result.Rows)
+        {
+            token.ThrowIfCancellationRequested();
+            var a = sourceRow.Members.Count > 0 ? sourceRow.Members[0] : null;
+            var b = sourceRow.Members.Count > 1 ? sourceRow.Members[1] : null;
+            var c = sourceRow.Members.Count > 2 ? sourceRow.Members[2] : null;
+            foreach (var line in BuildExcelThreeWayLines(a, b, c))
+            {
+                token.ThrowIfCancellationRequested();
+                rowNumber++;
+                var style = line.Kind == "article" ? 2 : line.Kind == "section" ? 3 : 0;
+                var changes = string.Join("\n", ExcelThreeWayMessages(sourceRow, line));
+                var height = EstimateExcelRowHeight(line.Texts, changes, line.Kind, 42);
+                // Replace the row start emitted below after height is known.
+                var rowXml = new StringBuilder();
+                rowXml.Append($"<row r=\"{rowNumber}\" ht=\"{height:0.0}\" customHeight=\"1\">");
+                for (var doc = 0; doc < 3; doc++)
+                {
+                    var member = sourceRow.Members.Count > doc ? sourceRow.Members[doc] : null;
+                    var segments = ExcelThreeWaySegments(sourceRow, doc, member, line.Part, line.Starts[doc], line.Ends[doc], line.Texts[doc]);
+                    RichCell(rowXml, rowNumber, doc, segments, style);
+                }
+                Cell(rowXml, rowNumber, 3, changes, style);
+                rowXml.Append("</row>");
+                xml.Append(rowXml);
+            }
+        }
+
+        EndExcelSheet(xml, 4, rowNumber);
+        return xml.ToString();
+    }
+
+    private static StringBuilder BeginExcelSheet(IReadOnlyList<int> pixelWidths)
+    {
+        var xml = new StringBuilder(1024 * 64);
+        xml.Append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">");
+        xml.Append("<sheetViews><sheetView workbookViewId=\"0\" zoomScale=\"100\"><pane ySplit=\"1\" topLeftCell=\"A2\" activePane=\"bottomLeft\" state=\"frozen\"/></sheetView></sheetViews>");
+        xml.Append("<sheetFormatPr defaultRowHeight=\"15\"/><cols>");
+        for (var i = 0; i < pixelWidths.Count; i++)
+            xml.Append($"<col min=\"{i + 1}\" max=\"{i + 1}\" width=\"{ExcelWidthForPixels(pixelWidths[i]):0.00}\" customWidth=\"1\"/>");
+        xml.Append("</cols><sheetData>");
+        return xml;
+    }
+
+    private static void EndExcelSheet(StringBuilder xml, int columnCount, int rowNumber)
+    {
+        xml.Append($"</sheetData><autoFilter ref=\"A1:{ColumnName(columnCount)}{Math.Max(1, rowNumber)}\"/></worksheet>");
+    }
+
+    private static List<ExcelThreeWayLine> BuildExcelThreeWayLines(MemberVm? a, MemberVm? b, MemberVm? c)
+    {
+        var ab = NativeComparisonEngine.BuildExcelAlignedParts(a, b);
+        var bc = NativeComparisonEngine.BuildExcelAlignedParts(b, c);
+        var rows = new List<ExcelThreeWayLine>();
+        var usedBc = new HashSet<int>();
+
+        static string BKeyFromAb(ExcelAlignedPartVm x) =>
+            $"{x.Kind}|{x.Part}|{x.RightStart}|{x.RightEnd}|{x.RightLabel}|{x.RightText}";
+        static string BKeyFromBc(ExcelAlignedPartVm x) =>
+            $"{x.Kind}|{x.Part}|{x.LeftStart}|{x.LeftEnd}|{x.LeftLabel}|{x.LeftText}";
+
+        for (var i = 0; i < ab.Count; i++)
+        {
+            var x = ab[i];
+            var line = new ExcelThreeWayLine { Kind = x.Kind, Part = x.Part };
+            line.Labels[0] = x.LeftLabel; line.Labels[1] = x.RightLabel;
+            line.Texts[0] = x.LeftText; line.Texts[1] = x.RightText;
+            line.Starts[0] = x.LeftStart; line.Ends[0] = x.LeftEnd;
+            line.Starts[1] = x.RightStart; line.Ends[1] = x.RightEnd;
+
+            if (!string.IsNullOrEmpty(x.RightText))
+            {
+                var key = BKeyFromAb(x);
+                var match = Enumerable.Range(0, bc.Count)
+                    .FirstOrDefault(j => !usedBc.Contains(j) && !string.IsNullOrEmpty(bc[j].LeftText) && BKeyFromBc(bc[j]) == key, -1);
+                if (match >= 0)
+                {
+                    var y = bc[match];
+                    line.BcIndex = match; usedBc.Add(match);
+                    line.Labels[2] = y.RightLabel; line.Texts[2] = y.RightText;
+                    line.Starts[2] = y.RightStart; line.Ends[2] = y.RightEnd;
+                }
+            }
+            rows.Add(line);
+        }
+
+        for (var j = 0; j < bc.Count; j++)
+        {
+            if (usedBc.Contains(j)) continue;
+            var y = bc[j];
+            var line = new ExcelThreeWayLine { Kind = y.Kind, Part = y.Part, BcIndex = j };
+            line.Labels[1] = y.LeftLabel; line.Labels[2] = y.RightLabel;
+            line.Texts[1] = y.LeftText; line.Texts[2] = y.RightText;
+            line.Starts[1] = y.LeftStart; line.Ends[1] = y.LeftEnd;
+            line.Starts[2] = y.RightStart; line.Ends[2] = y.RightEnd;
+
+            var insertAt = rows.FindIndex(r => r.BcIndex.HasValue && r.BcIndex.Value > j);
+            if (insertAt < 0) rows.Add(line); else rows.Insert(insertAt, line);
+        }
+
+        return rows.Where(x => x.Texts.Any(t => !string.IsNullOrWhiteSpace(t))).ToList();
     }
 
     private static IReadOnlyList<SegmentVm> ExcelLineSegments(
@@ -274,6 +384,44 @@ internal static class NativeOfficeExporter
         var text = part == "header" ? member.Header : member.Body;
         var offset = part == "body" ? member.Header.Length + 1 : 0;
         return BuildPairSegments(text, row, doc, pairLabel, part, offset, start, end);
+    }
+
+    private static IReadOnlyList<SegmentVm> ExcelThreeWaySegments(
+        ComparisonRowVm row, int doc, MemberVm? member, string part, int start, int end, string fallbackText)
+    {
+        if (string.IsNullOrEmpty(fallbackText)) return Array.Empty<SegmentVm>();
+        if (part == "whole" || member is null || start < 0 || end < start)
+            return new[] { new SegmentVm { Text = fallbackText, Style = "normal" } };
+        var text = part == "header" ? member.Header : member.Body;
+        var offset = part == "body" ? member.Header.Length + 1 : 0;
+        start = Math.Clamp(start, 0, text.Length);
+        end = Math.Clamp(end, start, text.Length);
+        if (end <= start) return Array.Empty<SegmentVm>();
+        var flags = new int[end - start];
+        foreach (var marker in row.Markers.Where(x => x.Part == part))
+        {
+            foreach (var ep in marker.Endpoints.Where(x => x.TargetDoc == doc && x.CharEnd > x.CharStart))
+            {
+                var a = Math.Max(start, ep.CharStart - offset);
+                var b = Math.Min(end, ep.CharEnd - offset);
+                if (b <= a) continue;
+                var role = marker.Action == "삭제" ? 1 : marker.Action == "추가" ? 2 : (doc == marker.TargetDoc ? 2 : 1);
+                for (var k = a; k < b; k++) flags[k - start] |= role;
+            }
+        }
+        var result = new List<SegmentVm>();
+        for (var p = 0; p < flags.Length;)
+        {
+            var f = flags[p]; var q = p + 1;
+            while (q < flags.Length && flags[q] == f) q++;
+            result.Add(new SegmentVm
+            {
+                Text = text[(start + p)..(start + q)],
+                Style = f == 1 ? "delete" : f == 2 ? "insert" : f == 3 ? "both" : "normal"
+            });
+            p = q;
+        }
+        return result;
     }
 
     private static IReadOnlyList<SegmentVm> BuildPairSegments(
@@ -351,7 +499,42 @@ internal static class NativeOfficeExporter
         return result.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct().ToList();
     }
 
-    private static double EstimateExcelRowHeight(string left, string right, string changes, string kind)
+    private static List<string> ExcelThreeWayMessages(ComparisonRowVm row, ExcelThreeWayLine line)
+    {
+        var result = new List<string>();
+        bool Touches(MarkerVm marker, int doc)
+        {
+            var member = row.Members.Count > doc ? row.Members[doc] : null;
+            if (member is null || marker.Part != line.Part || line.Starts[doc] < 0 || line.Ends[doc] < line.Starts[doc]) return false;
+            var offset = line.Part == "body" ? member.Header.Length + 1 : 0;
+            foreach (var ep in marker.Endpoints.Where(x => x.TargetDoc == doc))
+            {
+                var a = ep.CharStart - offset; var b = ep.CharEnd - offset;
+                if (a == b)
+                {
+                    if (a >= line.Starts[doc] && a <= line.Ends[doc]) return true;
+                }
+                else if (Math.Max(a, line.Starts[doc]) < Math.Min(b, line.Ends[doc])) return true;
+            }
+            return false;
+        }
+
+        foreach (var marker in row.Markers)
+        {
+            if (line.Part == "whole" || Enumerable.Range(0, 3).Any(doc => Touches(marker, doc)))
+                result.Add($"[{marker.Num}] {marker.Message}");
+        }
+        if (line.Kind is "article" or "section" or "block")
+            result.InsertRange(0, row.DisplayMessages.Where(x => x.StartsWith("• ", StringComparison.Ordinal)).Select(x => x[2..]));
+        else
+        {
+            var labels = line.Labels.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct().ToArray();
+            result.InsertRange(0, row.DisplayMessages.Where(x => labels.Any(label => x.Contains(label, StringComparison.Ordinal))));
+        }
+        return result.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct().ToList();
+    }
+
+    private static double EstimateExcelRowHeight(IReadOnlyList<string> documents, string changes, string kind, int documentCapacity)
     {
         static int VisualWidth(char ch) => ch <= 0x7F ? 1 : 2;
         static int Lines(string text, int capacity)
@@ -365,9 +548,7 @@ internal static class NativeOfficeExporter
             }
             return Math.Max(1, total);
         }
-        // 512/512/256 px at 10pt. Capacities are intentionally conservative for Korean CJK text
-        // so every wrapped line remains visible without manual row resizing.
-        var lines = Math.Max(Lines(left, 64), Math.Max(Lines(right, 64), Lines(changes, 30)));
+        var lines = documents.Select(x => Lines(x, documentCapacity)).Append(Lines(changes, 30)).Max();
         var height = Math.Min(409.0, 6.0 + lines * 15.0);
         if (kind is "article" or "section") height = Math.Max(height, 24.0);
         return height;
@@ -375,7 +556,6 @@ internal static class NativeOfficeExporter
 
     private static double ExcelWidthForPixels(int pixels)
     {
-        // Excel's default Calibri width approximation: pixel ~= 7 * width + 5.
         return Math.Max(1.0, (pixels - 5.0) / 7.0);
     }
 

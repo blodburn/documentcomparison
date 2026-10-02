@@ -9,12 +9,11 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.20.32**
+**V5.20.33**
 
-- Reworked Excel export into a three-column review layout with 40% / 40% / 20% width allocation.
-- Legal documents are exported by structural rows such as articles and numbered items instead of one large row per article.
-- Wrapped row heights are calculated so cell text remains visible without manual resizing.
-- Three-document comparisons are exported as separate pair sheets while keeping the same three-column layout.
+- Two-document Excel export keeps the 1280px review layout at 40% / 40% / 20% for A / B / Changes.
+- Three-document Excel export now keeps A / B / C together on one sheet: the 80% document area is split equally across the three documents, with the remaining 20% reserved for Changes.
+- Legal documents remain split into structural rows such as articles and numbered items, with wrapped row heights expanded so all review text stays visible.
 
 ## Features
 
