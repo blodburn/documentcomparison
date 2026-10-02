@@ -81,7 +81,7 @@ public sealed class VersionPreviewRowControl : UserControl
             };
         }
 
-        var stack = new StackPanel { Spacing = 2 };
+        var stack = new StackPanel { Spacing = 4 };
         if (_supplementalNumbers.Count > 0)
             stack.Children.Add(BuildSupplementalBadgeStrip());
         if (!string.IsNullOrWhiteSpace(member.Header)) stack.Children.Add(BuildPart(member.Header, "header", true));
@@ -89,14 +89,14 @@ public sealed class VersionPreviewRowControl : UserControl
         return new Border
         {
             Background = Brushes.White, BorderBrush = CellBorderBrush, BorderThickness = new Thickness(0,0,0,1),
-            Padding = new Thickness(12,7), Child = stack
+            Padding = new Thickness(12,9), Child = stack
         };
     }
 
     private Control BuildPart(string raw, string part, bool fallbackBold)
     {
         var all = _row.PlacementsFor(_docIndex, part).OrderBy(x => x.Start).ThenBy(x => x.Num).ToList();
-        var panel = new StackPanel { Spacing = 0 };
+        var panel = new StackPanel { Spacing = 1 };
         var offset = 0;
         var lines = raw.Split('\n');
         for (var i = 0; i < lines.Length; i++)
@@ -169,8 +169,8 @@ public sealed class VersionPreviewRowControl : UserControl
                 BorderBrush = formatChanged ? FormatBrush : new SolidColorBrush(Color.Parse("#7B8794")),
                 BorderThickness = new Thickness(formatChanged ? 2 : 1),
                 Background = string.IsNullOrWhiteSpace(cell.Shading) ? Brushes.White : Brush(cell.Shading, Brushes.White),
-                Padding = new Thickness(7, 5),
-                MinHeight = 30,
+                Padding = new Thickness(7, 6),
+                MinHeight = 32,
                 Child = content
             };
             Grid.SetColumn(border, Math.Min(column, Math.Max(0, totalSpan - 1)));
@@ -198,7 +198,10 @@ public sealed class VersionPreviewRowControl : UserControl
             TextAlignment = paragraph?.Alignment ?? TextAlignment.Left,
             Margin = paragraph is null ? new Thickness(0) : new Thickness(paragraph.LeftIndent, paragraph.Before, 0, paragraph.After)
         };
-        if (paragraph?.LineHeight is double lh && lh > 0) tb.LineHeight = lh;
+        // Avalonia can clip glyphs when Word's requested line height is smaller than the
+        // tallest run in a mixed-style paragraph. Keep the Word spacing when it is larger,
+        // but enforce a natural-font floor so Korean/Latin glyphs and change badges remain visible.
+        tb.LineHeight = VersionPreviewLayoutPolicy.ResolveLineHeight(paragraph, tb.FontSize);
 
         var exactStyleCoordinates = paragraph is not null && string.Equals(raw, paragraph.Text, StringComparison.Ordinal);
         var cuts = new SortedSet<int> { 0, raw.Length };

@@ -1795,4 +1795,21 @@ Check(anchoredChanges.Count==2&&anchoredChanges[0].Category=="문자서식"&&anc
     "anchored formatting change was not sequenced at its document position");
 Console.WriteLine("PASS VERSION HISTORY ANCHORED FORMAT ORDER");
 
+// 145. Version-history preview line height must never be smaller than the tallest visible run.
+var clippedParagraph=new VersionParagraphVisualStyle
+{
+    Text="큰 제목",
+    LineHeight=18,
+    DefaultRun=new VersionRunVisualStyle{FontSize=14},
+    Runs=new List<VersionRunVisualSpan>
+    {
+        new(){Start=0,End=3,Style=new VersionRunVisualStyle{FontSize=32}}
+    }
+};
+var safeHeight=VersionPreviewLayoutPolicy.ResolveLineHeight(clippedParagraph,13);
+Check(safeHeight>=40.9,"version preview line-height floor did not protect large glyphs: "+safeHeight);
+var roomyParagraph=new VersionParagraphVisualStyle{Text="본문",LineHeight=48,DefaultRun=new VersionRunVisualStyle{FontSize=13}};
+Check(Math.Abs(VersionPreviewLayoutPolicy.ResolveLineHeight(roomyParagraph,13)-48)<.01,"existing roomy Word line height was not preserved");
+Console.WriteLine("PASS VERSION HISTORY SAFE LINE HEIGHT");
+
 Console.WriteLine("ALL REGRESSIONS PASSED");

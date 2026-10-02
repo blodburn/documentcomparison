@@ -9,11 +9,11 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.21.8**
+**V5.21.9**
 
-- Improved Version History formatting details so Word line spacing is shown in readable units instead of raw document values.
-- Font colors are shown with a standard hex value and a matching color swatch.
-- Base-style inheritance now shows the readable Word style name when available.
+- Increased Version History preview line spacing and row padding to improve readability.
+- Prevented large or mixed-size text from being clipped when a Word paragraph requests a tighter line height.
+- Increased table-cell vertical spacing slightly so table text remains fully visible.
 
 ## Features
 
