@@ -1,9 +1,9 @@
-using System.Security.Cryptography;
 using System.Text.Json;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Interactivity;
+using Avalonia.Input;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Avalonia.Controls.Primitives;
@@ -31,6 +31,23 @@ public sealed class VersionHistoryControl : UserControl
     private readonly TextBlock _changeTitle = new() { Text = "변경사항", FontSize = 17, FontWeight = FontWeight.SemiBold };
     private readonly TextBlock _changeSummary = new() { Text = "선택된 버전이 없습니다.", Foreground = Brushes.Gray, FontSize = 12, TextWrapping = TextWrapping.Wrap };
     private readonly TextBlock _status = new() { Text = "버전 파일을 추가하세요.", Foreground = new SolidColorBrush(Color.Parse("#64748B")), FontSize = 12, TextWrapping = TextWrapping.Wrap };
+    private readonly Border _dropHint = new()
+    {
+        Background = new SolidColorBrush(Color.Parse("#F6F9FC")),
+        BorderBrush = new SolidColorBrush(Color.Parse("#CBD5E1")),
+        BorderThickness = new Thickness(1),
+        CornerRadius = new CornerRadius(6),
+        Padding = new Thickness(10, 8),
+        Margin = new Thickness(12, 0, 12, 8),
+        Child = new TextBlock
+        {
+            Text = "DOCX/TXT 파일을 이 영역에 드롭하여 버전 추가",
+            FontSize = 11,
+            Foreground = new SolidColorBrush(Color.Parse("#64748B")),
+            TextWrapping = TextWrapping.Wrap,
+            TextAlignment = TextAlignment.Center
+        }
+    };
     private readonly Button _moveUp = Secondary("위로");
     private readonly Button _moveDown = Secondary("아래로");
     private readonly Button _delete = Secondary("삭제");
@@ -60,7 +77,10 @@ public sealed class VersionHistoryControl : UserControl
         };
 
         var left = Card();
-        var leftRoot = new Grid { RowDefinitions = new RowDefinitions("Auto,Auto,*,Auto,Auto") };
+        DragDrop.SetAllowDrop(left, true);
+        DragDrop.AddDragOverHandler(left, OnVersionDragOver);
+        DragDrop.AddDropHandler(left, OnVersionDrop);
+        var leftRoot = new Grid { RowDefinitions = new RowDefinitions("Auto,Auto,Auto,*,Auto,Auto") };
         leftRoot.Children.Add(new Border
         {
             Padding = new Thickness(14, 12, 14, 8),
@@ -72,6 +92,7 @@ public sealed class VersionHistoryControl : UserControl
         var save = Secondary("저장"); save.Click += SaveProject_Click;
         actions.Children.Add(add); actions.Children.Add(open); actions.Children.Add(save);
         Grid.SetRow(actions, 1); leftRoot.Children.Add(actions);
+        Grid.SetRow(_dropHint, 2); leftRoot.Children.Add(_dropHint);
 
         var treeScroll = new ScrollViewer
         {
@@ -80,13 +101,13 @@ public sealed class VersionHistoryControl : UserControl
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             Margin = new Thickness(10, 0, 8, 6)
         };
-        Grid.SetRow(treeScroll, 2); leftRoot.Children.Add(treeScroll);
+        Grid.SetRow(treeScroll, 3); leftRoot.Children.Add(treeScroll);
 
         var reorder = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Margin = new Thickness(12, 4, 12, 8) };
         reorder.Children.Add(_moveUp); reorder.Children.Add(_moveDown); reorder.Children.Add(_delete);
-        Grid.SetRow(reorder, 3); leftRoot.Children.Add(reorder);
+        Grid.SetRow(reorder, 4); leftRoot.Children.Add(reorder);
         var statusBorder = new Border { Background = new SolidColorBrush(Color.Parse("#F7F9FC")), Padding = new Thickness(12, 9), Child = _status };
-        Grid.SetRow(statusBorder, 4); leftRoot.Children.Add(statusBorder);
+        Grid.SetRow(statusBorder, 5); leftRoot.Children.Add(statusBorder);
         left.Child = leftRoot;
         Grid.SetColumn(left, 0); root.Children.Add(left);
 
@@ -153,24 +174,51 @@ public sealed class VersionHistoryControl : UserControl
                 new FilePickerFileType("지원 문서") { Patterns = new[] { "*.docx", "*.txt" } }
             }
         });
-        var added = 0;
-        foreach (var file in files)
+        var paths = files.Select(x => x.TryGetLocalPath())
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Cast<string>();
+        var result = VersionFileImportPolicy.AddPaths(_project, paths);
+        if (result.Added == 0)
         {
-            var path = file.TryGetLocalPath();
-            if (string.IsNullOrWhiteSpace(path) || _project.Versions.Any(x => string.Equals(x.Path, path, StringComparison.OrdinalIgnoreCase))) continue;
-            _project.Versions.Add(new VersionFileVm
-            {
-                Label = Path.GetFileNameWithoutExtension(path),
-                Path = path,
-                Sha256 = Hash(path),
-                AddedAtUtc = DateTime.UtcNow
-            });
-            added++;
+            _status.Text = ImportStatus(result, "추가된 버전이 없습니다.");
+            return;
         }
-        if (added == 0) return;
         RefreshTree();
-        _status.Text = $"{added}개 버전을 추가했습니다. 순서는 위/아래 버튼으로 조정할 수 있습니다.";
+        _status.Text = ImportStatus(result, $"{result.Added}개 버전을 추가했습니다.");
         await ShowSelectedAsync();
+    }
+
+    private void OnVersionDragOver(object? sender, DragEventArgs e)
+    {
+        var hasSupported = e.DataTransfer.TryGetFiles()?
+            .Select(x => x.TryGetLocalPath())
+            .Any(x => !string.IsNullOrWhiteSpace(x) && VersionFileImportPolicy.IsSupported(x)) == true;
+        e.DragEffects = hasSupported ? DragDropEffects.Copy : DragDropEffects.None;
+    }
+
+    private async void OnVersionDrop(object? sender, DragEventArgs e)
+    {
+        var paths = e.DataTransfer.TryGetFiles()?
+            .Select(x => x.TryGetLocalPath())
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Cast<string>()
+            .ToArray() ?? Array.Empty<string>();
+        var result = VersionFileImportPolicy.AddPaths(_project, paths);
+        if (result.Added > 0)
+        {
+            RefreshTree();
+            await ShowSelectedAsync();
+        }
+        _status.Text = ImportStatus(result, result.Added > 0 ? $"드롭으로 {result.Added}개 버전을 추가했습니다." : "추가된 버전이 없습니다.");
+    }
+
+    private static string ImportStatus(VersionFileImportResult result, string prefix)
+    {
+        var details = new List<string>();
+        if (result.Duplicates > 0) details.Add($"중복 {result.Duplicates}");
+        if (result.Unsupported > 0) details.Add($"미지원 {result.Unsupported}");
+        if (result.Missing > 0) details.Add($"찾을 수 없음 {result.Missing}");
+        return details.Count == 0 ? prefix + " 순서는 위/아래 버튼으로 조정할 수 있습니다." : prefix + " " + string.Join(" · ", details);
     }
 
     private async void OpenProject_Click(object? sender, RoutedEventArgs e)
@@ -485,11 +533,6 @@ public sealed class VersionHistoryControl : UserControl
     private static int SwapRoleIndex(int role, int a, int b) => role == a ? b : role == b ? a : role;
     private static int AfterDeleteIndex(int role, int deleted) => role == deleted ? -1 : role > deleted ? role - 1 : role;
 
-    private static string Hash(string path)
-    {
-        using var stream = File.OpenRead(path);
-        return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
-    }
 
     private static Border Card() => new()
     {

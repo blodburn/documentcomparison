@@ -60,7 +60,7 @@ public sealed class HelpDialog : Window
 
     private static string BuildGuide(UiLanguage language) => language == UiLanguage.Korean
         ? """
-문서 비교기 V5.21.1 · 간단 사용설명서
+문서 비교기 V5.21.2 · 간단 사용설명서
 
 1. 문서 불러오기
 A/B/C 제목 영역을 클릭하거나 DOCX/TXT 파일을 해당 영역에 드롭합니다. A와 B는 필수이고 C는 선택입니다.
@@ -84,7 +84,7 @@ A/B/C 중 어느 열이든 [n]을 클릭하면 누른 열이 기준열이 됩니
 ‘Excel 내보내기’는 비교 결과의 텍스트와 변경표시를 XLSX로 저장합니다. ‘Word 변경추적’은 변경 전 → 변경 후 조합을 선택해 Word 변경추적 문서를 만듭니다. DOCX를 변경 후 문서(B)로 선택하면 B의 표·이미지·스타일·번호·콘텐츠 컨트롤 등 기존 양식을 기준으로 본문 텍스트 변경만 주입합니다. 표 행/셀의 추가·삭제는 Word의 구조 변경추적으로 기록하고, 자동번호만 달라진 경우에도 Word 번호 변경추적으로 남깁니다. 표 내부의 콘텐츠 컨트롤(SDT)과 customXml 래퍼는 유지합니다. B에 텍스트/서식/번호를 포함한 기존 변경추적이 남아 있거나 A/B의 머리글·바닥글·각주·미주가 서로 달라 현재 안전하게 추적할 수 없는 경우에는 불완전한 파일 생성을 막기 위해 저장을 중단합니다.
 
 8. 버전 관리
-상단 ‘버전 관리’를 누르면 문서 버전 이력을 관리할 수 있습니다. ‘+ 버전 추가’로 버전 파일을 순서대로 추가합니다. 전/후가 모두 비어 있으면 첫 번째로 누른 파일이 ‘전’, 다음으로 누른 다른 파일이 ‘후’가 됩니다. 이미 ‘전’ 또는 ‘후’로 지정된 파일을 다시 누르면 해당 지정만 해제되며, 이후 다른 파일을 그 역할로 다시 지정할 수 있습니다. 트리에는 파일명만 표시됩니다. ‘후’ 문서가 지정되어 있으면 가운데에는 후 문서 하나를 표시하고 전 문서와의 변경내용을 겹쳐 보여줍니다. DOCX는 글꼴, 글자 크기, 굵게/기울임/밑줄/취소선, 글자색, 문단 정렬·간격·들여쓰기와 상속된 Word 스타일을 가능한 범위에서 실제 문서 서식으로 표시하며, 서식 변경 위치는 문서 화면에서도 구분하고 오른쪽 변경사항에서 상세 전/후 값을 확인할 수 있습니다. 표/셀 및 Word 스타일 정의 변경도 오른쪽에 정리됩니다. 버전 순서는 위/아래 버튼으로 조정할 수 있으며 프로젝트는 .dcv.json 파일로 저장/열기할 수 있습니다.
+상단 ‘버전 관리’를 누르면 문서 버전 이력을 관리할 수 있습니다. ‘+ 버전 추가’를 누르거나 왼쪽 ‘문서 버전’ 영역에 DOCX/TXT 파일을 직접 드롭해 버전 파일을 추가할 수 있습니다. 여러 파일을 한 번에 드롭하면 전달된 순서대로 트리에 추가됩니다. 전/후가 모두 비어 있으면 첫 번째로 누른 파일이 ‘전’, 다음으로 누른 다른 파일이 ‘후’가 됩니다. 이미 ‘전’ 또는 ‘후’로 지정된 파일을 다시 누르면 해당 지정만 해제되며, 이후 다른 파일을 그 역할로 다시 지정할 수 있습니다. 트리에는 파일명만 표시됩니다. ‘후’ 문서가 지정되어 있으면 가운데에는 후 문서 하나를 표시하고 전 문서와의 변경내용을 겹쳐 보여줍니다. DOCX는 글꼴, 글자 크기, 굵게/기울임/밑줄/취소선, 글자색, 문단 정렬·간격·들여쓰기와 상속된 Word 스타일을 가능한 범위에서 실제 문서 서식으로 표시하며, 서식 변경 위치는 문서 화면에서도 구분하고 오른쪽 변경사항에서 상세 전/후 값을 확인할 수 있습니다. 표/셀 및 Word 스타일 정의 변경도 오른쪽에 정리됩니다. 버전 순서는 위/아래 버튼으로 조정할 수 있으며 프로젝트는 .dcv.json 파일로 저장/열기할 수 있습니다.
 
 9. 언어
 프로그램은 Windows 표시 언어를 읽어 한국어 Windows에서는 KR, 그 외 환경에서는 EN으로 시작합니다. 상단 ‘언어/Language’ 메뉴에서 언제든 KR/EN을 바꿀 수 있습니다. 문서 원문은 언어 전환으로 변경되지 않습니다.
@@ -93,7 +93,7 @@ Copyright © 2026 blodburn. All rights reserved.
 This software is proprietary and is not open source.
 """
         : """
-Document Compare V5.21.1 · Quick Guide
+Document Compare V5.21.2 · Quick Guide
 
 1. Load documents
 Click the A/B/C header area or drop DOCX/TXT files onto it. A and B are required; C is optional.
@@ -117,7 +117,7 @@ Use Search to find text in the document body or the Changes column. Turning off 
 ‘Export Excel’ saves comparison text and change markup as XLSX. ‘Word Track Changes’ lets you choose an original → revised pair and creates a Word document with tracked changes. When a DOCX is selected as the revised document (B), its existing tables, images, styles, numbering, and content controls are used as the formatting base while body text changes are injected in place. Whole table-row/cell insertions and deletions are emitted as structural Word revisions, and numbering-only changes are emitted as Word numbering revisions. Table SDT/content-control and customXml wrappers are preserved. Export stops instead of creating an incomplete file when B still contains prior text/format/numbering Track Changes or when headers, footers, footnotes, or endnotes differ between A and B and cannot yet be tracked safely.
 
 8. Version history
-Use ‘Version history’ to manage a sequential document lineage. When neither role is assigned, the first file you click becomes Before and the next different file becomes After. Clicking an assigned Before or After file again clears only that role, after which another file can be assigned to it. The tree shows file names only. When After is assigned, the center shows the After document with changes from Before overlaid. For DOCX files, the preview reflects font family/size, bold/italic/underline/strike, text color, paragraph alignment/spacing/indentation, and inherited Word styles where supported. Formatting-change locations are also marked in the document view, while the right pane shows detailed content, structure, character/paragraph formatting, table/cell, and Word style-definition changes. Reorder versions with the Up/Down controls and save/reopen the project as a .dcv.json file.
+Use ‘Version history’ to manage a sequential document lineage. Add DOCX/TXT files with the Add Version button or drop one or more files directly onto the left Version History panel. Dropped files are appended in their incoming order. When neither role is assigned, the first file you click becomes Before and the next different file becomes After. Clicking an assigned Before or After file again clears only that role, after which another file can be assigned to it. The tree shows file names only. When After is assigned, the center shows the After document with changes from Before overlaid. For DOCX files, the preview reflects font family/size, bold/italic/underline/strike, text color, paragraph alignment/spacing/indentation, and inherited Word styles where supported. Formatting-change locations are also marked in the document view, while the right pane shows detailed content, structure, character/paragraph formatting, table/cell, and Word style-definition changes. Reorder versions with the Up/Down controls and save/reopen the project as a .dcv.json file.
 
 9. Language
 The app reads the Windows display language. Korean Windows starts in KR; other environments start in EN. You can switch KR/EN at any time from the Language menu. Switching the UI language never modifies document content.

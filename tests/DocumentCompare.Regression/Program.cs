@@ -1678,4 +1678,14 @@ pair=VersionSelectionPolicy.Toggle(pair.Before,pair.After,1); Check(pair.Before=
 var unchanged=VersionSelectionPolicy.Toggle(pair.Before,pair.After,3); Check(!unchanged.Changed&&unchanged.Before==1&&unchanged.After==2,"third unassigned file replaced a full pair without explicit release");
 Console.WriteLine("PASS VERSION HISTORY BEFORE/AFTER TOGGLE");
 
+// 139. Version-history file import accepts dropped DOCX/TXT paths, preserves order, and ignores duplicates/unsupported files.
+var dropTxt=Path.Combine(dir,"drop-v01.txt"); var dropDocx=Path.Combine(dir,"drop-v02.docx"); var dropPdf=Path.Combine(dir,"drop-ignore.pdf");
+File.WriteAllText(dropTxt,"v0.1",new UTF8Encoding(false)); Make(dropDocx,P("v0.2")); File.WriteAllText(dropPdf,"not supported",new UTF8Encoding(false));
+var dropProject=new VersionHistoryProjectVm();
+var dropResult=VersionFileImportPolicy.AddPaths(dropProject,new[]{dropTxt,dropDocx,dropTxt,dropPdf,Path.Combine(dir,"missing.docx")});
+Check(dropResult.Added==2&&dropResult.Duplicates==1&&dropResult.Unsupported==1&&dropResult.Missing==1,"version drop import counts changed");
+Check(dropProject.Versions.Count==2&&Path.GetFileName(dropProject.Versions[0].Path)=="drop-v01.txt"&&Path.GetFileName(dropProject.Versions[1].Path)=="drop-v02.docx","version drop import order changed");
+Check(dropProject.Versions.All(x=>x.Sha256.Length==64),"version drop import did not hash added files");
+Console.WriteLine("PASS VERSION HISTORY FILE DROP IMPORT");
+
 Console.WriteLine("ALL REGRESSIONS PASSED");

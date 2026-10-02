@@ -9,12 +9,12 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.21.1**
+**V5.21.2**
 
-- Before and After documents in Version History can now be assigned and cleared independently. Clicking an assigned file again clears that role so another file can be selected.
-- Version tree entries now show only the source file name.
-- DOCX version preview now reflects document font family, font size, bold/italic/underline/strike, text color, paragraph alignment, spacing, indentation, and inherited Word styles instead of using one fixed preview style.
-- Direct paragraph/character formatting changes are highlighted in the document view, and named Word style changes now show clearer before/after style details.
+- Added drag-and-drop version import to the Version History panel.
+- Drop one or multiple DOCX/TXT files anywhere in the left document-version area to append them to the version tree.
+- Duplicate files are ignored, unsupported/missing files are reported, and dropped files keep their incoming order.
+- Existing Before/After assignments remain intact when additional versions are added.
 
 ## Features
 
@@ -22,6 +22,7 @@ It is designed for general documents as well as structured legal, policy, and re
 - Manage sequential document versions in the Version History workspace
   - Assign Before / After independently; click an assigned file again to clear that role
   - Before / After markers make the active comparison pair explicit in the version tree
+  - Add versions by file picker or by dropping DOCX/TXT files onto the Version History panel
   - Save and reopen `.dcv.json` version projects
   - Preview DOCX font/paragraph styles while reviewing text, structure, and formatting changes
 - Highlight deletions with red strikethrough and additions with blue underline
