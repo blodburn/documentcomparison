@@ -69,8 +69,8 @@ public sealed class ComparisonRowControl : UserControl
     // Hierarchy and article titles use distinct neutral fills so the document structure can be
     // scanned without confusing structural emphasis with change-marker colors.
     private static readonly IBrush SectionBrush = new SolidColorBrush(Color.Parse("#EAF1F7"));
-    private static readonly IBrush ArticleHeaderBrush = new SolidColorBrush(Color.Parse("#F1F1F1"));
-    private static readonly IBrush CellBorderBrush = new SolidColorBrush(Color.Parse("#9AA4B2"));
+    private static readonly IBrush ArticleHeaderBrush = new SolidColorBrush(Color.Parse("#F4F5F7"));
+    private static readonly IBrush CellBorderBrush = new SolidColorBrush(Color.Parse("#D4DCE6"));
 
     public ComparisonRowControl(
         ComparisonRowVm row,

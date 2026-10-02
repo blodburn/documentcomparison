@@ -150,12 +150,12 @@ public sealed class ChangeRowControl : UserControl
         var root = new StackPanel { Spacing = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
 
         _sectionSpacer.Background = new SolidColorBrush(Color.Parse("#EAF1F7"));
-        _sectionSpacer.BorderBrush = new SolidColorBrush(Color.Parse("#9AA4B2"));
+        _sectionSpacer.BorderBrush = new SolidColorBrush(Color.Parse("#D4DCE6"));
         _sectionSpacer.BorderThickness = new Thickness(0, 0, 0, 1);
         _sectionSpacer.HorizontalAlignment = HorizontalAlignment.Stretch;
         root.Children.Add(_sectionSpacer);
 
-        _contentHost.BorderBrush = new SolidColorBrush(Color.Parse("#9AA4B2"));
+        _contentHost.BorderBrush = new SolidColorBrush(Color.Parse("#D4DCE6"));
         _contentHost.BorderThickness = new Thickness(0, 0, 0, 1);
         _contentHost.Background = Brushes.White;
         _contentHost.HorizontalAlignment = HorizontalAlignment.Stretch;

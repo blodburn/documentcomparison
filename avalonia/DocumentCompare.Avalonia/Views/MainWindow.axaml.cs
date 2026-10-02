@@ -61,6 +61,7 @@ public partial class MainWindow : Window
     private Button CancelButton = null!;
     private Button ExcelButton = null!;
     private Button WordButton = null!;
+    private Button AddCButton = null!;
     private ComboBox ModeBox = null!;
     private CheckBox CompareACBox = null!;
     private CheckBox PunctuationBox = null!;
@@ -120,6 +121,7 @@ public partial class MainWindow : Window
         CancelButton = Require<Button>("CancelButton");
         ExcelButton = Require<Button>("ExcelButton");
         WordButton = Require<Button>("WordButton");
+        AddCButton = Require<Button>("AddCButton");
         ModeBox = Require<ComboBox>("ModeBox");
         CompareACBox = Require<CheckBox>("CompareACBox");
         PunctuationBox = Require<CheckBox>("PunctuationBox");
@@ -157,19 +159,19 @@ public partial class MainWindow : Window
 
     private void ApplyLanguage()
     {
-        Title = L("문서 비교기 V5.20.34", "Document Compare V5.20.34");
+        Title = L("문서 비교기 V5.20.35", "Document Compare V5.20.35");
         AppTitleText.Text = L("문서 비교기", "Document Compare");
         CompareButton.Content = L("비교 시작", "Compare");
         CancelButton.Content = L("취소", "Cancel");
         ExcelButton.Content = L("Excel 내보내기", "Export Excel");
         WordButton.Content = L("Word 변경추적", "Word Track Changes");
-        ModeLabel.Text = L("비교 방식:", "Mode:");
+        ModeLabel.Text = L("비교 방식", "Mode");
         ModeAutoItem.Content = L("자동", "Auto");
         ModeGeneralItem.Content = L("일반 문서", "General document");
         ModeLegalItem.Content = L("법률·규정", "Legal / policy");
         CompareACBox.Content = L("A↔C 추가 비교", "Also compare A↔C");
         PunctuationBox.Content = L("특수문자 포함", "Include punctuation");
-        SearchLabel.Text = L("검색:", "Search:");
+        SearchLabel.Text = L("검색", "Search");
         SearchBox.PlaceholderText = L("본문/변경사항 검색", "Search text / changes");
         BaseA.Content = BaseB.Content = BaseC.Content = L("기준", "Base");
         ChangeHeaderText.Text = L("변경사항", "Changes");
@@ -194,7 +196,7 @@ public partial class MainWindow : Window
         {
             StatusText.Text = L("비교 엔진 준비 중...", "Preparing comparison engine...");
             await _engine.PingAsync();
-            StatusText.Text = L("준비됨 · A/B/C 헤더에 파일을 클릭 또는 드롭하세요.", "Ready · Click or drop files onto the A/B/C headers.");
+            StatusText.Text = L("준비됨 · A/B 문서를 선택하세요. 필요하면 C 문서를 추가할 수 있습니다.", "Ready · Choose documents A/B. Add document C if needed.");
         }
         catch (Exception ex)
         {
@@ -222,6 +224,20 @@ public partial class MainWindow : Window
     private async void ChooseA_Click(object? sender, RoutedEventArgs e) => await ChooseAsync(0);
     private async void ChooseB_Click(object? sender, RoutedEventArgs e) => await ChooseAsync(1);
     private async void ChooseC_Click(object? sender, RoutedEventArgs e) => await ChooseAsync(2);
+    private async void AddC_Click(object? sender, RoutedEventArgs e)
+    {
+        if (!string.IsNullOrWhiteSpace(_selectedPaths[2]))
+        {
+            InvalidateComparisonResult();
+            _selectedPaths[2] = null;
+            if (BaseC.IsChecked == true) BaseA.IsChecked = true;
+            UpdateHeaderLabels();
+            UpdateBaseRadios();
+            StatusText.Text = L("문서 C를 제거했습니다. A/B 비교로 전환했습니다.", "Document C removed. Switched to A/B comparison.");
+            return;
+        }
+        await ChooseAsync(2);
+    }
 
     private void OnDragOver(object? sender, DragEventArgs e)
     {
@@ -285,6 +301,9 @@ public partial class MainWindow : Window
         HeaderAText.Text = HeaderLabel(0, false);
         HeaderBText.Text = HeaderLabel(1, false);
         HeaderCText.Text = HeaderLabel(2, true);
+        AddCButton.Content = string.IsNullOrWhiteSpace(_selectedPaths[2])
+            ? L("+ C 문서 추가", "+ Add document C")
+            : L("C 문서 제거", "Remove document C");
         ToolTip.SetTip(ChooseAButton, _selectedPaths[0] ?? L("문서 A: 클릭해서 파일 선택 / 이 칸에 파일 드롭", "Document A: click to choose a file / drop a file here"));
         ToolTip.SetTip(ChooseBButton, _selectedPaths[1] ?? L("문서 B: 클릭해서 파일 선택 / 이 칸에 파일 드롭", "Document B: click to choose a file / drop a file here"));
         ToolTip.SetTip(ChooseCButton, _selectedPaths[2] ?? L("문서 C(선택): 클릭해서 파일 선택 / 이 칸에 파일 드롭", "Document C (optional): click to choose a file / drop a file here"));
@@ -312,9 +331,13 @@ public partial class MainWindow : Window
         BaseA.IsEnabled = !string.IsNullOrWhiteSpace(_selectedPaths[0]);
         BaseB.IsEnabled = !string.IsNullOrWhiteSpace(_selectedPaths[1]);
         BaseC.IsEnabled = !string.IsNullOrWhiteSpace(_selectedPaths[2]);
-        BaseC.IsVisible = BaseC.IsEnabled;
-        UpdateDocumentColumnLayout(BaseC.IsEnabled ? 3 : 2);
-        CompareACBox.IsEnabled = BaseA.IsEnabled && BaseB.IsEnabled && BaseC.IsEnabled;
+        var hasC = BaseC.IsEnabled;
+        BaseC.IsVisible = hasC;
+        DropC.IsVisible = hasC;
+        AddCButton.IsVisible = true;
+        UpdateDocumentColumnLayout(hasC ? 3 : 2);
+        CompareACBox.IsEnabled = BaseA.IsEnabled && BaseB.IsEnabled && hasC;
+        CompareACBox.IsVisible = hasC;
         if (!CompareACBox.IsEnabled) CompareACBox.IsChecked = false;
 
         var selectedIsValid = BaseA.IsChecked == true && BaseA.IsEnabled ||
@@ -335,7 +358,7 @@ public partial class MainWindow : Window
         DocumentHeaderGrid.ColumnDefinitions[1].Width = new GridLength(1, GridUnitType.Star);
         DocumentHeaderGrid.ColumnDefinitions[2].Width = activeDocumentCount >= 3
             ? new GridLength(1, GridUnitType.Star)
-            : new GridLength(150, GridUnitType.Pixel);
+            : new GridLength(0, GridUnitType.Pixel);
     }
 
     private string[] CurrentPaths()
@@ -446,7 +469,7 @@ public partial class MainWindow : Window
             (row, _) =>
             {
                 if (row is null) return new Border();
-                return new CombinedComparisonRowControl(row, 3, activeDocumentCount, _language);
+                return new CombinedComparisonRowControl(row, activeDocumentCount, activeDocumentCount, _language);
             }, true);
         RebuildSearchIndex(result);
         ApplySearch();
@@ -462,6 +485,7 @@ public partial class MainWindow : Window
         ChooseAButton.IsEnabled = !busy;
         ChooseBButton.IsEnabled = !busy;
         ChooseCButton.IsEnabled = !busy;
+        AddCButton.IsEnabled = !busy;
         if (!string.IsNullOrWhiteSpace(message)) StatusText.Text = message;
     }
 

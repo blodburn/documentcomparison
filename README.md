@@ -9,12 +9,13 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.20.34**
+**V5.20.35**
 
-- Fixed Excel body cells so document text wraps inside the assigned column width instead of remaining on a single line.
-- Normal document/item rows now use a dedicated wrapped, top-aligned cell style rather than relying on Excel's default style.
-- Existing 1280px two-document 40/40/20 layout and three-document 80/3 + 20 layout are unchanged.
-- Structural article/item row splitting and expanded row heights are retained.
+- Refreshed the main comparison UI with clearer visual hierarchy and grouped actions/settings.
+- The primary compare action is visually emphasized while export and secondary actions use lighter styles.
+- Two-document comparisons now hide the unused C column completely; document C can be added explicitly with the new add-document action.
+- Search, comparison options, status, and progress are reorganized into dedicated areas for easier scanning.
+- Comparison and change-review borders were softened while existing chapter/article/change colors remain intact.
 
 ## Features
 
