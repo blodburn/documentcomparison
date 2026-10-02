@@ -157,7 +157,7 @@ public partial class MainWindow : Window
 
     private void ApplyLanguage()
     {
-        Title = L("문서 비교기 V5.20.30", "Document Compare V5.20.30");
+        Title = L("문서 비교기 V5.20.31", "Document Compare V5.20.31");
         AppTitleText.Text = L("문서 비교기", "Document Compare");
         CompareButton.Content = L("비교 시작", "Compare");
         CancelButton.Content = L("취소", "Cancel");
@@ -418,6 +418,8 @@ public partial class MainWindow : Window
             StatusText.Text = L($"비교 완료 · {pairText} · {punctText} · {counts}", $"Comparison complete · {pairText} · {punctText} · {counts}");
             ExcelButton.IsEnabled = true;
             WordButton.IsEnabled = true;
+            await CompletionDialog.ShowAsync(this, _language,
+                "비교가 완료되었습니다.", "Comparison has been completed.");
         }
         catch (OperationCanceledException)
         {
@@ -523,6 +525,8 @@ public partial class MainWindow : Window
         {
             await _engine.ExportExcelAsync(_result, save, exportCts.Token);
             StatusText.Text = L("Excel 저장 완료: ", "Excel saved: ") + save;
+            await CompletionDialog.ShowAsync(this, _language,
+                "Excel 파일 생성이 완료되었습니다.", "The Excel file has been created.");
         }
         catch (OperationCanceledException) { StatusText.Text = L("Excel 저장이 취소되었습니다.", "Excel export canceled."); }
         catch (Exception ex) { StatusText.Text = L("Excel 저장 실패: ", "Excel save failed: ") + CompactError(ex); }
@@ -558,6 +562,8 @@ public partial class MainWindow : Window
                 _lastIncludePunctuation, exportCts.Token,
                 _result, pair.Value.Original, pair.Value.Revised);
             StatusText.Text = L($"Word 저장 완료 · 변경 전 {Path.GetFileName(original)} → 최종 {Path.GetFileName(revised)}", $"Word saved · Original {Path.GetFileName(original)} → Revised {Path.GetFileName(revised)}");
+            await CompletionDialog.ShowAsync(this, _language,
+                "Word 파일 생성이 완료되었습니다.", "The Word file has been created.");
         }
         catch (OperationCanceledException) { StatusText.Text = L("Word 저장이 취소되었습니다.", "Word export canceled."); }
         catch (Exception ex) { StatusText.Text = L("Word 저장 실패: ", "Word save failed: ") + CompactError(ex); }
