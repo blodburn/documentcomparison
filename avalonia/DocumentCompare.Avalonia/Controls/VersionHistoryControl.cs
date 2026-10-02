@@ -72,7 +72,7 @@ public sealed class VersionHistoryControl : UserControl
     {
         var root = new Grid
         {
-            ColumnDefinitions = new ColumnDefinitions("285,8,5*,8,2.25*"),
+            ColumnDefinitions = new ColumnDefinitions("240,6,*,6,340"),
             Margin = new Thickness(4, 10, 4, 4)
         };
 
@@ -346,6 +346,7 @@ public sealed class VersionHistoryControl : UserControl
         grid.Children.Add(new TextBlock
         {
             Text = Path.GetFileName(version.Path),
+            FontSize = 11.5,
             FontWeight = tag.Length > 0 ? FontWeight.SemiBold : FontWeight.Medium,
             TextTrimming = TextTrimming.CharacterEllipsis,
             VerticalAlignment = VerticalAlignment.Center

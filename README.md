@@ -9,12 +9,11 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.21.2**
+**V5.21.3**
 
-- Added drag-and-drop version import to the Version History panel.
-- Drop one or multiple DOCX/TXT files anywhere in the left document-version area to append them to the version tree.
-- Duplicate files are ignored, unsupported/missing files are reported, and dropped files keep their incoming order.
-- Existing Before/After assignments remain intact when additional versions are added.
+- Reduced version-tree file-name text size so long file names fit more comfortably.
+- Widened the central document preview by narrowing the left version panel and right change-summary panel.
+- The three Version History columns remain resizable with splitters, but the new default layout gives the document view substantially more horizontal space.
 
 ## Features
 
