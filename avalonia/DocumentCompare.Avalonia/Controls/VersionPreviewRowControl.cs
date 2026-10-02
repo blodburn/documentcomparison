@@ -14,6 +14,7 @@ public sealed class VersionPreviewRowControl : UserControl
     private readonly ComparisonRowVm _row;
     private readonly int _docIndex;
     private readonly VersionDocumentStyleMap? _styleMap;
+    private readonly VersionDocxTableMap? _tableMap;
     private readonly IReadOnlySet<string> _formatAnchors;
 
     private static readonly IBrush DeleteBrush = new SolidColorBrush(Color.Parse("#C62828"));
@@ -28,9 +29,9 @@ public sealed class VersionPreviewRowControl : UserControl
         new SolidColorBrush(Color.FromArgb(0x58,0xA8,0xB4,0xC5))
     };
 
-    public VersionPreviewRowControl(ComparisonRowVm row, int docIndex, VersionDocumentStyleMap? styleMap = null, IReadOnlySet<string>? formatAnchors = null)
+    public VersionPreviewRowControl(ComparisonRowVm row, int docIndex, VersionDocumentStyleMap? styleMap = null, IReadOnlySet<string>? formatAnchors = null, VersionDocxTableMap? tableMap = null)
     {
-        _row = row; _docIndex = docIndex; _styleMap = styleMap;
+        _row = row; _docIndex = docIndex; _styleMap = styleMap; _tableMap = tableMap;
         _formatAnchors = formatAnchors ?? new HashSet<string>(StringComparer.Ordinal);
         HorizontalAlignment = HorizontalAlignment.Stretch;
         Content = Build();
@@ -72,6 +73,13 @@ public sealed class VersionPreviewRowControl : UserControl
             var lineEnd = offset + line.Length;
             var marks = all.Where(p => (p.End > p.Start && p.Start < lineEnd && p.End > offset) || (p.Start == p.End && p.Start >= offset && p.Start <= lineEnd))
                 .Select(p => new LocalMark(p.Num, Math.Clamp(p.Start - offset, 0, line.Length), Math.Clamp(p.End - offset, 0, line.Length), p.Role)).ToList();
+            var tableRow = _tableMap?.Take(line);
+            if (tableRow is not null)
+            {
+                panel.Children.Add(BuildTableRow(tableRow, marks));
+                offset = lineEnd + 1;
+                continue;
+            }
             var style = _styleMap?.Take(line);
             var text = BuildLine(line, marks, fallbackBold, style);
             Control item = text;
@@ -88,6 +96,53 @@ public sealed class VersionPreviewRowControl : UserControl
             offset = lineEnd + 1;
         }
         return panel;
+    }
+
+    private Control BuildTableRow(VersionTableRowVisual row, List<LocalMark> marks)
+    {
+        var grid = new Grid { HorizontalAlignment = HorizontalAlignment.Stretch };
+        var totalSpan = Math.Max(row.ColumnWidths.Count, row.Cells.Sum(x => Math.Max(1, x.GridSpan)));
+        for (var i = 0; i < totalSpan; i++)
+        {
+            var width = i < row.ColumnWidths.Count && row.ColumnWidths[i] > 0 ? row.ColumnWidths[i] : 1d;
+            grid.ColumnDefinitions.Add(new ColumnDefinition(new GridLength(width, GridUnitType.Star)));
+        }
+
+        var column = 0;
+        var flatOffset = 0;
+        for (var i = 0; i < row.Cells.Count; i++)
+        {
+            var cell = row.Cells[i];
+            var start = flatOffset;
+            var end = start + cell.Text.Length;
+            var localMarks = marks
+                .Where(m => (m.End > m.Start && m.Start < end && m.End > start) || (m.Start == m.End && m.Start >= start && m.Start <= end))
+                .Select(m => new LocalMark(m.Num, Math.Clamp(m.Start - start, 0, cell.Text.Length), Math.Clamp(m.End - start, 0, cell.Text.Length), m.Role))
+                .ToList();
+            var formatChanged = _formatAnchors.Contains(VersionDocumentStyleMap.Normalize(cell.Text));
+            var content = BuildLine(cell.Text, localMarks, false, cell.ParagraphStyle);
+            var border = new Border
+            {
+                BorderBrush = formatChanged ? FormatBrush : new SolidColorBrush(Color.Parse("#7B8794")),
+                BorderThickness = new Thickness(formatChanged ? 2 : 1),
+                Background = string.IsNullOrWhiteSpace(cell.Shading) ? Brushes.White : Brush(cell.Shading, Brushes.White),
+                Padding = new Thickness(7, 5),
+                MinHeight = 30,
+                Child = content
+            };
+            Grid.SetColumn(border, Math.Min(column, Math.Max(0, totalSpan - 1)));
+            Grid.SetColumnSpan(border, Math.Min(Math.Max(1, cell.GridSpan), Math.Max(1, totalSpan - column)));
+            grid.Children.Add(border);
+            column += Math.Max(1, cell.GridSpan);
+            flatOffset = end + (i + 1 < row.Cells.Count ? 3 : 0);
+        }
+        return new Border
+        {
+            Background = Brushes.White,
+            Padding = new Thickness(0),
+            Margin = new Thickness(0, 1, 0, 1),
+            Child = grid
+        };
     }
 
     private static TextBlock BuildLine(string raw, List<LocalMark> marks, bool fallbackBold, VersionParagraphVisualStyle? paragraph)

@@ -9,11 +9,11 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.21.3**
+**V5.21.4**
 
-- Reduced version-tree file-name text size so long file names fit more comfortably.
-- Widened the central document preview by narrowing the left version panel and right change-summary panel.
-- The three Version History columns remain resizable with splitters, but the new default layout gives the document view substantially more horizontal space.
+- Version History now reconstructs DOCX table rows and cells in the document preview instead of showing table content as pipe-delimited text.
+- Table column proportions, horizontal cell spans, cell shading, and the existing text-change markers are preserved in the preview where available.
+- Table/Cell formatting changes continue to appear in the right-side change summary.
 
 ## Features
 
@@ -23,7 +23,7 @@ It is designed for general documents as well as structured legal, policy, and re
   - Before / After markers make the active comparison pair explicit in the version tree
   - Add versions by file picker or by dropping DOCX/TXT files onto the Version History panel
   - Save and reopen `.dcv.json` version projects
-  - Preview DOCX font/paragraph styles while reviewing text, structure, and formatting changes
+  - Preview DOCX font/paragraph styles and table rows/cells while reviewing text, structure, and formatting changes
 - Highlight deletions with red strikethrough and additions with blue underline
 - Preserve decoration across spaces inside one changed phrase
 - Article/paragraph-aware alignment for structured documents

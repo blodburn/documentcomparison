@@ -1688,4 +1688,16 @@ Check(dropProject.Versions.Count==2&&Path.GetFileName(dropProject.Versions[0].Pa
 Check(dropProject.Versions.All(x=>x.Sha256.Length==64),"version drop import did not hash added files");
 Console.WriteLine("PASS VERSION HISTORY FILE DROP IMPORT");
 
+// 140. Version-history DOCX preview reconstructs Word table rows/cells instead of leaving them as pipe-delimited text.
+var vhTablePreview=Path.Combine(dir,"vhTablePreview.docx");
+Make(vhTablePreview,"<w:tbl><w:tblGrid><w:gridCol w:w='1800'/><w:gridCol w:w='2600'/><w:gridCol w:w='2200'/></w:tblGrid>"+
+    "<w:tr><w:tc><w:tcPr><w:shd w:fill='E7E6E6'/></w:tcPr>"+P("구분")+"</w:tc><w:tc>"+P("담당부서")+"</w:tc><w:tc>"+P("연락처")+"</w:tc></w:tr>"+
+    "<w:tr><w:tc>"+P("책임자")+"</w:tc><w:tc>"+P("플랫폼팀")+"</w:tc><w:tc>"+P("02-0000-0000")+"</w:tc></w:tr></w:tbl>");
+var vhTableMap=VersionDocxTableMap.Load(vhTablePreview);
+Check(vhTableMap is not null,"version table map was not created");
+var vhTableRow=vhTableMap!.Take("구분 | 담당부서 | 연락처");
+Check(vhTableRow is not null&&vhTableRow.Cells.Count==3&&vhTableRow.ColumnWidths.SequenceEqual(new[]{1800d,2600d,2200d}),"version table preview did not preserve three-cell grid widths");
+Check(vhTableRow!.Cells[0].Shading=="#E7E6E6"&&vhTableRow.Cells[1].Text=="담당부서","version table preview did not preserve cell content/shading");
+Console.WriteLine("PASS VERSION HISTORY TABLE RENDER MODEL");
+
 Console.WriteLine("ALL REGRESSIONS PASSED");

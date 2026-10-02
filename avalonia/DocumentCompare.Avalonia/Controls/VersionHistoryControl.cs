@@ -401,9 +401,10 @@ public sealed class VersionHistoryControl : UserControl
                 _previewSubtitle.Text = $"{role} 문서 지정됨 · {waiting} 문서를 선택하면 비교를 시작합니다.";
                 _changeSummary.Text = $"{waiting} 문서 선택 대기";
                 var standaloneStyleMap = VersionDocumentStyleMap.Load(display.Path);
+                var standaloneTableMap = VersionDocxTableMap.Load(display.Path);
                 var self = await _engine.CompareAsync(new[] { display.Path, display.Path }, 1, "auto", false, true, token);
                 foreach (var row in self.Rows)
-                    _preview.Children.Add(new VersionPreviewRowControl(row, 1, standaloneStyleMap));
+                    _preview.Children.Add(new VersionPreviewRowControl(row, 1, standaloneStyleMap, null, standaloneTableMap));
                 _changes.Children.Add(Message($"현재 {role} 문서만 지정되어 있습니다. 트리에서 다른 문서를 선택하면 {waiting} 문서로 지정됩니다.", "#64748B"));
                 return;
             }
@@ -427,9 +428,10 @@ public sealed class VersionHistoryControl : UserControl
                 .Where(x => x.Length > 0)
                 .ToHashSet(StringComparer.Ordinal);
             var styleMap = VersionDocumentStyleMap.Load(current.Path);
+            var tableMap = VersionDocxTableMap.Load(current.Path);
             var result = await _engine.CompareAsync(new[] { previous.Path, current.Path }, 1, "auto", false, true, token);
             foreach (var row in result.Rows)
-                _preview.Children.Add(new VersionPreviewRowControl(row, 1, styleMap, formatAnchors));
+                _preview.Children.Add(new VersionPreviewRowControl(row, 1, styleMap, formatAnchors, tableMap));
 
             var changeItems = BuildChangeItems(result);
             changeItems.AddRange(formattingItems);
