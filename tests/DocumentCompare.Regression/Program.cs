@@ -1760,7 +1760,7 @@ var orderedResult=new ComparisonResultVm
         {
             Id=20, Changed=true,
             Members=new List<MemberVm?>{new(){Text="old article"},new(){Header="Article 1",Body="changed body",Text="Article 1\nchanged body"}},
-            DisplayMessages=new List<string>{"상태: 조 변경"},
+            DisplayMessages=new List<string>{"상태: 조 구조변경","항/호 구조 변경: 1., 2. → ①, ②"},
             Markers=new List<MarkerVm>{new(){Num=1,Action="변경",Message="body",TargetDoc=1,CharStart=20,CharEnd=25,Endpoints=new(){new(){TargetDoc=1,CharStart=20,CharEnd=25}}}}
         },
         new()
@@ -1811,5 +1811,33 @@ Check(safeHeight>=40.9,"version preview line-height floor did not protect large 
 var roomyParagraph=new VersionParagraphVisualStyle{Text="본문",LineHeight=48,DefaultRun=new VersionRunVisualStyle{FontSize=13}};
 Check(Math.Abs(VersionPreviewLayoutPolicy.ResolveLineHeight(roomyParagraph,13)-48)<.01,"existing roomy Word line height was not preserved");
 Console.WriteLine("PASS VERSION HISTORY SAFE LINE HEIGHT");
+
+// 146. A plain article/content status is not a structural change; only concrete hierarchy/move/add/delete changes are.
+var plainStatusResult=new ComparisonResultVm
+{
+    Rows=new List<ComparisonRowVm>
+    {
+        new()
+        {
+            Id=100,Changed=true,
+            Members=new List<MemberVm?>{new(){Text="old"},new(){Text="new"}},
+            DisplayMessages=new List<string>{"A↔B · 상태: 조 변경"},
+            Markers=new List<MarkerVm>{new(){Num=1,Action="변경",Message="old → new",TargetDoc=1,CharStart=0,CharEnd=3,Endpoints=new(){new(){TargetDoc=1,CharStart=0,CharEnd=3}}}}
+        },
+        new()
+        {
+            Id=101,Changed=true,
+            Members=new List<MemberVm?>{new(){Text="1. old"},new(){Text="① new"}},
+            DisplayMessages=new List<string>{"A↔B · 상태: 조 구조변경","A↔B · 항/호 구조 변경: 1. → ①"}
+        }
+    }
+};
+var plainStatusChanges=VersionHistoryChangeSequencer.Sequence(plainStatusResult,Array.Empty<VersionChangeVm>(),1);
+Check(plainStatusChanges.Count(x=>x.Category=="구조") == 1,
+    "plain article content status was incorrectly emitted as a structural change: "+string.Join(" | ",plainStatusChanges.Select(x=>x.Category+":"+x.Title+":"+x.Detail)));
+var structuralOnly=plainStatusChanges.Single(x=>x.Category=="구조");
+Check(structuralOnly.Title=="항/호 구조 변경"&&structuralOnly.Detail.Contains("1. → ①"),
+    "concrete structural change was not described clearly");
+Console.WriteLine("PASS VERSION HISTORY CONCRETE STRUCTURE LABELS");
 
 Console.WriteLine("ALL REGRESSIONS PASSED");

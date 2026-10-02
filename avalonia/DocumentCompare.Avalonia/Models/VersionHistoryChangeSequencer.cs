@@ -35,7 +35,7 @@ public static class VersionHistoryChangeSequencer
         // the following text belongs to (article/section/item movement or hierarchy change).
         foreach (var (row, rowOrder) in result.Rows.Select((row, index) => (row, index)))
         {
-            foreach (var message in StructuralMessages(row))
+            foreach (var change in StructuralChanges(row))
             {
                 var member = MemberAt(row, displayDocIndex) ?? MemberAt(row, 0);
                 entries.Add(new Entry
@@ -46,8 +46,8 @@ public static class VersionHistoryChangeSequencer
                     StableOrder = stable++,
                     RowId = row.Id,
                     Category = "구조",
-                    Title = "구조 변경",
-                    Detail = message,
+                    Title = change.Title,
+                    Detail = change.Detail,
                     AnchorText = member?.Header ?? member?.Body
                 });
             }
@@ -134,18 +134,70 @@ public static class VersionHistoryChangeSequencer
         return changes;
     }
 
-    private static IEnumerable<string> StructuralMessages(ComparisonRowVm row)
+    private sealed record StructuralChange(string Title, string Detail);
+
+    private static IEnumerable<StructuralChange> StructuralChanges(ComparisonRowVm row)
     {
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var raw in row.DisplayMessages)
+        var details = row.DisplayMessages
+            .Select(x => x.TrimStart('•', ' '))
+            .Where(x => x.Length > 0)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        // Concrete structural messages are preferred over vague row-status summaries.
+        var concrete = details
+            .Where(IsConcreteStructuralMessage)
+            .Select(ToStructuralChange)
+            .ToList();
+        foreach (var item in concrete) yield return item;
+
+        // A plain "상태: 조 변경" / "본문 블록 변경" only means text or title changed
+        // inside that unit. It is not a structural change and must not create a separate card.
+        foreach (var detail in details.Where(IsStructuralStatusMessage))
         {
-            if (!raw.Contains("상태:", StringComparison.Ordinal) &&
-                !raw.Contains("이동", StringComparison.Ordinal) &&
-                !raw.Contains("구조", StringComparison.Ordinal))
-                continue;
-            var detail = raw.TrimStart('•', ' ');
-            if (detail.Length > 0 && seen.Add(detail)) yield return detail;
+            if (detail.Contains("구조변경", StringComparison.Ordinal) && concrete.Count > 0)
+                continue; // the concrete 항/호 message already explains what changed.
+            yield return ToStructuralChange(detail);
         }
+    }
+
+    private static bool IsConcreteStructuralMessage(string detail)
+    {
+        if (detail.Contains("항/호 구조 변경", StringComparison.Ordinal)) return true;
+        if (detail.Contains("항/호 표기", StringComparison.Ordinal)) return true;
+        if (detail.Contains("항/호 이동", StringComparison.Ordinal)) return true;
+        if (detail.Contains("항/호 이동+변경", StringComparison.Ordinal)) return true;
+        return false;
+    }
+
+    private static bool IsStructuralStatusMessage(string detail)
+    {
+        if (!detail.Contains("상태:", StringComparison.Ordinal)) return false;
+        return detail.Contains("구조변경", StringComparison.Ordinal)
+            || detail.Contains("이동", StringComparison.Ordinal)
+            || detail.Contains(" 신규", StringComparison.Ordinal)
+            || detail.Contains(" 삭제", StringComparison.Ordinal);
+    }
+
+    private static StructuralChange ToStructuralChange(string detail)
+    {
+        var title = detail switch
+        {
+            var x when x.Contains("항/호 구조 변경", StringComparison.Ordinal) => "항/호 구조 변경",
+            var x when x.Contains("항/호 표기", StringComparison.Ordinal) => "항/호 표기 변경",
+            var x when x.Contains("항/호 이동", StringComparison.Ordinal) => "항/호 이동",
+            var x when x.Contains("조 이동", StringComparison.Ordinal) => "조 이동",
+            var x when x.Contains("조 구조변경", StringComparison.Ordinal) => "조 구조 변경",
+            var x when x.Contains(" 신규", StringComparison.Ordinal) => "구조 추가",
+            var x when x.Contains(" 삭제", StringComparison.Ordinal) => "구조 삭제",
+            _ => "구조 변경"
+        };
+
+        var readable = detail
+            .Replace("상태: 조 구조변경", "조 내부의 항/호 구성 또는 단계가 변경됨", StringComparison.Ordinal)
+            .Replace("상태: 조 이동+변경", "조 위치가 이동했고 내용도 변경됨", StringComparison.Ordinal)
+            .Replace("상태: 조 이동", "조 위치가 이동함", StringComparison.Ordinal);
+        return new StructuralChange(title, readable);
     }
 
     private static int MarkerPosition(ComparisonRowVm row, MarkerVm marker, int displayDocIndex)

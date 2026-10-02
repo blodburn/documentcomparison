@@ -9,11 +9,11 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.21.9**
+**V5.21.10**
 
-- Increased Version History preview line spacing and row padding to improve readability.
-- Prevented large or mixed-size text from being clipped when a Word paragraph requests a tighter line height.
-- Increased table-cell vertical spacing slightly so table text remains fully visible.
+- Version History no longer labels ordinary article/body text edits as structural changes.
+- Structural change cards are now reserved for real hierarchy changes such as article/item movement, item-label changes, hierarchy split/merge, structural additions, and structural deletions.
+- Structural change titles/details are more explicit so the user can see what actually changed.
 
 ## Features
 
