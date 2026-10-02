@@ -34,6 +34,53 @@ It is designed for general documents as well as structured legal, policy, and re
   - Final package contains a single visible `DocumentCompare.exe`
   - The native C# comparison engine is compiled directly into the main executable
 
+## Comparison logic
+
+DocumentCompare follows a **structure-first** comparison model. The engine does not start by running a single flat text diff across the whole file. Instead, it first understands the document structure, aligns corresponding structural units, and only then performs detailed text comparison inside the smallest matched unit.
+
+The intended comparison order is:
+
+1. **Read the entire document**
+   - The whole visible document is part of the comparison: title, dates, preamble/introduction, chapter/section headings, articles, numbered items, ordinary paragraphs, lists, and tables.
+   - In legal/article mode, an article is an alignment boundary; it is **not** a filter that excludes non-article content.
+
+2. **Detect document type and structure**
+   - General documents are interpreted roughly as: `document → heading → subheading → paragraph → list → sentence → word/punctuation`.
+   - Legal/policy/regulation documents are interpreted roughly as: `document → chapter → section → article → paragraph/item → sub-item → sentence → word/punctuation`.
+   - Tables are treated as structural content rather than flattened into surrounding prose.
+
+3. **Align large structural units first**
+   - Match equivalent units such as `chapter ↔ chapter`, `article ↔ article`, `heading ↔ heading`, and `paragraph ↔ paragraph`.
+   - Alignment considers number/label, title, text similarity, surrounding order, and internal structure instead of relying only on physical position.
+   - Renumbered or moved articles can still be treated as the same logical unit when title/content lineage supports it.
+
+4. **Align lower-level structure inside matched units**
+   - After an article is matched, its internal structure is aligned again at progressively smaller levels such as paragraph/item → sub-item → lower numbered item.
+   - Added units remain additions; missing units remain deletions instead of being force-matched to unrelated content.
+
+5. **Run text diff only after structural alignment**
+   - Detailed comparison is performed inside the smallest matched structural unit.
+   - The comparison then descends through sentence/phrase/word/punctuation level as appropriate.
+   - This avoids treating the entire document as one undifferentiated LCS/diff stream.
+
+6. **Classify the change**
+   - Changes are classified as modification, insertion, deletion, movement, renumbering, or structural change where applicable.
+   - A deletion + insertion that is clearly one logical rewrite can be presented as a single `old → new` modification, while unrelated structural items remain separate.
+
+7. **Build the on-screen review model**
+   - A/B/C columns show aligned content with shared `[n]` change markers.
+   - Deleted text is shown with red strikethrough and inserted text with blue underline.
+   - Review presentation is optimized for human inspection and may group changes differently from exported files.
+
+8. **Generate exports from the same comparison judgement, with output-specific presentation**
+   - **Excel** presents the comparison as a review table, splitting structured legal content into article/item-level rows and arranging comparison columns for spreadsheet review.
+   - **Word Track Changes** uses the selected revised/final document as the physical baseline and reconstructs the previous state as tracked revisions, so accepting all revisions should reproduce the revised document.
+   - Screen, Excel, and Word output therefore share the same comparison judgement, but do not have to use identical visual grouping.
+
+For three-document comparison, DocumentCompare evaluates the relevant document pairs (normally `A↔B`, `B↔C`, and optionally `A↔C`) while using the selected base document as the alignment axis for the review view.
+
+> Core principle: **read the whole document → detect structure → align large units → align lower-level units → run detailed text diff → classify changes → render/export the result.**
+
 ## Supported input
 
 - `.docx`
