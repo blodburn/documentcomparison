@@ -68,7 +68,8 @@ public static class VersionFormattingInspector
                 {
                     Category = "문단서식",
                     Title = "문단 서식 변경",
-                    Detail = $"{Short(current.Text)}\n{delta}"
+                    Detail = $"{Short(current.Text)}\n{delta}",
+                    AnchorText = current.Text
                 });
             }
 
@@ -126,7 +127,8 @@ public static class VersionFormattingInspector
             {
                 Category = "문자서식",
                 Title = "글자 서식 변경",
-                Detail = $"“{Short(nr.Text, 48)}”\n{DescribeDelta(or.Description, nr.Description)}"
+                Detail = $"“{Short(nr.Text, 48)}”\n{DescribeDelta(or.Description, nr.Description)}",
+                AnchorText = current.Text
             });
         }
     }
@@ -174,21 +176,35 @@ public static class VersionFormattingInspector
         if (oldStyles is null || newStyles is null) return;
         var oldMap = oldStyles.Elements(W + "style")
             .Where(x => x.Attribute(W + "styleId") is not null)
-            .ToDictionary(x => x.Attribute(W + "styleId")!.Value, Canonical, StringComparer.Ordinal);
+            .ToDictionary(x => x.Attribute(W + "styleId")!.Value, x => x, StringComparer.Ordinal);
         foreach (var style in newStyles.Elements(W + "style"))
         {
             var id = style.Attribute(W + "styleId")?.Value;
-            if (string.IsNullOrWhiteSpace(id) || !oldMap.TryGetValue(id, out var oldSignature)) continue;
-            var newSignature = Canonical(style);
-            if (oldSignature == newSignature) continue;
+            if (string.IsNullOrWhiteSpace(id) || !oldMap.TryGetValue(id, out var oldStyle)) continue;
+            if (Canonical(oldStyle) == Canonical(style)) continue;
             var name = style.Element(W + "name")?.Attribute(W + "val")?.Value ?? id;
+            var oldDescription = StyleDescription(oldStyle);
+            var newDescription = StyleDescription(style);
             output.Add(new VersionChangeVm
             {
                 Category = "스타일",
                 Title = "Word 스타일 정의 변경",
-                Detail = name
+                Detail = $"{name}\n{DescribeDelta(oldDescription, newDescription)}"
             });
         }
+    }
+
+
+    private static string StyleDescription(XElement style)
+    {
+        var parts = new List<string>();
+        var p = ParagraphDescription(style.Element(W + "pPr"));
+        var r = RunDescription(style.Element(W + "rPr"));
+        if (p != "기본 문단 서식") parts.Add(p);
+        if (r != "기본 문자 서식") parts.Add(r);
+        var basedOn = style.Element(W + "basedOn")?.Attribute(W + "val")?.Value;
+        if (!string.IsNullOrWhiteSpace(basedOn)) parts.Add($"기반 스타일={basedOn}");
+        return parts.Count == 0 ? "기본 스타일" : string.Join(", ", parts);
     }
 
     private static string ParagraphDescription(XElement? pPr)

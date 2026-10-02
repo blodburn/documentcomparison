@@ -20,4 +20,5 @@ public sealed class VersionChangeVm
     public string Title { get; init; } = "";
     public string Detail { get; init; } = "";
     public int? MarkerNumber { get; init; }
+    public string? AnchorText { get; init; }
 }

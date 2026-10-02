@@ -1636,7 +1636,7 @@ var vhFmtA=Path.Combine(dir,"vhFmtA.docx");var vhFmtB=Path.Combine(dir,"vhFmtB.d
 Make(vhFmtA,"<w:p><w:r><w:rPr><w:sz w:val='20'/></w:rPr><w:t>Version text</w:t></w:r></w:p>");
 Make(vhFmtB,"<w:p><w:r><w:rPr><w:sz w:val='28'/></w:rPr><w:t>Version text</w:t></w:r></w:p>");
 var vhFmt=VersionFormattingInspector.Compare(vhFmtA,vhFmtB);
-Check(vhFmt.Any(x=>x.Category=="문자서식"&&x.Detail.Contains("10pt")&&x.Detail.Contains("14pt")),"version history did not detect font-size change: "+string.Join(" | ",vhFmt.Select(x=>x.Category+":"+x.Detail)));
+Check(vhFmt.Any(x=>x.Category=="문자서식"&&x.Detail.Contains("10pt")&&x.Detail.Contains("14pt")&&x.AnchorText=="Version text"),"version history did not detect/anchor font-size change: "+string.Join(" | ",vhFmt.Select(x=>x.Category+":"+x.Detail)));
 Console.WriteLine("PASS VERSION HISTORY FONT-SIZE DIFF");
 
 // 135. Version history formatting inspection: table/cell presentation changes are first-class
@@ -1655,7 +1655,27 @@ Make(vhStyleA,P("Styled text"));Make(vhStyleB,P("Styled text"));
 AddWordXml(vhStyleA,"word/styles.xml","<w:styles xmlns:w='"+W+"'><w:style w:type='paragraph' w:styleId='BodyCustom'><w:name w:val='BodyCustom'/><w:rPr><w:sz w:val='20'/></w:rPr></w:style></w:styles>");
 AddWordXml(vhStyleB,"word/styles.xml","<w:styles xmlns:w='"+W+"'><w:style w:type='paragraph' w:styleId='BodyCustom'><w:name w:val='BodyCustom'/><w:rPr><w:sz w:val='24'/></w:rPr></w:style></w:styles>");
 var vhStyle=VersionFormattingInspector.Compare(vhStyleA,vhStyleB);
-Check(vhStyle.Any(x=>x.Category=="스타일"&&x.Detail.Contains("BodyCustom")),"version history did not detect named-style definition change");
+Check(vhStyle.Any(x=>x.Category=="스타일"&&x.Detail.Contains("BodyCustom")&&x.Detail.Contains("10pt")&&x.Detail.Contains("12pt")),"version history did not describe named-style definition change");
 Console.WriteLine("PASS VERSION HISTORY NAMED-STYLE DIFF");
+
+// 137. Version-history preview resolves paragraph style inheritance into visible font/alignment.
+var vhPreview=Path.Combine(dir,"vhPreview.docx");
+Make(vhPreview,"<w:p><w:pPr><w:pStyle w:val='BodyCustom'/></w:pPr><w:r><w:t>Styled preview</w:t></w:r></w:p>");
+AddWordXml(vhPreview,"word/styles.xml","<w:styles xmlns:w='"+W+"'><w:style w:type='paragraph' w:styleId='BaseCustom'><w:rPr><w:rFonts w:ascii='Arial' w:eastAsia='Arial'/><w:sz w:val='20'/></w:rPr></w:style><w:style w:type='paragraph' w:styleId='BodyCustom'><w:basedOn w:val='BaseCustom'/><w:pPr><w:jc w:val='center'/></w:pPr><w:rPr><w:b/><w:sz w:val='30'/></w:rPr></w:style></w:styles>");
+var vhPreviewMap=VersionDocumentStyleMap.Load(vhPreview);var vhParagraph=vhPreviewMap?.Take("Styled preview");
+Check(vhParagraph is not null&&vhParagraph.Alignment==Avalonia.Media.TextAlignment.Center,"version preview paragraph alignment style missing");
+var vhRun=vhParagraph!.Runs.Single().Style;
+Check(vhRun.Bold&&vhRun.FontFamily=="Arial"&&vhRun.FontSize is double vhSize&&Math.Abs(vhSize-20.0)<.05,"version preview did not resolve inherited font/size/bold style");
+Console.WriteLine("PASS VERSION HISTORY STYLE-AWARE PREVIEW");
+
+// 138. Version-history Before/After selection is independently toggleable.
+var pair=VersionSelectionPolicy.Toggle(-1,-1,0); Check(pair.Before==0&&pair.After==-1&&pair.Changed,"first version was not assigned as Before");
+pair=VersionSelectionPolicy.Toggle(pair.Before,pair.After,1); Check(pair.Before==0&&pair.After==1&&pair.Changed,"second version was not assigned as After");
+pair=VersionSelectionPolicy.Toggle(pair.Before,pair.After,1); Check(pair.Before==0&&pair.After==-1&&pair.Changed,"clicking After again did not clear After");
+pair=VersionSelectionPolicy.Toggle(pair.Before,pair.After,2); Check(pair.Before==0&&pair.After==2&&pair.Changed,"cleared After role could not be reassigned");
+pair=VersionSelectionPolicy.Toggle(pair.Before,pair.After,0); Check(pair.Before==-1&&pair.After==2&&pair.Changed,"clicking Before again did not clear Before");
+pair=VersionSelectionPolicy.Toggle(pair.Before,pair.After,1); Check(pair.Before==1&&pair.After==2&&pair.Changed,"cleared Before role could not be reassigned");
+var unchanged=VersionSelectionPolicy.Toggle(pair.Before,pair.After,3); Check(!unchanged.Changed&&unchanged.Before==1&&unchanged.After==2,"third unassigned file replaced a full pair without explicit release");
+Console.WriteLine("PASS VERSION HISTORY BEFORE/AFTER TOGGLE");
 
 Console.WriteLine("ALL REGRESSIONS PASSED");

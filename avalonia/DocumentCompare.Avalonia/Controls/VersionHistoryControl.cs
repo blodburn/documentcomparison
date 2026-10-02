@@ -16,7 +16,9 @@ public sealed class VersionHistoryControl : UserControl
 {
     private readonly IComparisonEngine _engine = new NativeComparisonEngine();
     private VersionHistoryProjectVm _project = new();
-    private int _selectedIndex = -1;
+    private int _beforeIndex = -1;
+    private int _afterIndex = -1;
+    private int _activeIndex = -1;
     private string? _projectPath;
     private CancellationTokenSource? _loadCts;
 
@@ -166,7 +168,6 @@ public sealed class VersionHistoryControl : UserControl
             added++;
         }
         if (added == 0) return;
-        _selectedIndex = _project.Versions.Count - 1;
         RefreshTree();
         _status.Text = $"{added}개 버전을 추가했습니다. 순서는 위/아래 버튼으로 조정할 수 있습니다.";
         await ShowSelectedAsync();
@@ -190,7 +191,9 @@ public sealed class VersionHistoryControl : UserControl
             if (loaded is null) throw new InvalidDataException("프로젝트 내용을 읽을 수 없습니다.");
             _project = loaded;
             _projectPath = path;
-            _selectedIndex = _project.Versions.Count > 0 ? _project.Versions.Count - 1 : -1;
+            _beforeIndex = -1;
+            _afterIndex = -1;
+            _activeIndex = -1;
             _projectTitle.Text = string.IsNullOrWhiteSpace(_project.Name) ? "문서 버전" : _project.Name;
             RefreshTree();
             _status.Text = $"프로젝트를 열었습니다: {Path.GetFileName(path)}";
@@ -237,7 +240,7 @@ public sealed class VersionHistoryControl : UserControl
         {
             _tree.Children.Add(new TextBlock
             {
-                Text = "버전 파일이 없습니다.\n‘+ 버전 추가’로 v0.1부터 순서대로 추가하세요.",
+                Text = "버전 파일이 없습니다.\n‘+ 버전 추가’로 파일을 순서대로 추가하세요.",
                 Foreground = Brushes.Gray,
                 TextWrapping = TextWrapping.Wrap,
                 Margin = new Thickness(8, 14)
@@ -249,51 +252,63 @@ public sealed class VersionHistoryControl : UserControl
             if (i > 0)
                 _tree.Children.Add(new Border { Width = 2, Height = 8, Background = new SolidColorBrush(Color.Parse("#CBD5E1")), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(18, 0, 0, 0) });
             var index = i;
-            var current = i == _selectedIndex;
-            var previous = _selectedIndex > 0 && i == _selectedIndex - 1;
-            var version = _project.Versions[i];
-            var tag = current ? "후" : previous ? "전" : i == 0 && _selectedIndex == 0 ? "최초본" : "";
-            var bg = current ? "#E8F1FF" : previous ? "#F1F3F5" : "#FFFFFF";
-            var border = current ? "#4C86D9" : previous ? "#AEB8C4" : "#DDE4EC";
+            var isBefore = i == _beforeIndex;
+            var isAfter = i == _afterIndex;
+            var tag = isAfter ? "후" : isBefore ? "전" : "";
+            var bg = isAfter ? "#E8F1FF" : isBefore ? "#F1F3F5" : "#FFFFFF";
+            var border = isAfter ? "#4C86D9" : isBefore ? "#AEB8C4" : "#DDE4EC";
             var btn = new Button
             {
                 Background = new SolidColorBrush(Color.Parse(bg)),
                 BorderBrush = new SolidColorBrush(Color.Parse(border)),
-                BorderThickness = new Thickness(current ? 2 : 1),
+                BorderThickness = new Thickness(isBefore || isAfter ? 2 : 1),
                 CornerRadius = new CornerRadius(7),
-                Padding = new Thickness(10, 8),
+                Padding = new Thickness(10, 9),
                 HorizontalAlignment = HorizontalAlignment.Stretch,
                 HorizontalContentAlignment = HorizontalAlignment.Stretch,
-                Content = VersionNodeContent(version, tag, current)
+                Content = VersionNodeContent(_project.Versions[i], tag, isAfter)
             };
             btn.Click += async (_, _) =>
             {
-                _selectedIndex = index;
+                ToggleVersionSelection(index);
                 RefreshTree();
                 await ShowSelectedAsync();
             };
             _tree.Children.Add(btn);
         }
 
-        _moveUp.IsEnabled = _selectedIndex > 0;
-        _moveDown.IsEnabled = _selectedIndex >= 0 && _selectedIndex < _project.Versions.Count - 1;
-        _delete.IsEnabled = _selectedIndex >= 0;
+        _moveUp.IsEnabled = _activeIndex > 0;
+        _moveDown.IsEnabled = _activeIndex >= 0 && _activeIndex < _project.Versions.Count - 1;
+        _delete.IsEnabled = _activeIndex >= 0 && _activeIndex < _project.Versions.Count;
     }
 
-    private static Control VersionNodeContent(VersionFileVm version, string tag, bool current)
+    private void ToggleVersionSelection(int index)
+    {
+        _activeIndex = index;
+        var next = VersionSelectionPolicy.Toggle(_beforeIndex, _afterIndex, index);
+        _beforeIndex = next.Before;
+        _afterIndex = next.After;
+        if (!next.Changed)
+            _status.Text = "전/후 문서가 모두 지정되어 있습니다. 바꿀 문서의 전 또는 후 항목을 먼저 눌러 해제하세요.";
+    }
+
+    private static Control VersionNodeContent(VersionFileVm version, string tag, bool isAfter)
     {
         var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
-        var text = new StackPanel { Spacing = 2 };
-        text.Children.Add(new TextBlock { Text = version.Label, FontWeight = current ? FontWeight.SemiBold : FontWeight.Medium, TextTrimming = TextTrimming.CharacterEllipsis });
-        text.Children.Add(new TextBlock { Text = Path.GetFileName(version.Path), FontSize = 10.5, Foreground = new SolidColorBrush(Color.Parse("#64748B")), TextTrimming = TextTrimming.CharacterEllipsis });
-        grid.Children.Add(text);
+        grid.Children.Add(new TextBlock
+        {
+            Text = Path.GetFileName(version.Path),
+            FontWeight = tag.Length > 0 ? FontWeight.SemiBold : FontWeight.Medium,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center
+        });
         if (!string.IsNullOrWhiteSpace(tag))
         {
             var badge = new Border
             {
-                Background = new SolidColorBrush(Color.Parse(current ? "#2563EB" : "#E2E8F0")),
+                Background = new SolidColorBrush(Color.Parse(isAfter ? "#2563EB" : "#E2E8F0")),
                 CornerRadius = new CornerRadius(10), Padding = new Thickness(7, 2), VerticalAlignment = VerticalAlignment.Center,
-                Child = new TextBlock { Text = tag, FontSize = 10, Foreground = current ? Brushes.White : new SolidColorBrush(Color.Parse("#475569")), FontWeight = FontWeight.SemiBold }
+                Child = new TextBlock { Text = tag, FontSize = 10, Foreground = isAfter ? Brushes.White : new SolidColorBrush(Color.Parse("#475569")), FontWeight = FontWeight.SemiBold }
             };
             Grid.SetColumn(badge, 1); grid.Children.Add(badge);
         }
@@ -308,18 +323,20 @@ public sealed class VersionHistoryControl : UserControl
         _preview.Children.Clear();
         _changes.Children.Clear();
 
-        if (_selectedIndex < 0 || _selectedIndex >= _project.Versions.Count)
+        var displayIndex = _afterIndex >= 0 ? _afterIndex : _beforeIndex;
+        if (displayIndex < 0 || displayIndex >= _project.Versions.Count)
         {
             _previewTitle.Text = "버전을 선택하세요";
-            _previewSubtitle.Text = "왼쪽 버전 트리에서 문서를 선택하면 해당 버전이 표시됩니다.";
-            _changeSummary.Text = "선택된 버전이 없습니다.";
+            _previewSubtitle.Text = "첫 번째 클릭은 전, 두 번째 다른 문서 클릭은 후로 지정됩니다.";
+            _changeSummary.Text = "전/후 문서를 지정하세요.";
+            _changes.Children.Add(Message("전/후 지정은 독립적으로 해제할 수 있습니다. 지정된 문서를 다시 누르면 해당 역할이 해제됩니다.", "#64748B"));
             return;
         }
 
-        var current = _project.Versions[_selectedIndex];
-        if (!File.Exists(current.Path))
+        var display = _project.Versions[displayIndex];
+        _previewTitle.Text = Path.GetFileName(display.Path);
+        if (!File.Exists(display.Path))
         {
-            _previewTitle.Text = current.Label;
             _previewSubtitle.Text = "원본 파일을 찾을 수 없습니다.";
             _changeSummary.Text = "파일 경로를 확인하세요.";
             _preview.Children.Add(Message("원본 파일이 이동되었거나 삭제되었습니다.", "#C62828"));
@@ -328,39 +345,47 @@ public sealed class VersionHistoryControl : UserControl
 
         try
         {
-            _previewTitle.Text = current.Label;
-            if (_selectedIndex == 0)
+            if (_beforeIndex < 0 || _afterIndex < 0)
             {
-                _previewSubtitle.Text = "최초 등록 버전";
-                _changeSummary.Text = "최초본 · 비교할 이전 버전이 없습니다.";
-                var text = await NativeDocumentReader.ReadAsync(current.Path, token);
-                _preview.Children.Add(new Border
-                {
-                    Padding = new Thickness(18), Background = Brushes.White,
-                    Child = new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, FontSize = 13, LineHeight = 24 }
-                });
-                _changes.Children.Add(Message("최초 등록 버전입니다.\n다음 버전을 선택하면 직전 버전과의 차이를 표시합니다.", "#64748B"));
+                var role = _afterIndex >= 0 ? "후" : "전";
+                var waiting = _afterIndex >= 0 ? "전" : "후";
+                _previewSubtitle.Text = $"{role} 문서 지정됨 · {waiting} 문서를 선택하면 비교를 시작합니다.";
+                _changeSummary.Text = $"{waiting} 문서 선택 대기";
+                var standaloneStyleMap = VersionDocumentStyleMap.Load(display.Path);
+                var self = await _engine.CompareAsync(new[] { display.Path, display.Path }, 1, "auto", false, true, token);
+                foreach (var row in self.Rows)
+                    _preview.Children.Add(new VersionPreviewRowControl(row, 1, standaloneStyleMap));
+                _changes.Children.Add(Message($"현재 {role} 문서만 지정되어 있습니다. 트리에서 다른 문서를 선택하면 {waiting} 문서로 지정됩니다.", "#64748B"));
                 return;
             }
 
-            var previous = _project.Versions[_selectedIndex - 1];
-            if (!File.Exists(previous.Path))
+            var previous = _project.Versions[_beforeIndex];
+            var current = _project.Versions[_afterIndex];
+            if (!File.Exists(previous.Path) || !File.Exists(current.Path))
             {
-                _previewSubtitle.Text = $"비교 기준 {previous.Label} 파일을 찾을 수 없습니다.";
-                _changeSummary.Text = "이전 버전 파일이 없습니다.";
+                _previewSubtitle.Text = "전/후 원본 파일 중 하나를 찾을 수 없습니다.";
+                _changeSummary.Text = "파일 경로를 확인하세요.";
                 return;
             }
 
-            _previewSubtitle.Text = $"{previous.Label} [전]  →  {current.Label} [후] · 선택한 ‘후’ 문서 표시 중";
+            _previewTitle.Text = Path.GetFileName(current.Path);
+            _previewSubtitle.Text = $"{Path.GetFileName(previous.Path)} [전]  →  {Path.GetFileName(current.Path)} [후] · 후 문서 표시 중";
             _changeSummary.Text = "비교 중...";
+            var formattingItems = VersionFormattingInspector.Compare(previous.Path, current.Path);
+            var formatAnchors = formattingItems
+                .Where(x => !string.IsNullOrWhiteSpace(x.AnchorText))
+                .Select(x => VersionDocumentStyleMap.Normalize(x.AnchorText))
+                .Where(x => x.Length > 0)
+                .ToHashSet(StringComparer.Ordinal);
+            var styleMap = VersionDocumentStyleMap.Load(current.Path);
             var result = await _engine.CompareAsync(new[] { previous.Path, current.Path }, 1, "auto", false, true, token);
             foreach (var row in result.Rows)
-                _preview.Children.Add(new VersionPreviewRowControl(row, 1));
+                _preview.Children.Add(new VersionPreviewRowControl(row, 1, styleMap, formatAnchors));
 
             var changeItems = BuildChangeItems(result);
-            changeItems.AddRange(VersionFormattingInspector.Compare(previous.Path, current.Path));
+            changeItems.AddRange(formattingItems);
             RenderChanges(changeItems);
-            _status.Text = $"{previous.Label} → {current.Label} 비교 완료";
+            _status.Text = $"{Path.GetFileName(previous.Path)} → {Path.GetFileName(current.Path)} 비교 완료";
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
@@ -433,23 +458,32 @@ public sealed class VersionHistoryControl : UserControl
 
     private void MoveSelected(int delta)
     {
-        if (_selectedIndex < 0) return;
-        var target = _selectedIndex + delta;
+        if (_activeIndex < 0 || _activeIndex >= _project.Versions.Count) return;
+        var from = _activeIndex;
+        var target = from + delta;
         if (target < 0 || target >= _project.Versions.Count) return;
-        (_project.Versions[_selectedIndex], _project.Versions[target]) = (_project.Versions[target], _project.Versions[_selectedIndex]);
-        _selectedIndex = target;
+        (_project.Versions[from], _project.Versions[target]) = (_project.Versions[target], _project.Versions[from]);
+        _beforeIndex = SwapRoleIndex(_beforeIndex, from, target);
+        _afterIndex = SwapRoleIndex(_afterIndex, from, target);
+        _activeIndex = target;
         RefreshTree();
         _ = ShowSelectedAsync();
     }
 
     private void DeleteSelected()
     {
-        if (_selectedIndex < 0 || _selectedIndex >= _project.Versions.Count) return;
-        _project.Versions.RemoveAt(_selectedIndex);
-        _selectedIndex = _project.Versions.Count == 0 ? -1 : Math.Min(_selectedIndex, _project.Versions.Count - 1);
+        if (_activeIndex < 0 || _activeIndex >= _project.Versions.Count) return;
+        var deleted = _activeIndex;
+        _project.Versions.RemoveAt(deleted);
+        _beforeIndex = AfterDeleteIndex(_beforeIndex, deleted);
+        _afterIndex = AfterDeleteIndex(_afterIndex, deleted);
+        _activeIndex = _project.Versions.Count == 0 ? -1 : Math.Min(deleted, _project.Versions.Count - 1);
         RefreshTree();
         _ = ShowSelectedAsync();
     }
+
+    private static int SwapRoleIndex(int role, int a, int b) => role == a ? b : role == b ? a : role;
+    private static int AfterDeleteIndex(int role, int deleted) => role == deleted ? -1 : role > deleted ? role - 1 : role;
 
     private static string Hash(string path)
     {

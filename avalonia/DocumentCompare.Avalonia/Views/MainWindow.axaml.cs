@@ -169,7 +169,7 @@ public partial class MainWindow : Window
 
     private void ApplyLanguage()
     {
-        Title = L("문서 비교기 V5.21.0", "Document Compare V5.21.0");
+        Title = L("문서 비교기 V5.21.1", "Document Compare V5.21.1");
         AppTitleText.Text = L("문서 비교기", "Document Compare");
         QuickCompareModeButton.Content = L("빠른 비교", "Quick compare");
         VersionHistoryModeButton.Content = L("버전 관리", "Version history");
@@ -232,7 +232,7 @@ public partial class MainWindow : Window
             QuickCompareModeButton.Background = Brushes.White;
             QuickCompareModeButton.Foreground = new SolidColorBrush(Color.Parse("#334155"));
             QuickCompareModeButton.BorderBrush = new SolidColorBrush(Color.Parse("#CBD5E1"));
-            StatusText.Text = L("버전 관리 · 버전을 선택하면 직전 버전과의 차이를 표시합니다.", "Version history · Select a version to compare it with the previous version.");
+            StatusText.Text = L("버전 관리 · 전/후 문서를 순서대로 선택하거나 지정된 문서를 다시 눌러 해제하세요.", "Version history · Select Before/After in order, or click an assigned file again to clear it.");
         }
         else
         {

@@ -9,22 +9,21 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.21.0**
+**V5.21.1**
 
-- Added a new **Version History** workspace alongside Quick Compare.
-- Select any version in the version tree to view that document; its immediate predecessor is automatically marked as **Before** and the selected version as **After**.
-- The selected version is shown as a single document view with changes from the previous version overlaid, while a dedicated panel summarizes the changes.
-- Version projects can be saved and reopened, and version order can be adjusted without changing the source documents.
-- DOCX version review now reports content/structure changes together with character formatting, paragraph formatting, table/cell formatting, and named Word style-definition changes.
+- Before and After documents in Version History can now be assigned and cleared independently. Clicking an assigned file again clears that role so another file can be selected.
+- Version tree entries now show only the source file name.
+- DOCX version preview now reflects document font family, font size, bold/italic/underline/strike, text color, paragraph alignment, spacing, indentation, and inherited Word styles instead of using one fixed preview style.
+- Direct paragraph/character formatting changes are highlighted in the document view, and named Word style changes now show clearer before/after style details.
 
 ## Features
 
 - Compare 2 or 3 documents in aligned A / B / C columns
 - Manage sequential document versions in the Version History workspace
-  - Select a version to compare it automatically with its immediate predecessor
-  - Before / After markers make the active version pair explicit in the version tree
+  - Assign Before / After independently; click an assigned file again to clear that role
+  - Before / After markers make the active comparison pair explicit in the version tree
   - Save and reopen `.dcv.json` version projects
-  - Review DOCX character, paragraph, table/cell, and named-style formatting changes in addition to text/structure changes
+  - Preview DOCX font/paragraph styles while reviewing text, structure, and formatting changes
 - Highlight deletions with red strikethrough and additions with blue underline
 - Preserve decoration across spaces inside one changed phrase
 - Article/paragraph-aware alignment for structured documents
