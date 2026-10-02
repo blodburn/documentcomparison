@@ -2,6 +2,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Documents;
 using Avalonia.Layout;
+using Avalonia.Input;
 using Avalonia.Media;
 using DocumentCompare.Avalonia.Engine;
 using DocumentCompare.Avalonia.Models;
@@ -16,6 +17,8 @@ public sealed class VersionPreviewRowControl : UserControl
     private readonly VersionDocumentStyleMap? _styleMap;
     private readonly VersionDocxTableMap? _tableMap;
     private readonly IReadOnlySet<string> _formatAnchors;
+    private readonly IReadOnlyList<int> _supplementalNumbers;
+    private readonly Action<int>? _onMarkerClick;
 
     private static readonly IBrush DeleteBrush = new SolidColorBrush(Color.Parse("#C62828"));
     private static readonly IBrush InsertBrush = new SolidColorBrush(Color.Parse("#1565C0"));
@@ -29,10 +32,19 @@ public sealed class VersionPreviewRowControl : UserControl
         new SolidColorBrush(Color.FromArgb(0x58,0xA8,0xB4,0xC5))
     };
 
-    public VersionPreviewRowControl(ComparisonRowVm row, int docIndex, VersionDocumentStyleMap? styleMap = null, IReadOnlySet<string>? formatAnchors = null, VersionDocxTableMap? tableMap = null)
+    public VersionPreviewRowControl(
+        ComparisonRowVm row,
+        int docIndex,
+        VersionDocumentStyleMap? styleMap = null,
+        IReadOnlySet<string>? formatAnchors = null,
+        VersionDocxTableMap? tableMap = null,
+        IReadOnlyList<int>? supplementalNumbers = null,
+        Action<int>? onMarkerClick = null)
     {
         _row = row; _docIndex = docIndex; _styleMap = styleMap; _tableMap = tableMap;
         _formatAnchors = formatAnchors ?? new HashSet<string>(StringComparer.Ordinal);
+        _supplementalNumbers = supplementalNumbers ?? Array.Empty<int>();
+        _onMarkerClick = onMarkerClick;
         HorizontalAlignment = HorizontalAlignment.Stretch;
         Content = Build();
     }
@@ -52,6 +64,8 @@ public sealed class VersionPreviewRowControl : UserControl
         }
 
         var stack = new StackPanel { Spacing = 2 };
+        if (_supplementalNumbers.Count > 0)
+            stack.Children.Add(BuildSupplementalBadgeStrip());
         if (!string.IsNullOrWhiteSpace(member.Header)) stack.Children.Add(BuildPart(member.Header, "header", true));
         if (!string.IsNullOrWhiteSpace(member.Body)) stack.Children.Add(BuildPart(member.Body, "body", false));
         return new Border
@@ -145,7 +159,7 @@ public sealed class VersionPreviewRowControl : UserControl
         };
     }
 
-    private static TextBlock BuildLine(string raw, List<LocalMark> marks, bool fallbackBold, VersionParagraphVisualStyle? paragraph)
+    private TextBlock BuildLine(string raw, List<LocalMark> marks, bool fallbackBold, VersionParagraphVisualStyle? paragraph)
     {
         var tb = new TextBlock
         {
@@ -181,17 +195,51 @@ public sealed class VersionPreviewRowControl : UserControl
         return tb;
     }
 
-    private static void AddBadges(TextBlock tb, List<LocalMark> marks, HashSet<(int,int)> emitted, int position)
+    private void AddBadges(TextBlock tb, List<LocalMark> marks, HashSet<(int,int)> emitted, int position)
     {
         foreach (var m in marks.Where(x => x.Start == position))
         {
             if (!emitted.Add((position,m.Num))) continue;
-            tb.Inlines!.Add(new InlineUIContainer(new Border
+            tb.Inlines!.Add(new InlineUIContainer(BuildMarkerBadge(m.Num))
             {
-                Background = MarkerFill(m.Num), CornerRadius = new CornerRadius(3), Padding = new Thickness(3,0), Margin = new Thickness(1,0,2,0),
-                Child = new TextBlock { Text = $"[{m.Num}]", FontSize = 9, FontWeight = FontWeight.SemiBold }
-            }) { BaselineAlignment = BaselineAlignment.Baseline });
+                BaselineAlignment = BaselineAlignment.Baseline
+            });
         }
+    }
+
+    private Control BuildSupplementalBadgeStrip()
+    {
+        var strip = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, Margin = new Thickness(0, 0, 0, 3) };
+        foreach (var num in _supplementalNumbers.Distinct().OrderBy(x => x))
+            strip.Children.Add(BuildMarkerBadge(num, supplemental: true));
+        return strip;
+    }
+
+    private Border BuildMarkerBadge(int num, bool supplemental = false)
+    {
+        var border = new Border
+        {
+            Background = supplemental ? new SolidColorBrush(Color.FromArgb(0x30, 0x7C, 0x3A, 0xED)) : MarkerFill(num),
+            BorderBrush = supplemental ? FormatBrush : Brushes.Transparent,
+            BorderThickness = supplemental ? new Thickness(1) : new Thickness(0),
+            CornerRadius = new CornerRadius(3),
+            Padding = new Thickness(3, 0),
+            Margin = new Thickness(1, 0, 2, 0),
+            Cursor = new Cursor(StandardCursorType.Hand),
+            Child = new TextBlock
+            {
+                Text = $"[{num}]",
+                FontSize = 9,
+                FontWeight = FontWeight.SemiBold,
+                Foreground = supplemental ? FormatBrush : Brushes.Black
+            }
+        };
+        border.PointerPressed += (_, e) =>
+        {
+            _onMarkerClick?.Invoke(num);
+            e.Handled = true;
+        };
+        return border;
     }
 
     private static Run MakeRun(string text, VersionRunVisualStyle? style, bool fallbackBold, IReadOnlyList<LocalMark> marks)

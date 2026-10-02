@@ -25,6 +25,10 @@ public sealed class VersionHistoryControl : UserControl
     private readonly StackPanel _tree = new() { Spacing = 4 };
     private readonly StackPanel _preview = new() { Spacing = 0 };
     private readonly StackPanel _changes = new() { Spacing = 8 };
+    private readonly ScrollViewer _previewScroll = new();
+    private readonly ScrollViewer _changesScroll = new();
+    private readonly Dictionary<int, Control> _changeTargets = new();
+    private readonly Dictionary<int, Control> _previewTargets = new();
     private readonly TextBlock _projectTitle = new() { Text = "문서 버전", FontSize = 17, FontWeight = FontWeight.SemiBold };
     private readonly TextBlock _previewTitle = new() { Text = "버전을 선택하세요", FontSize = 17, FontWeight = FontWeight.SemiBold };
     private readonly TextBlock _previewSubtitle = new() { Text = "왼쪽 버전 트리에서 문서를 선택하면 해당 버전이 표시됩니다.", Foreground = Brushes.Gray, FontSize = 12 };
@@ -125,13 +129,10 @@ public sealed class VersionHistoryControl : UserControl
             Child = new StackPanel { Spacing = 3, Children = { _previewTitle, _previewSubtitle } }
         };
         centerRoot.Children.Add(centerHeader);
-        var previewScroll = new ScrollViewer
-        {
-            Content = _preview,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
-        };
-        Grid.SetRow(previewScroll, 1); centerRoot.Children.Add(previewScroll);
+        _previewScroll.Content = _preview;
+        _previewScroll.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
+        _previewScroll.HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
+        Grid.SetRow(_previewScroll, 1); centerRoot.Children.Add(_previewScroll);
         center.Child = centerRoot;
         Grid.SetColumn(center, 2); root.Children.Add(center);
 
@@ -148,14 +149,11 @@ public sealed class VersionHistoryControl : UserControl
             Padding = new Thickness(14, 11),
             Child = new StackPanel { Spacing = 4, Children = { _changeTitle, _changeSummary } }
         });
-        var changesScroll = new ScrollViewer
-        {
-            Content = _changes,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-            Margin = new Thickness(10)
-        };
-        Grid.SetRow(changesScroll, 1); rightRoot.Children.Add(changesScroll);
+        _changesScroll.Content = _changes;
+        _changesScroll.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
+        _changesScroll.HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
+        _changesScroll.Margin = new Thickness(10);
+        Grid.SetRow(_changesScroll, 1); rightRoot.Children.Add(_changesScroll);
         right.Child = rightRoot;
         Grid.SetColumn(right, 4); root.Children.Add(right);
         return root;
@@ -371,6 +369,8 @@ public sealed class VersionHistoryControl : UserControl
         var token = _loadCts.Token;
         _preview.Children.Clear();
         _changes.Children.Clear();
+        _previewTargets.Clear();
+        _changeTargets.Clear();
 
         var displayIndex = _afterIndex >= 0 ? _afterIndex : _beforeIndex;
         if (displayIndex < 0 || displayIndex >= _project.Versions.Count)
@@ -431,11 +431,22 @@ public sealed class VersionHistoryControl : UserControl
             var tableMap = VersionDocxTableMap.Load(current.Path);
             var result = await _engine.CompareAsync(new[] { previous.Path, current.Path }, 1, "auto", false, true, token);
             VersionHistoryMarkerNumbering.ReindexGlobally(result);
-            foreach (var row in result.Rows)
-                _preview.Children.Add(new VersionPreviewRowControl(row, 1, styleMap, formatAnchors, tableMap));
+            var changeItems = BuildChangeItems(result, formattingItems);
+            var contentNumbers = result.Rows.SelectMany(x => x.Markers).Select(x => x.Num).ToHashSet();
+            var supplementalByRow = changeItems
+                .Where(x => x.RowId.HasValue && x.MarkerNumber.HasValue && !contentNumbers.Contains(x.MarkerNumber.Value))
+                .GroupBy(x => x.RowId!.Value)
+                .ToDictionary(x => x.Key, x => (IReadOnlyList<int>)x.Select(v => v.MarkerNumber!.Value).Distinct().OrderBy(v => v).ToList());
 
-            var changeItems = BuildChangeItems(result);
-            changeItems.AddRange(formattingItems);
+            foreach (var row in result.Rows)
+            {
+                supplementalByRow.TryGetValue(row.Id, out var supplemental);
+                var control = new VersionPreviewRowControl(row, 1, styleMap, formatAnchors, tableMap, supplemental, ScrollToChange);
+                _preview.Children.Add(control);
+                foreach (var num in row.Markers.Select(x => x.Num).Concat(supplemental ?? Array.Empty<int>()).Distinct())
+                    _previewTargets[num] = control;
+            }
+
             RenderChanges(changeItems);
             _status.Text = $"{Path.GetFileName(previous.Path)} → {Path.GetFileName(current.Path)} 비교 완료";
         }
@@ -447,30 +458,84 @@ public sealed class VersionHistoryControl : UserControl
         }
     }
 
-    private static List<VersionChangeVm> BuildChangeItems(ComparisonResultVm result)
+    private static List<VersionChangeVm> BuildChangeItems(ComparisonResultVm result, IReadOnlyList<VersionChangeVm> formattingItems)
     {
-        var items = result.Rows.SelectMany(x => x.Markers)
-            .GroupBy(x => x.Num)
-            .Select(g => g.First())
-            .OrderBy(x => x.Num)
-            .Select(x => new VersionChangeVm
+        var items = new List<VersionChangeVm>();
+        foreach (var row in result.Rows)
+        {
+            foreach (var marker in row.Markers.OrderBy(x => x.Num))
             {
-                Category = x.StructuralNumber ? "구조" : "내용",
-                Title = $"[{x.Num}] {x.Action}",
-                Detail = x.Message,
-                MarkerNumber = x.Num
-            }).ToList();
+                items.Add(new VersionChangeVm
+                {
+                    Category = marker.StructuralNumber ? "구조" : "내용",
+                    Title = marker.Action,
+                    Detail = marker.Message,
+                    MarkerNumber = marker.Num,
+                    RowId = row.Id
+                });
+            }
+        }
 
-        var structural = result.Rows.SelectMany(x => x.DisplayMessages)
-            .Where(x => x.Contains("상태:", StringComparison.Ordinal) || x.Contains("이동", StringComparison.Ordinal) || x.Contains("구조", StringComparison.Ordinal))
-            .Distinct();
-        items.AddRange(structural.Select(x => new VersionChangeVm { Category = "구조", Title = "구조 변경", Detail = x.TrimStart('•', ' ') }));
-        return items;
+        var seenStructural = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var row in result.Rows)
+        {
+            foreach (var message in row.DisplayMessages
+                         .Where(x => x.Contains("상태:", StringComparison.Ordinal) ||
+                                     x.Contains("이동", StringComparison.Ordinal) ||
+                                     x.Contains("구조", StringComparison.Ordinal)))
+            {
+                var detail = message.TrimStart('•', ' ');
+                if (!seenStructural.Add(detail)) continue;
+                var member = row.Members.Count > 1 ? row.Members[1] : null;
+                items.Add(new VersionChangeVm
+                {
+                    Category = "구조",
+                    Title = "구조 변경",
+                    Detail = detail,
+                    RowId = row.Id,
+                    AnchorText = member?.Header ?? member?.Body
+                });
+            }
+        }
+
+        foreach (var source in formattingItems)
+        {
+            var rowId = FindRowId(result, source.AnchorText, 1);
+            items.Add(new VersionChangeVm
+            {
+                Category = source.Category,
+                Title = source.Title,
+                Detail = source.Detail,
+                AnchorText = source.AnchorText,
+                RowId = rowId
+            });
+        }
+        return VersionHistoryChangeNumbering.EnsureNumbered(items);
+    }
+
+    private static int? FindRowId(ComparisonResultVm result, string? anchorText, int docIndex)
+    {
+        var anchor = VersionDocumentStyleMap.Normalize(anchorText);
+        if (anchor.Length == 0) return null;
+        foreach (var row in result.Rows)
+        {
+            var member = row.Members.Count > docIndex ? row.Members[docIndex] : null;
+            if (member is null) continue;
+            foreach (var candidate in new[] { member.Header, member.Body, member.Text })
+            {
+                var normalized = VersionDocumentStyleMap.Normalize(candidate);
+                if (normalized.Length == 0) continue;
+                if (normalized.Contains(anchor, StringComparison.Ordinal) || anchor.Contains(normalized, StringComparison.Ordinal))
+                    return row.Id;
+            }
+        }
+        return null;
     }
 
     private void RenderChanges(List<VersionChangeVm> items)
     {
         _changes.Children.Clear();
+        _changeTargets.Clear();
         if (items.Count == 0)
         {
             _changeSummary.Text = "변경사항 없음";
@@ -479,7 +544,7 @@ public sealed class VersionHistoryControl : UserControl
         }
         var groups = items.GroupBy(x => x.Category).ToDictionary(x => x.Key, x => x.Count());
         _changeSummary.Text = $"전체 {items.Count}건 · " + string.Join(" · ", groups.Select(x => $"{x.Key} {x.Value}"));
-        foreach (var item in items)
+        foreach (var item in items.OrderBy(x => x.MarkerNumber ?? int.MaxValue))
         {
             var color = item.Category switch
             {
@@ -495,17 +560,76 @@ public sealed class VersionHistoryControl : UserControl
                 Background = new SolidColorBrush(Color.Parse(color)), CornerRadius = new CornerRadius(9), Padding = new Thickness(7, 2),
                 Child = new TextBlock { Text = item.Category, Foreground = Brushes.White, FontSize = 9.5, FontWeight = FontWeight.SemiBold }
             });
-            header.Children.Add(new TextBlock { Text = item.Title, FontWeight = FontWeight.SemiBold, VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap });
+            var numberText = item.MarkerNumber is int num ? $"[{num}] " : "";
+            header.Children.Add(new TextBlock
+            {
+                Text = numberText + item.Title,
+                FontWeight = FontWeight.SemiBold,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextWrapping = TextWrapping.Wrap
+            });
             body.Children.Add(header);
             if (!string.IsNullOrWhiteSpace(item.Detail))
                 body.Children.Add(new TextBlock { Text = item.Detail, TextWrapping = TextWrapping.Wrap, FontSize = 11.5, Foreground = new SolidColorBrush(Color.Parse("#475569")) });
-            _changes.Children.Add(new Border
+
+            var card = new Border
             {
                 Background = Brushes.White,
                 BorderBrush = new SolidColorBrush(Color.Parse("#DCE3EC")), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(7),
-                Padding = new Thickness(10, 8), Child = body
-            });
+                Padding = new Thickness(10, 8), Child = body,
+                Cursor = item.MarkerNumber.HasValue ? new Cursor(StandardCursorType.Hand) : Cursor.Default
+            };
+            if (item.MarkerNumber is int markerNumber)
+            {
+                _changeTargets[markerNumber] = card;
+                card.PointerPressed += (_, e) =>
+                {
+                    ScrollToPreview(markerNumber);
+                    e.Handled = true;
+                };
+            }
+            _changes.Children.Add(card);
         }
+    }
+
+    private void ScrollToChange(int markerNumber)
+    {
+        if (!_changeTargets.TryGetValue(markerNumber, out var target)) return;
+        ScrollControlIntoView(_changesScroll, _changes, target);
+        FlashTarget(target);
+    }
+
+    private void ScrollToPreview(int markerNumber)
+    {
+        if (!_previewTargets.TryGetValue(markerNumber, out var target)) return;
+        ScrollControlIntoView(_previewScroll, _preview, target);
+        FlashTarget(target);
+    }
+
+    private static void ScrollControlIntoView(ScrollViewer scroll, Control contentRoot, Control target)
+    {
+        var point = target.TranslatePoint(new Point(0, 0), contentRoot);
+        if (point is null) return;
+        var maxY = Math.Max(0, scroll.Extent.Height - scroll.Viewport.Height);
+        var desired = Math.Clamp(point.Value.Y - 18, 0, maxY);
+        scroll.Offset = new Vector(scroll.Offset.X, desired);
+    }
+
+    private static void FlashTarget(Control target)
+    {
+        if (target is not Border border) return;
+        var original = border.BorderBrush;
+        border.BorderBrush = new SolidColorBrush(Color.Parse("#2563EB"));
+        border.BorderThickness = new Thickness(2);
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(700);
+            global::Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+            {
+                border.BorderBrush = original;
+                border.BorderThickness = new Thickness(1);
+            });
+        });
     }
 
     private void MoveSelected(int delta)

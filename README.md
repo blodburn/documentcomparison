@@ -9,10 +9,12 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.21.5**
+**V5.21.6**
 
-- Fixed Version History change-marker numbering so markers continue sequentially across the entire selected document instead of restarting at 1 for each structural row.
-- The document preview and the right-side change list now share the same global marker sequence.
+- Version History change numbers are now clickable in the document preview and jump the right-side change list to the matching item.
+- Change cards in the right panel can also navigate back to the matching document location when a document anchor is available.
+- Structural, character/paragraph formatting, table, and Word style changes now participate in the same global change-number sequence as text changes.
+- Numbered structural/formatting changes with a document location are surfaced in the document preview as supplemental change markers.
 
 ## Features
 

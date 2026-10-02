@@ -1717,4 +1717,20 @@ var globalNums=numberingResult.Rows.SelectMany(x=>x.Markers).Select(x=>x.Num).To
 Check(globalNums.SequenceEqual(new[]{1,2,3,4,5}),"version-history marker numbering restarted per row: "+string.Join(",",globalNums));
 Console.WriteLine("PASS VERSION HISTORY GLOBAL MARKER NUMBERING");
 
+// 142. Every version-history change category receives one global review number, including
+// structural and formatting changes that do not originate from text markers.
+var allChangeNumbers=VersionHistoryChangeNumbering.EnsureNumbered(new[]
+{
+    new VersionChangeVm{Category="내용",Title="변경",MarkerNumber=1,RowId=10},
+    new VersionChangeVm{Category="내용",Title="추가",MarkerNumber=2,RowId=11},
+    new VersionChangeVm{Category="구조",Title="구조 변경",RowId=12},
+    new VersionChangeVm{Category="문자서식",Title="글자 서식 변경",AnchorText="Styled"},
+    new VersionChangeVm{Category="스타일",Title="Word 스타일 정의 변경"}
+});
+Check(allChangeNumbers.Select(x=>x.MarkerNumber).SequenceEqual(new int?[]{1,2,3,4,5}),
+    "supplemental version-history changes were not globally numbered: "+string.Join(",",allChangeNumbers.Select(x=>x.MarkerNumber)));
+Check(allChangeNumbers[2].Category=="구조"&&allChangeNumbers[3].Category=="문자서식"&&allChangeNumbers[4].Category=="스타일",
+    "version-history numbering changed supplemental change ordering/categories");
+Console.WriteLine("PASS VERSION HISTORY ALL CHANGE TYPES NUMBERED");
+
 Console.WriteLine("ALL REGRESSIONS PASSED");
