@@ -154,7 +154,8 @@ public sealed class NativeComparisonEngine : IComparisonEngine
                 BaseIndex = baseIndex,
                 Rows = rows,
                 UnitCounts = docs.Select(x => x.Count).ToList(),
-                SourceFiles = sourceFiles
+                SourceFiles = sourceFiles,
+                ComparedPairs = BuildDisplayPairs(paths.Count, includeAC)
             };
         }
         finally
@@ -2496,6 +2497,118 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             p = q;
         }
         return result;
+    }
+
+    private static List<ComparisonPairVm> BuildDisplayPairs(int count, bool includeAC)
+    {
+        var result = new List<ComparisonPairVm>();
+        if (count >= 2) result.Add(new ComparisonPairVm { Left = 0, Right = 1, Label = "A↔B" });
+        if (count >= 3)
+        {
+            result.Add(new ComparisonPairVm { Left = 1, Right = 2, Label = "B↔C" });
+            if (includeAC) result.Add(new ComparisonPairVm { Left = 0, Right = 2, Label = "A↔C" });
+        }
+        return result;
+    }
+
+    internal static List<ExcelAlignedPartVm> BuildExcelAlignedParts(MemberVm? left, MemberVm? right)
+    {
+        var rows = new List<ExcelAlignedPartVm>();
+        var leftArticle = string.Equals(left?.Kind, "article", StringComparison.Ordinal);
+        var rightArticle = string.Equals(right?.Kind, "article", StringComparison.Ordinal);
+
+        if (!leftArticle && !rightArticle)
+        {
+            var leftText = left?.Text ?? string.Empty;
+            var rightText = right?.Text ?? string.Empty;
+            if (leftText.Length > 0 || rightText.Length > 0)
+                rows.Add(new ExcelAlignedPartVm
+                {
+                    Kind = string.Equals(left?.Kind, "section", StringComparison.Ordinal) || string.Equals(right?.Kind, "section", StringComparison.Ordinal) ? "section" : "block",
+                    Part = "whole",
+                    LeftText = leftText,
+                    RightText = rightText
+                });
+            return rows;
+        }
+
+        // A legal article itself is a row, followed by one row for every aligned 항/호/목 item.
+        // This is intentionally an Excel-only presentation layer: DC keeps its existing screen
+        // grouping while the spreadsheet becomes a review table with structural rows.
+        if (!string.IsNullOrWhiteSpace(left?.Header) || !string.IsNullOrWhiteSpace(right?.Header))
+            rows.Add(new ExcelAlignedPartVm
+            {
+                Kind = "article",
+                Part = "header",
+                LeftText = left?.Header ?? string.Empty,
+                RightText = right?.Header ?? string.Empty,
+                LeftStart = left?.Header.Length > 0 ? 0 : -1,
+                LeftEnd = left?.Header.Length ?? -1,
+                RightStart = right?.Header.Length > 0 ? 0 : -1,
+                RightEnd = right?.Header.Length ?? -1
+            });
+
+        var lp = ParseParts(left?.Body ?? string.Empty);
+        var rp = ParseParts(right?.Body ?? string.Empty);
+        var matches = MatchParts(lp, rp);
+        var leftNodes = BuildPartHierarchy(lp);
+        var rightNodes = BuildPartHierarchy(rp);
+        var byRight = matches.ToDictionary(x => x.New, x => x.Old);
+        var matchedLeft = matches.Select(x => x.Old).ToHashSet();
+        var emittedLeft = new HashSet<int>();
+
+        static (int Start, int End, string Text) Slice(string body, NativePart part)
+        {
+            var start = Math.Clamp(part.Start, 0, body.Length);
+            var end = Math.Clamp(part.End, start, body.Length);
+            while (start < end && char.IsWhiteSpace(body[start])) start++;
+            while (end > start && char.IsWhiteSpace(body[end - 1])) end--;
+            return (start, end, end > start ? body[start..end] : string.Empty);
+        }
+
+        void Add(int? li, int? ri)
+        {
+            var lpart = li.HasValue ? lp[li.Value] : null;
+            var rpart = ri.HasValue ? rp[ri.Value] : null;
+            var ls = lpart is null ? (-1, -1, string.Empty) : Slice(left?.Body ?? string.Empty, lpart);
+            var rs = rpart is null ? (-1, -1, string.Empty) : Slice(right?.Body ?? string.Empty, rpart);
+            var level = Math.Max(li.HasValue ? leftNodes[li.Value].Level : 0, ri.HasValue ? rightNodes[ri.Value].Level : 0);
+            rows.Add(new ExcelAlignedPartVm
+            {
+                Kind = "item",
+                Part = "body",
+                Level = level,
+                LeftLabel = lpart?.Label ?? string.Empty,
+                RightLabel = rpart?.Label ?? string.Empty,
+                LeftText = ls.Item3,
+                RightText = rs.Item3,
+                LeftStart = ls.Item1,
+                LeftEnd = ls.Item2,
+                RightStart = rs.Item1,
+                RightEnd = rs.Item2
+            });
+            if (li.HasValue) emittedLeft.Add(li.Value);
+        }
+
+        // Follow the revised/right document order. Deleted left-only rows are inserted just before
+        // the next matched right item whose left index succeeds them, keeping additions/deletions
+        // readable without collapsing the article back into one giant row.
+        for (var r = 0; r < rp.Count; r++)
+        {
+            if (byRight.TryGetValue(r, out var l))
+            {
+                foreach (var oldOnly in Enumerable.Range(0, l)
+                    .Where(x => !matchedLeft.Contains(x) && !emittedLeft.Contains(x)))
+                    Add(oldOnly, null);
+                Add(l, r);
+            }
+            else Add(null, r);
+        }
+        foreach (var oldOnly in Enumerable.Range(0, lp.Count)
+            .Where(x => !matchedLeft.Contains(x) && !emittedLeft.Contains(x)))
+            Add(oldOnly, null);
+
+        return rows;
     }
 
     private static IEnumerable<(int Old, int New, string Pair, int Order)> PairPlan(int count, int baseIndex, bool includeAC)

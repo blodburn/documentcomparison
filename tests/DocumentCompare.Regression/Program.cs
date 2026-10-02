@@ -1533,4 +1533,69 @@ using(var tableBaseStyleStream=tableBaseZip.GetEntry("word/styles.xml")!.Open())
 }
 Console.WriteLine("PASS WORD REVISED TABLE/HEADER STYLE BASELINE");
 
+
+// 132. Excel review export is a three-column 1280px review table. Legal content must be split
+// into article/item rows instead of placing an entire article in one cell, and every row gets an
+// explicit wrapped height so all text is visible without manual row resizing.
+var excelStructA=Path.Combine(dir,"excelStructA.txt");var excelStructB=Path.Combine(dir,"excelStructB.txt");var excelStructO=Path.Combine(dir,"excelStruct.xlsx");
+File.WriteAllText(excelStructA,string.Join("\n",new[]{
+    "제1조(목적)",
+    "① 회사는 다음 각 호의 업무를 수행합니다.",
+    "1. 회원 관리 업무를 수행합니다.",
+    "2. 결제 관리 업무를 수행합니다.",
+    "② 회사는 이용자의 권리를 보호합니다."
+}),new UTF8Encoding(false));
+File.WriteAllText(excelStructB,string.Join("\n",new[]{
+    "제1조(목적)",
+    "① 회사는 다음 각 호의 업무를 안전하게 수행합니다.",
+    "1. 회원 및 계정 관리 업무를 수행합니다.",
+    "2. 결제 관리 업무를 수행합니다.",
+    "② 회사는 이용자의 권리를 보호합니다."
+}),new UTF8Encoding(false));
+var excelStructCmp=await eng.CompareAsync(new[]{excelStructA,excelStructB},0,"legal",true,true);
+await eng.ExportExcelAsync(excelStructCmp,excelStructO);
+using(var excelStructZip=ZipFile.OpenRead(excelStructO))
+{
+    XNamespace sx="http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+    using var sheetStream=excelStructZip.GetEntry("xl/worksheets/sheet1.xml")!.Open();
+    var sheetXml=XDocument.Load(sheetStream);var sheetRoot=sheetXml.Root!;
+    var cols=sheetRoot.Element(sx+"cols")!.Elements(sx+"col").ToList();
+    Check(cols.Count==3,"Excel review sheet is not exactly three columns");
+    var widths=cols.Select(c=>double.Parse(c.Attribute("width")!.Value,System.Globalization.CultureInfo.InvariantCulture)).ToArray();
+    Check(Math.Abs(widths[0]-72.43)<.15&&Math.Abs(widths[1]-72.43)<.15&&Math.Abs(widths[2]-35.86)<.15,"Excel 1280px 40/40/20 widths changed: "+string.Join(",",widths.Select(x=>x.ToString("0.00"))));
+    var rows=sheetRoot.Element(sx+"sheetData")!.Elements(sx+"row").Skip(1).ToList();
+    string RowCellText(XElement row,int cellIndex)=>string.Concat(row.Elements(sx+"c").ElementAt(cellIndex).Descendants(sx+"t").Select(t=>t.Value));
+    var leftTexts=rows.Select(r=>RowCellText(r,0)).ToList();
+    Check(leftTexts.Any(x=>x.StartsWith("제1조(목적)",StringComparison.Ordinal)),"Excel article row missing");
+    Check(leftTexts.Any(x=>x.StartsWith("① ",StringComparison.Ordinal)),"Excel 항 row missing");
+    Check(leftTexts.Any(x=>x.StartsWith("1. ",StringComparison.Ordinal)),"Excel 호 1 row missing");
+    Check(leftTexts.Any(x=>x.StartsWith("2. ",StringComparison.Ordinal)),"Excel 호 2 row missing");
+    Check(leftTexts.Any(x=>x.StartsWith("② ",StringComparison.Ordinal)),"Excel second 항 row missing");
+    Check(!leftTexts.Any(x=>x.Contains("① ")&&x.Contains("1. ")&&x.Contains("2. ")),"Excel still collapsed 항/호 into one article row");
+    Check(rows.All(r=>r.Attribute("customHeight")?.Value=="1"&&double.TryParse(r.Attribute("ht")?.Value,System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture,out var h)&&h>=21),"Excel data rows do not expose all wrapped text heights");
+    Check(sheetRoot.Element(sx+"autoFilter")?.Attribute("ref")?.Value.StartsWith("A1:C",StringComparison.Ordinal)==true,"Excel filter range is not A:C");
+}
+using(var excelStructDoc=SpreadsheetDocument.Open(excelStructO,false))
+{
+    var errors=new OpenXmlValidator().Validate(excelStructDoc).ToList();
+    Check(errors.Count==0,"structured Excel package invalid: "+string.Join(" | ",errors.Take(8).Select(e=>e.Description)));
+}
+Console.WriteLine("PASS EXCEL STRUCTURAL ROWS + 1280 40/40/20 LAYOUT");
+
+// 133. Three-document comparisons use one three-column review sheet per compared pair instead of
+// growing horizontally beyond the requested A/B/changes 40/40/20 layout.
+var excel3A=Path.Combine(dir,"excel3A.txt");var excel3B=Path.Combine(dir,"excel3B.txt");var excel3C=Path.Combine(dir,"excel3C.txt");var excel3O=Path.Combine(dir,"excel3.xlsx");
+File.WriteAllText(excel3A,"제1조(목적)\n① Alpha",new UTF8Encoding(false));
+File.WriteAllText(excel3B,"제1조(목적)\n① Beta",new UTF8Encoding(false));
+File.WriteAllText(excel3C,"제1조(목적)\n① Gamma",new UTF8Encoding(false));
+var excel3Cmp=await eng.CompareAsync(new[]{excel3A,excel3B,excel3C},0,"legal",true,true);
+await eng.ExportExcelAsync(excel3Cmp,excel3O);
+using(var excel3Doc=SpreadsheetDocument.Open(excel3O,false))
+{
+    var names=excel3Doc.WorkbookPart!.Workbook.Sheets!.Elements<DocumentFormat.OpenXml.Spreadsheet.Sheet>().Select(x=>x.Name!.Value).ToList();
+    Check(names.SequenceEqual(new[]{"A-B","B-C","A-C"}),"three-way Excel pair sheets changed: "+string.Join(",",names));
+    Check(excel3Doc.WorkbookPart.WorksheetParts.Count()==3,"three-way Excel did not create one sheet per pair");
+}
+Console.WriteLine("PASS EXCEL THREE-WAY PAIR SHEETS");
+
 Console.WriteLine("ALL REGRESSIONS PASSED");

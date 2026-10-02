@@ -137,6 +137,29 @@ public sealed class SourceFileStateVm
     public string Sha256 { get; init; } = "";
 }
 
+
+public sealed class ComparisonPairVm
+{
+    public int Left { get; init; }
+    public int Right { get; init; }
+    public string Label { get; init; } = "";
+}
+
+internal sealed class ExcelAlignedPartVm
+{
+    public string Kind { get; init; } = "block";
+    public string Part { get; init; } = "body";
+    public int Level { get; init; }
+    public string LeftLabel { get; init; } = "";
+    public string RightLabel { get; init; } = "";
+    public string LeftText { get; init; } = "";
+    public string RightText { get; init; } = "";
+    public int LeftStart { get; init; } = -1;
+    public int LeftEnd { get; init; } = -1;
+    public int RightStart { get; init; } = -1;
+    public int RightEnd { get; init; } = -1;
+}
+
 public sealed class ComparisonResultVm
 {
     public List<string> Names { get; init; } = new();
@@ -144,4 +167,5 @@ public sealed class ComparisonResultVm
     public List<ComparisonRowVm> Rows { get; init; } = new();
     public List<int> UnitCounts { get; init; } = new();
     public List<SourceFileStateVm> SourceFiles { get; init; } = new();
+    public List<ComparisonPairVm> ComparedPairs { get; init; } = new();
 }

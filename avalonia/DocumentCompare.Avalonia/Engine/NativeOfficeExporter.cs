@@ -122,80 +122,261 @@ internal static class NativeOfficeExporter
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath))!);
         using var fs = new FileStream(outputPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
         using var zip = new ZipArchive(fs, ZipArchiveMode.Create);
-        Put(zip, "[Content_Types].xml", """
-<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-  <Default Extension="xml" ContentType="application/xml"/>
-  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
-  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
-  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
-</Types>
-""");
+
+        var pairs = result.ComparedPairs.Count > 0
+            ? result.ComparedPairs
+            : result.Names.Count >= 2
+                ? new List<ComparisonPairVm> { new() { Left = 0, Right = 1, Label = "A↔B" } }
+                : new List<ComparisonPairVm>();
+        if (pairs.Count == 0)
+            throw new InvalidOperationException("Excel 내보내기에 사용할 비교 조합이 없습니다.");
+
+        var contentTypes = new StringBuilder();
+        contentTypes.Append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">");
+        contentTypes.Append("<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/>");
+        contentTypes.Append("<Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>");
+        for (var i = 0; i < pairs.Count; i++)
+            contentTypes.Append($"<Override PartName=\"/xl/worksheets/sheet{i + 1}.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>");
+        contentTypes.Append("<Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/></Types>");
+        Put(zip, "[Content_Types].xml", contentTypes.ToString());
+
         Put(zip, "_rels/.rels", """
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
 </Relationships>
 """);
-        Put(zip, "xl/workbook.xml", """
-<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-  <sheets><sheet name="Comparison" sheetId="1" r:id="rId1"/></sheets>
-</workbook>
-""");
-        Put(zip, "xl/_rels/workbook.xml.rels", """
-<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
-  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
-</Relationships>
-""");
+
+        var workbook = new StringBuilder();
+        workbook.Append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><sheets>");
+        for (var i = 0; i < pairs.Count; i++)
+        {
+            var sheetName = pairs.Count == 1 ? "Comparison" : pairs[i].Label.Replace("↔", "-");
+            workbook.Append($"<sheet name=\"{Esc(sheetName)}\" sheetId=\"{i + 1}\" r:id=\"rId{i + 1}\"/>");
+        }
+        workbook.Append("</sheets></workbook>");
+        Put(zip, "xl/workbook.xml", workbook.ToString());
+
+        var workbookRels = new StringBuilder();
+        workbookRels.Append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">");
+        for (var i = 0; i < pairs.Count; i++)
+            workbookRels.Append($"<Relationship Id=\"rId{i + 1}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet{i + 1}.xml\"/>");
+        workbookRels.Append($"<Relationship Id=\"rId{pairs.Count + 1}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/></Relationships>");
+        Put(zip, "xl/_rels/workbook.xml.rels", workbookRels.ToString());
+
         Put(zip, "xl/styles.xml", """
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-  <fonts count="2"><font><sz val="10"/><name val="Calibri"/></font><font><b/><sz val="10"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font></fonts>
-  <fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF1F4E78"/><bgColor indexed="64"/></patternFill></fill></fills>
-  <borders count="1"><border/></borders><cellStyleXfs count="1"><xf/></cellStyleXfs>
-  <cellXfs count="2"><xf fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf><xf fontId="1" fillId="2" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf></cellXfs>
+  <fonts count="3">
+    <font><sz val="10"/><name val="Calibri"/></font>
+    <font><b/><sz val="10"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font>
+    <font><b/><sz val="10"/><name val="Calibri"/></font>
+  </fonts>
+  <fills count="5">
+    <fill><patternFill patternType="none"/></fill>
+    <fill><patternFill patternType="gray125"/></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FF1F4E78"/><bgColor indexed="64"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFF1F1F1"/><bgColor indexed="64"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFEAF1F7"/><bgColor indexed="64"/></patternFill></fill>
+  </fills>
+  <borders count="2">
+    <border/>
+    <border><left style="thin"><color rgb="FFD9E1F2"/></left><right style="thin"><color rgb="FFD9E1F2"/></right><top style="thin"><color rgb="FFD9E1F2"/></top><bottom style="thin"><color rgb="FFD9E1F2"/></bottom><diagonal/></border>
+  </borders>
+  <cellStyleXfs count="1"><xf/></cellStyleXfs>
+  <cellXfs count="4">
+    <xf fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
+    <xf fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>
+    <xf fontId="2" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
+    <xf fontId="2" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
+  </cellXfs>
 </styleSheet>
 """);
 
-        var xml = new StringBuilder(1024 * 32);
-        xml.Append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetViews><sheetView workbookViewId=\"0\"><pane ySplit=\"1\" topLeftCell=\"A2\" activePane=\"bottomLeft\" state=\"frozen\"/></sheetView></sheetViews><cols>");
-        for (var c = 0; c < result.Names.Count; c++) xml.Append($"<col min=\"{c + 1}\" max=\"{c + 1}\" width=\"38\" customWidth=\"1\"/>");
-        xml.Append($"<col min=\"{result.Names.Count + 1}\" max=\"{result.Names.Count + 1}\" width=\"58\" customWidth=\"1\"/></cols><sheetData>");
+        for (var i = 0; i < pairs.Count; i++)
+        {
+            token.ThrowIfCancellationRequested();
+            Put(zip, $"xl/worksheets/sheet{i + 1}.xml", BuildExcelPairSheet(result, pairs[i], token));
+        }
+    }
+
+    private static string BuildExcelPairSheet(ComparisonResultVm result, ComparisonPairVm pair, CancellationToken token)
+    {
+        const int canvasPixels = 1280;
+        const int leftPixels = canvasPixels * 40 / 100;   // 512 px
+        const int rightPixels = canvasPixels * 40 / 100;  // 512 px
+        const int changesPixels = canvasPixels * 20 / 100; // 256 px
+        var xml = new StringBuilder(1024 * 48);
+        xml.Append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">");
+        xml.Append("<sheetViews><sheetView workbookViewId=\"0\" zoomScale=\"100\"><pane ySplit=\"1\" topLeftCell=\"A2\" activePane=\"bottomLeft\" state=\"frozen\"/></sheetView></sheetViews>");
+        xml.Append("<sheetFormatPr defaultRowHeight=\"15\"/>");
+        xml.Append("<cols>");
+        xml.Append($"<col min=\"1\" max=\"1\" width=\"{ExcelWidthForPixels(leftPixels):0.00}\" customWidth=\"1\"/>");
+        xml.Append($"<col min=\"2\" max=\"2\" width=\"{ExcelWidthForPixels(rightPixels):0.00}\" customWidth=\"1\"/>");
+        xml.Append($"<col min=\"3\" max=\"3\" width=\"{ExcelWidthForPixels(changesPixels):0.00}\" customWidth=\"1\"/>");
+        xml.Append("</cols><sheetData>");
+
         var rowNumber = 1;
-        xml.Append("<row r=\"1\">");
-        for (var c = 0; c < result.Names.Count; c++)
-            Cell(xml, rowNumber, c, $"{(char)('A' + c)} · {result.Names[c]}{(c == result.BaseIndex ? " · Base" : "")}", 1);
-        Cell(xml, rowNumber, result.Names.Count, "Changes", 1);
+        xml.Append("<row r=\"1\" ht=\"30\" customHeight=\"1\">");
+        Cell(xml, rowNumber, 0, $"{(char)('A' + pair.Left)} · {result.Names.ElementAtOrDefault(pair.Left) ?? string.Empty}", 1);
+        Cell(xml, rowNumber, 1, $"{(char)('A' + pair.Right)} · {result.Names.ElementAtOrDefault(pair.Right) ?? string.Empty}", 1);
+        Cell(xml, rowNumber, 2, "변경사항", 1);
         xml.Append("</row>");
 
-        foreach (var row in result.Rows)
+        foreach (var sourceRow in result.Rows)
         {
-            token.ThrowIfCancellationRequested(); rowNumber++;
-            xml.Append($"<row r=\"{rowNumber}\">");
-            for (var c = 0; c < result.Names.Count; c++)
+            token.ThrowIfCancellationRequested();
+            var left = sourceRow.Members.Count > pair.Left ? sourceRow.Members[pair.Left] : null;
+            var right = sourceRow.Members.Count > pair.Right ? sourceRow.Members[pair.Right] : null;
+            var lines = NativeComparisonEngine.BuildExcelAlignedParts(left, right);
+            if (lines.Count == 0) continue;
+
+            foreach (var line in lines)
             {
-                if (row.Members.Count <= c || row.Members[c] is null)
-                {
-                    Cell(xml, rowNumber, c, "[No corresponding block]", 0);
-                    continue;
-                }
-                var segments = new List<SegmentVm>();
-                if (row.HeaderSegments.Count > c) segments.AddRange(row.HeaderSegments[c]);
-                if (row.HeaderSegments.Count > c && row.HeaderSegments[c].Count > 0 &&
-                    row.BodySegments.Count > c && row.BodySegments[c].Count > 0)
-                    segments.Add(new SegmentVm { Text = "\n", Style = "normal" });
-                if (row.BodySegments.Count > c) segments.AddRange(row.BodySegments[c]);
-                RichCell(xml, rowNumber, c, segments, 0);
+                token.ThrowIfCancellationRequested();
+                rowNumber++;
+                var leftSegments = ExcelLineSegments(sourceRow, pair.Left, pair.Label, left, line.Part, line.LeftStart, line.LeftEnd, line.LeftText);
+                var rightSegments = ExcelLineSegments(sourceRow, pair.Right, pair.Label, right, line.Part, line.RightStart, line.RightEnd, line.RightText);
+                var messages = ExcelLineMessages(sourceRow, pair, left, right, line);
+                var changes = string.Join("\n", messages);
+                var height = EstimateExcelRowHeight(line.LeftText, line.RightText, changes, line.Kind);
+                var style = line.Kind == "article" ? 2 : line.Kind == "section" ? 3 : 0;
+                xml.Append($"<row r=\"{rowNumber}\" ht=\"{height:0.0}\" customHeight=\"1\">");
+                RichCell(xml, rowNumber, 0, leftSegments, style);
+                RichCell(xml, rowNumber, 1, rightSegments, style);
+                Cell(xml, rowNumber, 2, changes, style);
+                xml.Append("</row>");
             }
-            Cell(xml, rowNumber, result.Names.Count, string.Join("\n", row.DisplayMessages), 0);
-            xml.Append("</row>");
         }
-        xml.Append($"</sheetData><autoFilter ref=\"A1:{ColumnName(result.Names.Count + 1)}{Math.Max(1, rowNumber)}\"/></worksheet>");
-        Put(zip, "xl/worksheets/sheet1.xml", xml.ToString());
+
+        xml.Append($"</sheetData><autoFilter ref=\"A1:C{Math.Max(1, rowNumber)}\"/></worksheet>");
+        return xml.ToString();
+    }
+
+    private static IReadOnlyList<SegmentVm> ExcelLineSegments(
+        ComparisonRowVm row, int doc, string pairLabel, MemberVm? member,
+        string part, int start, int end, string fallbackText)
+    {
+        if (string.IsNullOrEmpty(fallbackText)) return Array.Empty<SegmentVm>();
+        if (part == "whole")
+        {
+            var result = new List<SegmentVm>();
+            if (!string.IsNullOrEmpty(member?.Header))
+                result.AddRange(BuildPairSegments(member.Header, row, doc, pairLabel, "header", 0, 0, member.Header.Length));
+            if (!string.IsNullOrEmpty(member?.Header) && !string.IsNullOrEmpty(member?.Body))
+                result.Add(new SegmentVm { Text = "\n", Style = "normal" });
+            if (!string.IsNullOrEmpty(member?.Body))
+                result.AddRange(BuildPairSegments(member.Body, row, doc, pairLabel, "body", (member.Header?.Length ?? 0) + 1, 0, member.Body.Length));
+            return result.Count > 0 ? result : new[] { new SegmentVm { Text = fallbackText, Style = "normal" } };
+        }
+        if (member is null || start < 0 || end < start)
+            return new[] { new SegmentVm { Text = fallbackText, Style = "normal" } };
+        var text = part == "header" ? member.Header : member.Body;
+        var offset = part == "body" ? member.Header.Length + 1 : 0;
+        return BuildPairSegments(text, row, doc, pairLabel, part, offset, start, end);
+    }
+
+    private static IReadOnlyList<SegmentVm> BuildPairSegments(
+        string text, ComparisonRowVm row, int doc, string pairLabel, string part,
+        int offset, int start, int end)
+    {
+        start = Math.Clamp(start, 0, text.Length);
+        end = Math.Clamp(end, start, text.Length);
+        if (end <= start) return Array.Empty<SegmentVm>();
+        var flags = new int[end - start];
+        foreach (var marker in row.Markers.Where(x => x.Pair == pairLabel && x.Part == part))
+        {
+            foreach (var ep in marker.Endpoints.Where(x => x.TargetDoc == doc && x.CharEnd > x.CharStart))
+            {
+                var a = Math.Max(start, ep.CharStart - offset);
+                var b = Math.Min(end, ep.CharEnd - offset);
+                if (b <= a) continue;
+                var role = marker.Action == "삭제" ? 1 : marker.Action == "추가" ? 2 : (doc == marker.TargetDoc ? 2 : 1);
+                for (var k = a; k < b; k++) flags[k - start] |= role;
+            }
+        }
+        var result = new List<SegmentVm>();
+        for (var p = 0; p < flags.Length;)
+        {
+            var f = flags[p];
+            var q = p + 1;
+            while (q < flags.Length && flags[q] == f) q++;
+            result.Add(new SegmentVm
+            {
+                Text = text[(start + p)..(start + q)],
+                Style = f == 1 ? "delete" : f == 2 ? "insert" : f == 3 ? "both" : "normal"
+            });
+            p = q;
+        }
+        return result;
+    }
+
+    private static List<string> ExcelLineMessages(
+        ComparisonRowVm row, ComparisonPairVm pair, MemberVm? left, MemberVm? right, ExcelAlignedPartVm line)
+    {
+        var result = new List<string>();
+        bool Touches(MarkerVm marker, int doc, MemberVm? member, int start, int end)
+        {
+            if (member is null || marker.Part != line.Part || start < 0 || end < start) return false;
+            var offset = line.Part == "body" ? member.Header.Length + 1 : 0;
+            foreach (var ep in marker.Endpoints.Where(x => x.TargetDoc == doc))
+            {
+                var a = ep.CharStart - offset; var b = ep.CharEnd - offset;
+                if (a == b)
+                {
+                    if (a >= start && a <= end) return true;
+                }
+                else if (Math.Max(a, start) < Math.Min(b, end)) return true;
+            }
+            return false;
+        }
+
+        foreach (var marker in row.Markers.Where(x => x.Pair == pair.Label))
+        {
+            if (line.Part == "whole" || Touches(marker, pair.Left, left, line.LeftStart, line.LeftEnd) || Touches(marker, pair.Right, right, line.RightStart, line.RightEnd))
+                result.Add($"[{marker.Num}] {marker.Message}");
+        }
+
+        var structuralPrefix = "• " + pair.Label + " · ";
+        var structural = row.DisplayMessages
+            .Where(x => x.StartsWith(structuralPrefix, StringComparison.Ordinal))
+            .Select(x => x[structuralPrefix.Length..]);
+        if (line.Kind is "article" or "section" or "block")
+            result.InsertRange(0, structural);
+        else
+        {
+            var labels = new[] { line.LeftLabel, line.RightLabel }.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct().ToArray();
+            result.InsertRange(0, structural.Where(x => labels.Any(label => x.Contains(label, StringComparison.Ordinal))));
+        }
+        return result.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct().ToList();
+    }
+
+    private static double EstimateExcelRowHeight(string left, string right, string changes, string kind)
+    {
+        static int VisualWidth(char ch) => ch <= 0x7F ? 1 : 2;
+        static int Lines(string text, int capacity)
+        {
+            if (string.IsNullOrEmpty(text)) return 1;
+            var total = 0;
+            foreach (var logical in NativeDocumentReader.NormalizeNewlines(text).Split('\n'))
+            {
+                var units = logical.Sum(VisualWidth);
+                total += Math.Max(1, (units + capacity - 1) / capacity);
+            }
+            return Math.Max(1, total);
+        }
+        // 512/512/256 px at 10pt. Capacities are intentionally conservative for Korean CJK text
+        // so every wrapped line remains visible without manual row resizing.
+        var lines = Math.Max(Lines(left, 64), Math.Max(Lines(right, 64), Lines(changes, 30)));
+        var height = Math.Min(409.0, 6.0 + lines * 15.0);
+        if (kind is "article" or "section") height = Math.Max(height, 24.0);
+        return height;
+    }
+
+    private static double ExcelWidthForPixels(int pixels)
+    {
+        // Excel's default Calibri width approximation: pixel ~= 7 * width + 5.
+        return Math.Max(1.0, (pixels - 5.0) / 7.0);
     }
 
     private static void Cell(StringBuilder xml, int row, int column, string value, int style)
