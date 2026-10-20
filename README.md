@@ -15,6 +15,10 @@ It is designed for general documents as well as structured legal, policy, and re
 - Added vertical breathing room around preview lines instead of relying only on Word paragraph line-height values.
 - Increased table-cell vertical padding and minimum height for the same readability fix.
 
+## Architecture reviews
+
+- [Unified document/code version management and Rust migration — initial technical review (2026-10-20)](docs/architecture/UNIFIED_VERSION_CODE_RUST_REVIEW_2026-10-20.md)
+
 ## Features
 
 - Compare 2 or 3 documents in aligned A / B / C columns
