@@ -50,7 +50,7 @@ public static class NativeCodeVersionComparer
         public uint AfterLength;
     }
 
-    public sealed record FolderChange(string Kind, string BeforePath, string AfterPath);
+    public sealed record FolderChange(string Kind, string BeforePath, string AfterPath, string? EventId = null);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int FolderDiffDelegate(
@@ -80,6 +80,22 @@ public static class NativeCodeVersionComparer
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void AstFreeDelegate(ref NativeAstResult result);
 
+    public sealed record CrossFileMove(
+        string SymbolKind, string SymbolName,
+        string BeforePath, string AfterPath,
+        int BeforeStart, int BeforeEnd, int AfterStart, int AfterEnd);
+
+    public sealed record CrossFileAstReport(
+        IReadOnlyList<CrossFileMove> Moves,
+        int AnalyzedFiles, int SkippedFiles,
+        bool Supported = true, string? Reason = null);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int CrossFileAstDelegate(
+        [In] byte[] before, nuint beforeLength,
+        [In] byte[] after, nuint afterLength,
+        out NativeAstResult result);
+
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate uint VersionDelegate();
 
@@ -101,6 +117,7 @@ public static class NativeCodeVersionComparer
         public readonly FolderFreeDelegate FolderFree;
         public readonly AstDiffDelegate AstDiff;
         public readonly AstFreeDelegate AstFree;
+        public readonly CrossFileAstDelegate CrossFileAst;
 
         public Exports(IntPtr handle)
         {
@@ -121,6 +138,8 @@ public static class NativeCodeVersionComparer
                 NativeLibrary.GetExport(handle, "dc_compare_ast_json_utf8"));
             AstFree = Marshal.GetDelegateForFunctionPointer<AstFreeDelegate>(
                 NativeLibrary.GetExport(handle, "dc_free_ast_json_result"));
+            CrossFileAst = Marshal.GetDelegateForFunctionPointer<CrossFileAstDelegate>(
+                NativeLibrary.GetExport(handle, "dc_compare_cross_file_ast_json_utf8"));
         }
     }
 
@@ -243,6 +262,70 @@ public static class NativeCodeVersionComparer
             exports.AstFree(ref output);
         }
     }
+
+    /// <summary>
+    /// Optional, conservative Tree-sitter layer over the complete native
+    /// folder comparison: only unambiguous full-declaration cross-file moves.
+    /// A failed/budget-limited AST stage never hides the file-level changes.
+    /// </summary>
+    public static CrossFileAstReport CompareCrossFileAst(string before, string after)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(before);
+        ArgumentException.ThrowIfNullOrWhiteSpace(after);
+        var exports = Native.Value ?? throw new NotSupportedException(
+            "파일 간 AST 분석에는 Rust 네이티브 엔진이 필요합니다.");
+        if (!Directory.Exists(before) || !Directory.Exists(after))
+            throw new DirectoryNotFoundException("파일 간 AST 비교 대상 폴더가 없습니다.");
+        var encoding = new UTF8Encoding(false, true);
+        var left = encoding.GetBytes(Path.GetFullPath(before));
+        var right = encoding.GetBytes(Path.GetFullPath(after));
+        var status = exports.CrossFileAst(left, (nuint)left.Length,
+            right, (nuint)right.Length, out var output);
+        try
+        {
+            if (status == 3)
+                return new CrossFileAstReport(Array.Empty<CrossFileMove>(), 0, 0, false,
+                    "소스 폴더 AST 분석 한도 또는 파일 접근 오류");
+            if (status != 0)
+                throw new InvalidDataException($"Rust 파일 간 AST 분석 실패 (상태 {status}).");
+            if (output.Data == IntPtr.Zero || output.Length == 0 || output.Length > 4UL * 1024 * 1024)
+                throw new InvalidDataException("Rust 파일 간 AST 결과 길이가 잘못되었습니다.");
+
+            var bytes = new byte[checked((int)output.Length)];
+            Marshal.Copy(output.Data, bytes, 0, bytes.Length);
+            var report = JsonSerializer.Deserialize<CrossFileAstWire>(bytes,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
+                ?? throw new InvalidDataException("Rust 파일 간 AST 결과가 비어 있습니다.");
+            if (report.Moves is null || report.Moves.Count > 15000 ||
+                report.AnalyzedFiles < 0 || report.AnalyzedFiles > 512 ||
+                report.SkippedFiles < 0 || report.SkippedFiles > 512)
+                throw new InvalidDataException("Rust 파일 간 AST 결과 수가 허용 범위를 벗어났습니다.");
+            foreach (var move in report.Moves)
+            {
+                if (string.IsNullOrWhiteSpace(move.SymbolName) ||
+                    string.IsNullOrWhiteSpace(move.SymbolKind) ||
+                    !IsSafeRelativePath(move.BeforePath) ||
+                    !IsSafeRelativePath(move.AfterPath) ||
+                    move.BeforePath == move.AfterPath ||
+                    move.BeforeStart < 0 || move.BeforeEnd <= move.BeforeStart ||
+                    move.AfterStart < 0 || move.AfterEnd <= move.AfterStart)
+                    throw new InvalidDataException("Rust 파일 간 AST 이동 정보가 올바르지 않습니다.");
+            }
+            return new CrossFileAstReport(report.Moves, report.AnalyzedFiles, report.SkippedFiles);
+        }
+        finally
+        {
+            exports.AstFree(ref output);
+        }
+    }
+
+    private sealed record CrossFileAstWire(
+        List<CrossFileMove> Moves, int AnalyzedFiles, int SkippedFiles);
+
+    private static bool IsSafeRelativePath(string? path) =>
+        !string.IsNullOrWhiteSpace(path) &&
+        !Path.IsPathRooted(path) &&
+        !path.Split('/', '\\').Any(part => part is "" or "." or "..");
 
     /// <summary>
     /// Compare two entire source folders through the native Rust engine.

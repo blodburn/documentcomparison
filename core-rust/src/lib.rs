@@ -1,4 +1,5 @@
 pub mod ast;
+pub mod cross_file;
 pub mod ffi;
 pub mod folder;
 // First Rust engine slice: deterministic text-line comparison.

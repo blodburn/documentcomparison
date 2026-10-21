@@ -185,9 +185,27 @@ public sealed class VersionHistoryControl : UserControl
             _loadCts = new CancellationTokenSource();
             var token = _loadCts.Token;
             _status.Text = "Rust 폴더 비교 중...";
-            var changes = await Task.Run(
-                () => NativeCodeVersionComparer.CompareFolders(before, after), token);
+            var compared = await Task.Run(() =>
+            {
+                var fileChanges = NativeCodeVersionComparer.CompareFolders(before, after);
+                NativeCodeVersionComparer.CrossFileAstReport ast;
+                try
+                {
+                    ast = NativeCodeVersionComparer.CompareCrossFileAst(before, after);
+                }
+                catch (Exception ex) when (ex is InvalidDataException or IOException
+                    or OverflowException)
+                {
+                    // Optional AST findings must never mask a successful exact
+                    // folder comparison. Report the omitted stage explicitly.
+                    ast = new NativeCodeVersionComparer.CrossFileAstReport(
+                        Array.Empty<NativeCodeVersionComparer.CrossFileMove>(), 0, 0,
+                        false, ex.Message);
+                }
+                return (fileChanges, ast);
+            }, token);
             token.ThrowIfCancellationRequested();
+            var changes = FolderAstReviewMapper.Merge(compared.fileChanges, compared.ast);
             _folderChanges = changes;
             _folderRendered = 0;
             _folderMore = null;
@@ -196,14 +214,24 @@ public sealed class VersionHistoryControl : UserControl
             _previewTargets.Clear();
             _changeTargets.Clear();
             _previewTitle.Text = "Rust 폴더 비교";
-            _previewSubtitle.Text = $"{before} [전] → {after} [후] · 파일 이동은 내용이 동일한 경우만 판정";
+            _previewSubtitle.Text = $"{before} [전] → {after} [후] · " +
+                "파일 이동: 동일 바이트 · 선언 이동(AST): 고유한 동일 선언" +
+                (compared.ast.Supported
+                    ? $" · AST 분석 {compared.ast.AnalyzedFiles}개 / 제외 {compared.ast.SkippedFiles}개"
+                    : $" · AST 분석 불가 ({compared.ast.Reason})");
             _changeSummary.Text = $"전체 {changes.Count:N0}건 · " +
                 string.Join(" · ", changes.GroupBy(x => x.Kind).Select(g => $"{g.Key} {g.Count():N0}"));
             if (changes.Count == 0)
                 _changes.Children.Add(Message("추가·삭제·수정·이동된 파일이 없습니다.", "#64748B"));
             else
                 RenderFolderBatch();
-            _status.Text = $"Rust 폴더 비교 완료 · {changes.Count:N0}건 · 결과는 현재 화면에만 표시됩니다.";
+            _status.Text = $"Rust 폴더 비교 완료 · 파일 변경 {compared.fileChanges.Count:N0}건" +
+                (compared.ast.Supported
+                    ? $" · 파일 간 선언 이동 {compared.ast.Moves.Count:N0}건" +
+                      (compared.ast.SkippedFiles != 0
+                          ? $" · AST 일부 미분석 {compared.ast.SkippedFiles:N0}파일" : "")
+                    : $" · AST 미완료: {compared.ast.Reason}") +
+                " · 현재 화면에만 표시됩니다.";
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
@@ -224,7 +252,7 @@ public sealed class VersionHistoryControl : UserControl
         {
             var entry = _folderChanges[i];
             var marker = i + 1;
-            var summary = entry.Kind == "이동/이름 변경"
+            var summary = entry.Kind is "이동/이름 변경" or "선언 이동(AST)"
                 ? $"{entry.BeforePath} → {entry.AfterPath}"
                 : entry.Kind == "삭제" ? entry.BeforePath : entry.AfterPath;
             var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
@@ -250,6 +278,7 @@ public sealed class VersionHistoryControl : UserControl
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(6),
                 Padding = new Thickness(9, 7),
+                Tag = entry.EventId,
                 Cursor = new Cursor(StandardCursorType.Hand),
                 Child = new TextBlock
                 {

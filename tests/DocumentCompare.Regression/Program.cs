@@ -2494,4 +2494,50 @@ try { astIndex.LineForByte(-1); throw new Exception("negative byte index accepte
 catch(ArgumentOutOfRangeException) { }
 Console.WriteLine("PASS AST UTF8 PHYSICAL LINE ANCHORS");
 
+
+// 166. Real Rust FFI cross-file move detection and additive presentation contract.
+var crossRoot=Path.Combine(dir,"cross-file-ffi-한글");
+var crossBefore=Path.Combine(crossRoot,"previous");
+var crossAfter=Path.Combine(crossRoot,"current");
+Directory.CreateDirectory(crossBefore);
+Directory.CreateDirectory(crossAfter);
+File.WriteAllText(Path.Combine(crossBefore,"left.rs"),
+    "fn moved() { let greeting = \"안녕😀\"; }\nfn unchanged() { let k = 1; }\n");
+File.WriteAllText(Path.Combine(crossAfter,"left.rs"),
+    "fn unchanged() { let k = 1; }\n");
+File.WriteAllText(Path.Combine(crossAfter,"right.rs"),
+    "fn moved() { let greeting = \"안녕😀\"; }\n");
+File.WriteAllText(Path.Combine(crossAfter,"asset.png"),"fake binary");
+if(NativeCodeVersionComparer.IsAvailable)
+{
+    var fileChanges=NativeCodeVersionComparer.CompareFolders(crossBefore,crossAfter);
+    var cross=NativeCodeVersionComparer.CompareCrossFileAst(crossBefore,crossAfter);
+    Check(cross.Supported&&cross.Moves.Count==1&&cross.SkippedFiles==0 &&
+          cross.Moves[0] is
+          {SymbolKind:"function_item", SymbolName:"moved",BeforePath:"left.rs",AfterPath:"right.rs"} &&
+          cross.AnalyzedFiles==3,
+          "Rust cross-file FFI must find uniquely identical Korean/emoji declaration moved between files");
+    var merged=FolderAstReviewMapper.Merge(fileChanges,cross);
+    Check(merged.Count==fileChanges.Count+1 &&
+          merged.Take(fileChanges.Count).SequenceEqual(fileChanges) &&
+          merged[^1].Kind=="선언 이동(AST)" &&
+          !string.IsNullOrWhiteSpace(merged[^1].EventId) &&
+          merged[^1].BeforePath.Contains("left.rs") &&
+          merged[^1].AfterPath.Contains("right.rs"),
+          "file-level entries must be preserved with separate stable AST move event");
+    var again=FolderAstReviewMapper.Merge(fileChanges,
+        NativeCodeVersionComparer.CompareCrossFileAst(crossBefore,crossAfter));
+    Check(again.SequenceEqual(merged),"cross-file event ID and order must remain stable");
+    var unsupported=new NativeCodeVersionComparer.CrossFileAstReport(
+        Array.Empty<NativeCodeVersionComparer.CrossFileMove>(),0,0,false,"budget exceeded");
+    Check(FolderAstReviewMapper.Merge(fileChanges,unsupported).SequenceEqual(fileChanges),
+          "unavailable AST must never erase native file-level results");
+    File.WriteAllText(Path.Combine(crossBefore,"malformed.rs"),"fn broken() {");
+    File.WriteAllText(Path.Combine(crossAfter,"malformed.rs"),"fn broken() { let n=2; }");
+    var partial=NativeCodeVersionComparer.CompareCrossFileAst(crossBefore,crossAfter);
+    Check(partial.Supported&&partial.SkippedFiles>=1&&partial.Moves.Count==1,
+          "invalid Rust file must be explicitly reported as skipped without hiding valid matches");
+}
+Console.WriteLine("PASS CROSS FILE RUST AST MOVE FFI AND PRESENTATION");
+
 Console.WriteLine("ALL REGRESSIONS PASSED");

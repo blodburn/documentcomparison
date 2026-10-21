@@ -16,15 +16,15 @@ pub enum Language {
 }
 
 #[derive(Debug, Clone)]
-struct Symbol {
-    kind: String,
-    name: String,
-    parent: String,
-    identity: String,
-    source: String,
-    body: String,
-    start: usize,
-    end: usize,
+pub(crate) struct Symbol {
+    pub(crate) kind: String,
+    pub(crate) name: String,
+    pub(crate) parent: String,
+    pub(crate) identity: String,
+    pub(crate) source: String,
+    pub(crate) body: String,
+    pub(crate) start: usize,
+    pub(crate) end: usize,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -90,7 +90,7 @@ fn scope_name(language: Language, node: Node<'_>, source: &str) -> Option<String
     Some(format!("{}:{}", kind, value))
 }
 
-fn declarations(language: Language, source: &str) -> Result<Vec<Symbol>, &'static str> {
+pub(crate) fn declarations(language: Language, source: &str) -> Result<Vec<Symbol>, &'static str> {
     if source.len() > MAX_AST_BYTES {
         return Err("source exceeds 2 MB AST parsing budget");
     }
@@ -154,7 +154,7 @@ fn declarations(language: Language, source: &str) -> Result<Vec<Symbol>, &'stati
 
 // Empty bodies are common across unrelated declarations and cannot be
 // trusted to establish a rename or move even with unique candidates.
-fn has_meaningful_body(body: &str) -> bool {
+pub(crate) fn has_meaningful_body(body: &str) -> bool {
     body.chars()
         .any(|c| !c.is_whitespace() && c != '{' && c != '}' && c != ';')
 }

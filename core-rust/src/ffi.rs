@@ -632,3 +632,115 @@ mod ast_ffi_tests {
         unsafe { dc_free_ast_json_result(&mut output) };
     }
 }
+
+/// Compare changed Rust/C# declarations across entire folder revisions.
+/// Reuses DcAstJsonResult and dc_free_ast_json_result. The returned JSON
+/// contains moves, analyzedFiles, and skippedFiles (partial-analysis warning).
+/// Status: 0 success, 1 invalid UTF-8, 2 invalid path, 3 filesystem/budget
+/// error, 4 JSON error, 5 Rust panic.
+///
+/// # Safety
+/// Input pointers must be readable for the provided lengths and output must
+/// be one writable, exclusively owned DcAstJsonResult.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dc_compare_cross_file_ast_json_utf8(
+    before: *const u8,
+    before_len: usize,
+    after: *const u8,
+    after_len: usize,
+    output: *mut DcAstJsonResult,
+) -> i32 {
+    if output.is_null() {
+        return 2;
+    }
+    // SAFETY: writable memory is guaranteed by the caller.
+    unsafe { ptr::write(output, DcAstJsonResult::empty()) };
+    if before.is_null()
+        || after.is_null()
+        || before_len == 0
+        || after_len == 0
+        || before_len > MAX_FOLDER_PATH_BYTES
+        || after_len > MAX_FOLDER_PATH_BYTES
+    {
+        return 2;
+    }
+    let compared = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: readable pointers are guaranteed by the caller.
+        let before_bytes = unsafe { slice::from_raw_parts(before, before_len) };
+        let after_bytes = unsafe { slice::from_raw_parts(after, after_len) };
+        let before = std::str::from_utf8(before_bytes).map_err(|_| 1)?;
+        let after = std::str::from_utf8(after_bytes).map_err(|_| 1)?;
+        if before.contains('\0') || after.contains('\0') {
+            return Err(2);
+        }
+        let report = crate::cross_file::compare_folders(
+            std::path::Path::new(before),
+            std::path::Path::new(after),
+        )
+        .map_err(|_| 3)?;
+        serde_json::to_vec(&report).map_err(|_| 4)
+    }));
+    match compared {
+        Ok(Ok(json)) => {
+            let bytes = json.into_boxed_slice();
+            let length = bytes.len();
+            let data = Box::into_raw(bytes) as *mut u8;
+            // SAFETY: valid writable result pointer is guaranteed by caller.
+            unsafe { ptr::write(output, DcAstJsonResult { data, length }) };
+            0
+        }
+        Ok(Err(status)) => status,
+        Err(_) => 5,
+    }
+}
+
+#[cfg(test)]
+mod cross_file_ffi_tests {
+    use super::*;
+    use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn real_folder_symbol_move_via_ffi() {
+        let root = std::env::temp_dir().join(format!(
+            "dc-cross-ffi-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let (a, b) = (root.join("old"), root.join("new"));
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        fs::write(
+            a.join("old.rs"),
+            "fn test() { let n = 14; }\nfn stay() { 1; }\n",
+        )
+        .unwrap();
+        fs::write(b.join("old.rs"), "fn stay() { 1; }\n").unwrap();
+        fs::write(b.join("new.rs"), "fn test() { let n = 14; }\n").unwrap();
+        let a = a.to_string_lossy();
+        let b = b.to_string_lossy();
+        let mut output = DcAstJsonResult::empty();
+        assert_eq!(
+            unsafe {
+                dc_compare_cross_file_ast_json_utf8(
+                    a.as_ptr(),
+                    a.len(),
+                    b.as_ptr(),
+                    b.len(),
+                    &mut output,
+                )
+            },
+            0
+        );
+        let data = unsafe { slice::from_raw_parts(output.data, output.length) };
+        let json: serde_json::Value = serde_json::from_slice(data).unwrap();
+        assert_eq!(json["moves"][0]["beforePath"], "old.rs");
+        assert_eq!(json["moves"][0]["afterPath"], "new.rs");
+        assert_eq!(json["moves"][0]["symbolName"], "test");
+        assert_eq!(json["skippedFiles"], 0);
+        unsafe { dc_free_ast_json_result(&mut output) };
+        assert_eq!(output.length, 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+}

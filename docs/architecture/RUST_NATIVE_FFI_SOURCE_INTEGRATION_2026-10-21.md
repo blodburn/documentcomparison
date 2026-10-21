@@ -63,6 +63,28 @@ The C# document comparison engine and Word/Excel exporters are unchanged.
   on both sides. Modified-and-moved files are not inferred as renames.
   Build folders are excluded; maximum 20,000 files and 20,000 directories
   per side, maximum 40 MB per file.
+- The folder review now adds a bounded cross-file Tree-sitter stage.
+  Added, deleted and modified Rust/C# files are scanned after native folder
+  comparison, and unique identical full declarations can be identified as
+  "선언 이동(AST)" between different source files. Exact-byte whole-file
+  renames are handled by the file ledger, not repeated as declaration moves.
+  Same-file unchanged qualified declarations are excluded before cross-file
+  matching, as are empty/trivial bodies and any duplicated candidates.
+  Nested methods are suppressed if a containing class is already reported
+  as moved. No fuzzy or semantic move inference is made.
+  Results include before/after relative paths, symbol type/name and
+  original UTF-8 source offsets. Each item obtains a deterministic
+  UnifiedChangeEvent ID independent of its numbered UI marker. File-level
+  changes are retained, even if AST parsing is unavailable or incomplete.
+  The new native entry point is dc_compare_cross_file_ast_json_utf8 and it
+  shares the Rust-owned JSON free function dc_free_ast_json_result.
+  The optional stage is limited to 512 changed code-file inputs, 32 MB
+  aggregate AST source, 2 MB per file and 15,000 symbols per side.
+  Malformed, invalid-UTF-8 or oversized files increment skippedFiles and
+  are disclosed in the UI. Files growing during analysis are capped at
+  the byte-read boundary.
+  Git commit ancestry, signature-changing moves, cross-language moves
+  and modified-function moves are not yet inferred.
 - Folder ABI appends functions to ABI v1 and returns explicit length-delimited
   UTF-8 paths in Rust-owned buffers, released by dc_free_folder_result.
   C# validates count, buffer bounds, type codes, UTF-8, and layout.

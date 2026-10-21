@@ -29,7 +29,7 @@ pub enum FileChange {
     Renamed { before: String, after: String },
 }
 
-fn gather(root: &Path) -> io::Result<BTreeMap<String, PathBuf>> {
+pub(crate) fn gather(root: &Path) -> io::Result<BTreeMap<String, PathBuf>> {
     gather_with_limits(root, MAX_FILES, MAX_DIRECTORIES)
 }
 
