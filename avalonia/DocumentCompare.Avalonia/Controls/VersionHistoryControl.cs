@@ -301,7 +301,7 @@ public sealed class VersionHistoryControl : UserControl
             _projectPath = path;
             var unavailable = saved.Versions.Count(v => string.IsNullOrWhiteSpace(v.SnapshotBlobId));
             _status.Text = unavailable > 0
-                ? $"프로젝트 저장 완료 · 원본을 찾을 수 없는 이전 형식 버전 {unavailable}개는 보존하지 못했습니다."
+                ? $"프로젝트 저장 완료 · 원본이 없거나 내용이 변경된 이전 형식 버전 {unavailable}개는 원본을 확인하지 못해 스냅샷으로 보존하지 않았습니다."
                 : $"버전 원본과 프로젝트를 저장했습니다: {Path.GetFileName(path)}";
         }
         catch (Exception ex)
@@ -543,10 +543,25 @@ public sealed class VersionHistoryControl : UserControl
             ? "코드 파일을 표시 중입니다. 전/후 버전을 지정하면 변경사항을 비교합니다."
             : $"{previousName} [전] → {Path.GetFileName(display.Path)} [후] · 코드 줄 비교";
         const int displayLimit = 10000;
+        var visibleLines = CodeVersionComparer.PreviewLineIndices(lines.Length, comparison?.Changes, displayLimit);
         var highlighted = new HashSet<int>();
-        if (comparison is not null) foreach (var change in comparison.Changes)
-            for (var rowNumber = change.AfterStart; rowNumber < Math.Min(change.AfterEnd, displayLimit); rowNumber++)
-                highlighted.Add(rowNumber);
+        if (comparison is not null)
+        {
+            // Walk sorted hunks and visible source rows once, rather than
+            // expanding an enormous changed range into preview controls.
+            var changesByPosition = comparison.Changes.OrderBy(change => change.AfterStart).ToList();
+            var currentChange = 0;
+            foreach (var rowNumber in visibleLines)
+            {
+                while (currentChange < changesByPosition.Count &&
+                       changesByPosition[currentChange].AfterEnd <= rowNumber)
+                    currentChange++;
+                if (currentChange < changesByPosition.Count &&
+                    changesByPosition[currentChange].AfterStart <= rowNumber &&
+                    rowNumber < changesByPosition[currentChange].AfterEnd)
+                    highlighted.Add(rowNumber);
+            }
+        }
         if (lines.Length == 0)
         {
             var empty = new Border { Padding = new Thickness(8, 5),
@@ -555,7 +570,6 @@ public sealed class VersionHistoryControl : UserControl
             if (marks.TryGetValue(0, out var emptyMarkers))
                 foreach (var num in emptyMarkers) _previewTargets[num] = empty;
         }
-        var visibleLines = CodeVersionComparer.PreviewLineIndices(lines.Length, comparison?.Changes, displayLimit);
         var previousVisible = -1;
         foreach (var i in visibleLines)
         {

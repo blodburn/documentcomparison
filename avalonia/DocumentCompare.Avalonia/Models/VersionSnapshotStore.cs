@@ -69,7 +69,15 @@ public sealed class VersionSnapshotStore
     public string Resolve(VersionFileVm version)
     {
         if (string.IsNullOrWhiteSpace(version.SnapshotBlobId))
-            return version.Path; // Legacy .dcv.json: never misrepresent its path as a snapshot.
+        {
+            // Legacy projects retain file paths, but their recorded checksum
+            // must still protect against silently displaying newer file bytes
+            // as an older revision.
+            if (!string.IsNullOrWhiteSpace(version.Sha256) && File.Exists(version.Path) &&
+                !HashFile(version.Path).Equals(version.Sha256, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("이전 형식 버전의 원본 내용이 기록된 해시와 다릅니다.");
+            return version.Path;
+        }
         if (!string.IsNullOrWhiteSpace(version.Sha256) &&
             !version.Sha256.Equals(version.SnapshotBlobId, StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("버전 메타데이터와 스냅샷 해시가 일치하지 않습니다.");

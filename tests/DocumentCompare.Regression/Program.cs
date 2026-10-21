@@ -2080,6 +2080,41 @@ Check(migrated.Versions[0].SnapshotBlobId?.Length==64&&
 Check(migrated.Versions[1].SnapshotBlobId is null,"missing legacy source must never be marked as preserved");
 Console.WriteLine("PASS LEGACY VERSION PROJECT MIGRATION");
 
+// 156. Never use a modified source file to fake a previously recorded legacy version.
+var legacyChanged=Path.Combine(dir,"legacy-changed.txt");
+File.WriteAllText(legacyChanged,"the original");
+var legacyExpectedHash=VersionSnapshotStore.HashFile(legacyChanged);
+File.WriteAllText(legacyChanged,"newer content at the same filename");
+var legacyChangedProject=new VersionHistoryProjectVm
+{
+    Versions=new(){new(){Path=legacyChanged,Sha256=legacyExpectedHash}}
+};
+var legacyChangedSavedPath=Path.Combine(dir,"legacy-changed.dcv.json");
+var legacyChangedSaved=await VersionHistoryProjectStore.SaveAsync(
+    legacyChangedProject,VersionSnapshotStore.CreateTemporary(),legacyChangedSavedPath);
+Check(legacyChangedSaved.Versions[0].SnapshotBlobId is null &&
+      legacyChangedSaved.Versions[0].Sha256==legacyExpectedHash,
+      "changed legacy file was incorrectly recorded as the original historical revision");
+var changedLegacyReadRejected=false;
+try { VersionSnapshotStore.ForProject(legacyChangedSavedPath).Resolve(legacyChangedSaved.Versions[0]); }
+catch(InvalidDataException) { changedLegacyReadRejected=true; }
+Check(changedLegacyReadRejected,
+      "changed original must not be displayed as an intact legacy historical revision");
+var legacyChangedReopened=System.Text.Json.JsonSerializer.Deserialize<VersionHistoryProjectVm>(
+    File.ReadAllText(legacyChangedSavedPath))!;
+Check(legacyChangedReopened.Versions[0].SnapshotBlobId is null &&
+      legacyChangedReopened.Versions[0].Sha256==legacyExpectedHash,
+      "saving a mismatched historical version must not overwrite its original checksum");
+File.WriteAllText(legacyChanged,"the original");
+var legacyRecovered=await VersionHistoryProjectStore.SaveAsync(
+    legacyChangedReopened,VersionSnapshotStore.CreateTemporary(),legacyChangedSavedPath);
+Check(legacyRecovered.Versions[0].SnapshotBlobId==legacyExpectedHash &&
+      File.ReadAllText(VersionSnapshotStore.ForProject(legacyChangedSavedPath).Resolve(legacyRecovered.Versions[0]))=="the original",
+      "restoring the original source bytes must make an intact historical revision recoverable");
+Console.WriteLine("PASS LEGACY VERSION HASH-CONSTRAINED RECOVERY");
+
+
+
 // 149. Shared change-event identity is independent of display review numbers.
 var fromLocation=new UnifiedChangeLocation("version-A","src/test.rs",UnifiedLocationKind.CodeNode,"fn:x",10,30);
 var toLocation=new UnifiedChangeLocation("version-B","src/test.rs",UnifiedLocationKind.CodeNode,"fn:y",10,33);
@@ -2149,6 +2184,21 @@ Check(visible.Contains(11999)&&visible.Contains(9999)&&visible.Count<=10003,
 Check(CodeVersionComparer.PreviewLineIndices(0,CodeVersionComparer.Compare("x\n","").Changes).Count==0,
       "empty-after preview needs a placeholder anchor without a real line");
 Console.WriteLine("PASS CODE CRLF/EOF PARITY AND LONG-FILE ANCHORS");
+
+// 157. Keep both boundaries of a very long code change without emitting all
+// intermediate rows. Navigation remains tied to original physical line numbers.
+var longReplacement=CodeVersionComparer.Compare(
+    string.Concat(Enumerable.Repeat("before\n",25000)),
+    string.Concat(Enumerable.Repeat("after\n",25000)));
+var longVisible=CodeVersionComparer.PreviewLineIndices(
+    longReplacement.AfterLines.Length,longReplacement.Changes);
+Check(longReplacement.Changes.Count==1 &&
+      longVisible.Contains(0) && longVisible.Contains(24999) &&
+      longVisible.Count<=10005,
+      "large change end must remain navigable without rendering 25,000 preview rows");
+Console.WriteLine("PASS LONG CODE CHANGE END BOUNDARY");
+
+
 
 
 // 152. Explicit UTF-8 byte <-> UTF-16 code-unit offsets for future Rust interop.

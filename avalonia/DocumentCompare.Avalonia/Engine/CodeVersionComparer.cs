@@ -118,6 +118,15 @@ public static class CodeVersionComparer
                 visible.Add(anchor);
                 if (anchor > 0) visible.Add(anchor - 1);
                 if (anchor + 1 < lineCount) visible.Add(anchor + 1);
+                // The end of a long replacement/addition may be far beyond
+                // the first 10,000 preview lines. Retain that boundary too
+                // without materializing every line in a huge changed range.
+                if (change.AfterEnd > change.AfterStart)
+                {
+                    var lastChanged = Math.Min(change.AfterEnd, lineCount) - 1;
+                    if (lastChanged >= 0) visible.Add(lastChanged);
+                    if (lastChanged > 0) visible.Add(lastChanged - 1);
+                }
             }
         return visible.ToArray();
     }

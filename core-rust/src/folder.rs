@@ -9,6 +9,7 @@ use std::{
 };
 
 const MAX_FILES: usize = 20_000;
+const MAX_DIRECTORIES: usize = 20_000;
 const MAX_FILE_BYTES: u64 = 40 * 1024 * 1024;
 const EXCLUDED_DIRS: &[&str] = &[
     ".git",
@@ -29,6 +30,17 @@ pub enum FileChange {
 }
 
 fn gather(root: &Path) -> io::Result<BTreeMap<String, PathBuf>> {
+    gather_with_limits(root, MAX_FILES, MAX_DIRECTORIES)
+}
+
+fn gather_with_limits(
+    root: &Path,
+    max_files: usize,
+    max_directories: usize,
+) -> io::Result<BTreeMap<String, PathBuf>> {
+    if max_directories == 0 {
+        return Err(io::Error::other("directory count limit exceeded"));
+    }
     let root = root.canonicalize()?;
     if !root.is_dir() {
         return Err(io::Error::new(
@@ -38,6 +50,7 @@ fn gather(root: &Path) -> io::Result<BTreeMap<String, PathBuf>> {
     }
     let mut files = BTreeMap::new();
     let mut pending = vec![root.clone()];
+    let mut directories_seen = 1_usize;
     while let Some(dir) = pending.pop() {
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
@@ -49,6 +62,10 @@ fn gather(root: &Path) -> io::Result<BTreeMap<String, PathBuf>> {
             } // never walk outside the project
             if kind.is_dir() {
                 if !EXCLUDED_DIRS.contains(&name.as_ref()) {
+                    directories_seen += 1;
+                    if directories_seen > max_directories {
+                        return Err(io::Error::other("directory count limit exceeded"));
+                    }
                     pending.push(entry.path());
                 }
             } else if kind.is_file() {
@@ -75,7 +92,7 @@ fn gather(root: &Path) -> io::Result<BTreeMap<String, PathBuf>> {
                         "ambiguous project file path",
                     ));
                 }
-                if files.len() > MAX_FILES {
+                if files.len() > max_files {
                     return Err(io::Error::other("file count limit exceeded"));
                 }
             }
@@ -306,6 +323,25 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, FileChange::Renamed { .. }))
         );
+        fs::remove_dir_all(a.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn limits_empty_directories_and_file_count() {
+        let (a, _) = dirs();
+        fs::create_dir_all(a.join("first")).unwrap();
+        fs::create_dir_all(a.join("second")).unwrap();
+        let directory_limit_error = gather_with_limits(&a, 10, 2).unwrap_err();
+        assert_eq!(directory_limit_error.kind(), io::ErrorKind::Other);
+        assert!(
+            directory_limit_error
+                .to_string()
+                .contains("directory count limit")
+        );
+        fs::write(a.join("first/a.rs"), "a").unwrap();
+        fs::write(a.join("first/b.rs"), "b").unwrap();
+        let file_limit_error = gather_with_limits(&a, 1, 3).unwrap_err();
+        assert!(file_limit_error.to_string().contains("file count limit"));
         fs::remove_dir_all(a.parent().unwrap()).unwrap();
     }
 

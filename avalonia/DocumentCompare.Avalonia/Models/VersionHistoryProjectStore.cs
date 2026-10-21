@@ -19,9 +19,19 @@ public static class VersionHistoryProjectStore
                 sourceStore.CopyTo(target, version);
             else if (File.Exists(version.Path) && VersionFileImportPolicy.IsSupported(version.Path))
             {
-                // Migrate legacy path-only versions when their originals are still present.
-                version.SnapshotBlobId = target.Import(version.Path);
-                version.Sha256 = version.SnapshotBlobId;
+                // A legacy path may now point at different bytes from the historical
+                // version. Import the exact candidate, but never relabel a changed
+                // source as the previous version when an original hash is recorded.
+                var capturedHash = target.Import(version.Path);
+                if (string.IsNullOrWhiteSpace(version.Sha256) ||
+                    string.Equals(version.Sha256, capturedHash, StringComparison.OrdinalIgnoreCase))
+                {
+                    version.SnapshotBlobId = capturedHash;
+                    version.Sha256 = capturedHash;
+                }
+                // A mismatched legacy entry remains unresolved. The original SHA
+                // stays intact so the caller can report that the history was not
+                // recovered instead of silently inventing an old revision.
             }
             // Missing legacy originals remain legacy entries rather than silently claiming
             // that the unavailable content was preserved.
