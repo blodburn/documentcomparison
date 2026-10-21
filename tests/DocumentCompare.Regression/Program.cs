@@ -2257,4 +2257,101 @@ if(OperatingSystem.IsLinux())
 Console.WriteLine("PASS OS-AWARE VERSION PATH IDENTITY");
 
 
+
+// 158. Repeated and concurrent content-addressed snapshot imports are idempotent.
+var concurrencyPath=Path.Combine(dir,"snapshot-parallel.cs");
+File.WriteAllText(concurrencyPath,"class 병렬 { string S = \"😀\"; }\r\n",new UTF8Encoding(false));
+var parallelStore=VersionSnapshotStore.CreateTemporary();
+var parallelHash=VersionSnapshotStore.HashFile(concurrencyPath);
+var importedHashes=await Task.WhenAll(Enumerable.Range(0,32).Select(_ =>
+    Task.Run(()=>parallelStore.Import(concurrencyPath))));
+Check(importedHashes.All(hash=>hash==parallelHash),
+      "simultaneous imports of identical bytes must all resolve to the same blob");
+var parallelVersion=new VersionFileVm
+{
+    Path=concurrencyPath,Sha256=parallelHash,SnapshotBlobId=parallelHash
+};
+Check(VersionSnapshotStore.HashFile(parallelStore.Resolve(parallelVersion))==parallelHash,
+      "parallel imports must not corrupt a captured blob");
+Check(!Directory.EnumerateFiles(parallelStore.Root,".staging-*",SearchOption.AllDirectories).Any(),
+      "parallel imports left temporary data in the content store");
+Console.WriteLine("PASS CONCURRENT SNAPSHOT IMPORT");
+
+// 159. Concurrent saves of the same project commit a complete manifest and sidecar.
+var parallelProjectPath=Path.Combine(dir,"parallel-version.dcv.json");
+var parallelProject=new VersionHistoryProjectVm
+{
+    Versions=new(){parallelVersion}
+};
+var parallelSaved=await Task.WhenAll(Enumerable.Range(0,12).Select(_ =>
+    VersionHistoryProjectStore.SaveAsync(parallelProject,parallelStore,parallelProjectPath)));
+var parallelFinal=System.Text.Json.JsonSerializer.Deserialize<VersionHistoryProjectVm>(
+    File.ReadAllText(parallelProjectPath))!;
+Check(parallelSaved.All(result=>result.Versions.Single().SnapshotBlobId==parallelHash) &&
+      VersionSnapshotStore.HashFile(
+          VersionSnapshotStore.ForProject(parallelProjectPath).Resolve(parallelFinal.Versions.Single()))==parallelHash,
+      "concurrent saves must leave a complete parseable manifest and verified content");
+Check(!Directory.EnumerateFiles(dir,Path.GetFileName(parallelProjectPath)+".tmp-*").Any(),
+      "concurrent saves left temporary project manifests");
+using(var canceledSave=new CancellationTokenSource())
+{
+    canceledSave.Cancel();
+    var canceled=false;
+    try
+    {
+        await VersionHistoryProjectStore.SaveAsync(parallelProject,parallelStore,
+            Path.Combine(dir,"cancel-save.dcv.json"),canceledSave.Token);
+    }
+    catch(OperationCanceledException) { canceled=true; }
+    Check(canceled,"cancelled project save must not proceed");
+}
+parallelStore.CleanupTemporary();
+Console.WriteLine("PASS CONCURRENT AND CANCELABLE PROJECT SAVE");
+
+// 160. The UI code comparison maps real byte/UTF-16 ranges to stable unified events.
+var utfBefore="A한😀\r\nkeep\n";
+var utfAfter="A한😀\nkeep\n";
+var codeCompared=CodeVersionComparer.Compare(utfBefore,utfAfter);
+var mappedEvents=CodeVersionChangeMapper.Map(utfBefore,utfAfter,codeCompared,
+    "revision-old","revision-new","src/example.rs","src/example.rs");
+var mappedEvent=mappedEvents.Single();
+Check(mappedEvent.Kind==UnifiedChangeKind.Replace &&
+      mappedEvent.Before is { StartByte:0, EndByte:10,StartUtf16:0,EndUtf16:6 } &&
+      mappedEvent.After is { StartByte:0, EndByte:9,StartUtf16:0,EndUtf16:5 } &&
+      mappedEvent.Before.VersionId=="revision-old" &&
+      mappedEvent.After.RelativePath=="src/example.rs" &&
+      mappedEvent.Before.Kind==UnifiedLocationKind.File,
+      "CRLF/Korean/emoji source locations must preserve exact UTF-8 and UTF-16 spans");
+var sameEvents=CodeVersionChangeMapper.Map(utfBefore,utfAfter,codeCompared,
+    "revision-old","revision-new","src/example.rs","src/example.rs");
+Check(sameEvents.Single().EventId==mappedEvent.EventId,
+      "a display renumbering must not change the stable event identifier");
+var insertedEvents=CodeVersionChangeMapper.Map("가\n","가\n😀\n",
+    CodeVersionComparer.Compare("가\n","가\n😀\n"),
+    "old","new","example.rs","example.rs");
+Check(insertedEvents.Single() is
+      { Kind: UnifiedChangeKind.Insert,
+        Before: { StartByte:4,EndByte:4,StartUtf16:2,EndUtf16:2 },
+        After: { StartByte:4,EndByte:9,StartUtf16:2,EndUtf16:5 } },
+      "inserted line must map a zero-width old location and precise UTF offsets");
+var removedEvents=CodeVersionChangeMapper.Map("가\n😀\n","가\n",
+    CodeVersionComparer.Compare("가\n😀\n","가\n"),
+    "old","new","example.rs","example.rs");
+Check(removedEvents.Single() is
+      { Kind: UnifiedChangeKind.Delete,
+        Before: { StartByte:4,EndByte:9,StartUtf16:2,EndUtf16:5 },
+        After: { StartByte:4,EndByte:4,StartUtf16:2,EndUtf16:2 } },
+      "deleted line must map precise old location and zero-width new position");
+var invalidSpanRejected=false;
+try
+{
+    CodeVersionChangeMapper.Map("a\n","b\n",
+        new CodeVersionComparer.Result(new[]{"a"},new[]{"b"},
+            new[]{new CodeVersionComparer.LineChange("교체",0,5,0,1)}),
+        "old","new","a.rs","b.rs");
+}
+catch(InvalidDataException) { invalidSpanRejected=true; }
+Check(invalidSpanRejected,"out-of-bounds source positions must never produce unified events");
+Console.WriteLine("PASS LIVE CODE UNIFIED EVENT UTF8-UTF16 MAPPING");
+
 Console.WriteLine("ALL REGRESSIONS PASSED");

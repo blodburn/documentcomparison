@@ -497,6 +497,7 @@ public sealed class VersionHistoryControl : UserControl
         var afterText = await Task.Run(() => CodeVersionComparer.ReadCodeFile(displayPath), token);
         token.ThrowIfCancellationRequested();
         CodeVersionComparer.Result? comparison = null;
+        IReadOnlyList<UnifiedChangeEvent>? codeEvents = null;
         var previousName = "";
         if (_beforeIndex >= 0 && _afterIndex >= 0)
         {
@@ -505,7 +506,19 @@ public sealed class VersionHistoryControl : UserControl
                 throw new InvalidDataException("코드 파일과 문서 파일은 비교할 수 없습니다.");
             var previousPath = _snapshotStore.Resolve(previous);
             var beforeText = await Task.Run(() => CodeVersionComparer.ReadCodeFile(previousPath), token);
-            comparison = await Task.Run(() => CodeVersionComparer.Compare(beforeText, afterText), token);
+            var compared = await Task.Run(() =>
+            {
+                var result = CodeVersionComparer.Compare(beforeText, afterText);
+                var events = CodeVersionChangeMapper.Map(beforeText, afterText, result,
+                    string.IsNullOrWhiteSpace(previous.Sha256)
+                        ? CodeVersionChangeMapper.ContentId(beforeText) : previous.Sha256,
+                    string.IsNullOrWhiteSpace(display.Sha256)
+                        ? CodeVersionChangeMapper.ContentId(afterText) : display.Sha256,
+                    Path.GetFileName(previous.Path), Path.GetFileName(display.Path));
+                return (result, events);
+            }, token);
+            comparison = compared.result;
+            codeEvents = compared.events;
             previousName = Path.GetFileName(previous.Path);
         }
         token.ThrowIfCancellationRequested();
@@ -517,6 +530,7 @@ public sealed class VersionHistoryControl : UserControl
             for (var i = 0; i < comparison.Changes.Count; i++)
             {
                 var change = comparison.Changes[i];
+                var eventInfo = codeEvents![i];
                 var num = i + 1;
                 var line = Math.Min(change.AfterStart, Math.Max(0, lines.Length - 1));
                 if (!marks.TryGetValue(line, out var nums)) marks[line] = nums = new List<int>();
@@ -529,11 +543,19 @@ public sealed class VersionHistoryControl : UserControl
                 var newExcerpt = CodeExcerpt(comparison.AfterLines, change.AfterStart, change.AfterEnd);
                 var oldDisplay = comparison.BeforeLines.Skip(change.BeforeStart).Take(change.BeforeEnd - change.BeforeStart);
                 var newDisplay = comparison.AfterLines.Skip(change.AfterStart).Take(change.AfterEnd - change.AfterStart);
-                var label = change.Kind == "교체" && oldDisplay.SequenceEqual(newDisplay)
-                    ? "줄바꿈 변경" : change.Kind;
+                var label = eventInfo.Kind == UnifiedChangeKind.Replace &&
+                            oldDisplay.SequenceEqual(newDisplay)
+                    ? "줄바꿈 변경" : eventInfo.Kind switch
+                    {
+                        UnifiedChangeKind.Insert => "추가",
+                        UnifiedChangeKind.Delete => "삭제",
+                        UnifiedChangeKind.Replace => "교체",
+                        _ => "기타"
+                    };
                 changeItems.Add(new VersionChangeVm
                 {
                     Category = "코드", Title = label, MarkerNumber = num,
+                    EventId = eventInfo.EventId,
                     Detail = $"이전 {oldRange} → 이후 {newRange}\n전: {oldExcerpt}\n후: {newExcerpt}"
                 });
             }
@@ -663,6 +685,7 @@ public sealed class VersionHistoryControl : UserControl
                 Background = Brushes.White,
                 BorderBrush = new SolidColorBrush(Color.Parse("#DCE3EC")), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(7),
                 Padding = new Thickness(10, 8), Child = body,
+                Tag = item.EventId,
                 Cursor = item.MarkerNumber.HasValue ? new Cursor(StandardCursorType.Hand) : Cursor.Default
             };
             if (item.MarkerNumber is int markerNumber)

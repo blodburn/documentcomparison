@@ -118,22 +118,28 @@ fn fingerprint(path: &Path) -> io::Result<(u64, u64)> {
 }
 
 fn identical(a: &Path, b: &Path) -> io::Result<bool> {
-    if fs::metadata(a)?.len() != fs::metadata(b)?.len() {
+    let mut left = fs::File::open(a)?;
+    let mut right = fs::File::open(b)?;
+    let size = left.metadata()?.len();
+    if size != right.metadata()?.len() {
         return Ok(false);
     }
-    let mut a = fs::File::open(a)?;
-    let mut b = fs::File::open(b)?;
+    // Read::read may return a short chunk even before EOF. Compare exact
+    // positions rather than assuming both handles return equal chunk sizes.
     let (mut ab, mut bb) = ([0_u8; 65536], [0_u8; 65536]);
-    loop {
-        let na = a.read(&mut ab)?;
-        let nb = b.read(&mut bb)?;
-        if na != nb || ab[..na] != bb[..nb] {
+    let mut remaining = size;
+    while remaining != 0 {
+        let len = remaining.min(ab.len() as u64) as usize;
+        left.read_exact(&mut ab[..len])?;
+        right.read_exact(&mut bb[..len])?;
+        if ab[..len] != bb[..len] {
             return Ok(false);
         }
-        if na == 0 {
-            return Ok(true);
-        }
+        remaining -= len as u64;
     }
+    // A file that grows while being read is not the same captured revision.
+    let mut extra = [0_u8; 1];
+    Ok(left.read(&mut extra)? == 0 && right.read(&mut extra)? == 0)
 }
 
 pub fn compare_directories(before: &Path, after: &Path) -> io::Result<Vec<FileChange>> {
@@ -295,6 +301,19 @@ mod tests {
                 },
             ]
         );
+        fs::remove_dir_all(a.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn byte_comparison_checks_both_sides_of_chunk_boundary() {
+        let (a, b) = dirs();
+        let mut content = vec![0x41_u8; 65536 * 2 + 17];
+        fs::write(a.join("file.bin"), &content).unwrap();
+        fs::write(b.join("file.bin"), &content).unwrap();
+        assert!(identical(&a.join("file.bin"), &b.join("file.bin")).unwrap());
+        content[65536] ^= 0x01;
+        fs::write(b.join("file.bin"), &content).unwrap();
+        assert!(!identical(&a.join("file.bin"), &b.join("file.bin")).unwrap());
         fs::remove_dir_all(a.parent().unwrap()).unwrap();
     }
 

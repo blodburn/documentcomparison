@@ -21,6 +21,8 @@ public sealed class VersionChangeVm
     public string Category { get; init; } = "내용";
     public string Title { get; init; } = "";
     public string Detail { get; init; } = "";
+    // Stable engine identity, independent of display marker renumbering.
+    public string? EventId { get; init; }
     public int? MarkerNumber { get; init; }
     public string? AnchorText { get; init; }
     public int? RowId { get; init; }

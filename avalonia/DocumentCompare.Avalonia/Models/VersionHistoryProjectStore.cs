@@ -1,13 +1,37 @@
 using System.Text.Json;
+using System.Collections.Concurrent;
 
 namespace DocumentCompare.Avalonia.Models;
 
 /// <summary>Persists a version project and its immutable content sidecar without modifying source files.</summary>
 public static class VersionHistoryProjectStore
 {
+    // Multiple Save actions inside the same process must not interleave their
+    // sidecar copies and final manifest commits for the same project.
+    // This is a process-local lock, not a cross-process transaction.
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> SaveLocks =
+        new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+
     public static async Task<VersionHistoryProjectVm> SaveAsync(
         VersionHistoryProjectVm project, VersionSnapshotStore sourceStore, string projectPath,
         CancellationToken cancellationToken = default)
+    {
+        var full = Path.GetFullPath(projectPath);
+        var gate = SaveLocks.GetOrAdd(full, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            return await SaveLockedAsync(project, sourceStore, full, cancellationToken);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    private static async Task<VersionHistoryProjectVm> SaveLockedAsync(
+        VersionHistoryProjectVm project, VersionSnapshotStore sourceStore, string projectPath,
+        CancellationToken cancellationToken)
     {
         var target = VersionSnapshotStore.ForProject(projectPath);
         var clone = JsonSerializer.Deserialize<VersionHistoryProjectVm>(JsonSerializer.Serialize(project))

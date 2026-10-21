@@ -44,7 +44,20 @@ public sealed class VersionSnapshotStore
         {
             using (var input = new FileStream(originalPath, FileMode.Open, FileAccess.Read, FileShare.Read))
             using (var output = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-                input.CopyTo(output);
+            {
+                // Checking FileInfo.Length alone is not sufficient when a source
+                // changes during import. Enforce the limit on the captured bytes.
+                var buffer = new byte[64 * 1024];
+                long copied = 0;
+                int read;
+                while ((read = input.Read(buffer)) != 0)
+                {
+                    copied += read;
+                    if (copied > 40L * 1024 * 1024)
+                        throw new InvalidDataException("버전 파일당 40MB까지 지원합니다.");
+                    output.Write(buffer, 0, read);
+                }
+            }
 
             var blobId = HashFile(temp);
             var target = ObjectPath(blobId, extension);
@@ -56,7 +69,18 @@ public sealed class VersionSnapshotStore
             }
             else
             {
-                File.Move(temp, target);
+                try
+                {
+                    // Two simultaneous imports may calculate the same hash and
+                    // reach this move together. Do not overwrite an existing
+                    // immutable blob, and accept only an identical winner.
+                    File.Move(temp, target);
+                }
+                catch (IOException) when (File.Exists(target))
+                {
+                    if (HashFile(target) != blobId)
+                        throw new InvalidDataException("동시 저장 중 스냅샷 데이터가 충돌했습니다.");
+                }
             }
             return blobId;
         }
