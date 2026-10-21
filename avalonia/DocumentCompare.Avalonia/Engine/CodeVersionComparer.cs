@@ -24,6 +24,15 @@ public static class CodeVersionComparer
         var a = left.Length - prefix - suffix;
         var b = right.Length - prefix - suffix;
         if (a == 0 && b == 0) return new(Display(left), Display(right), Array.Empty<LineChange>());
+        // Rust handles pure insertions/deletions before allocating the LCS grid.
+        // Without this fast path a huge added/deleted file creates an unnecessarily
+        // large matrix despite needing only one change event.
+        if (a == 0 || b == 0)
+            return new(Display(left), Display(right), new[]
+            {
+                new LineChange(a == 0 ? "추가" : "삭제",
+                    prefix, prefix + a, prefix, prefix + b)
+            });
         if ((long)a * b > 4_000_000)
             return new(Display(left), Display(right), new[] { new LineChange("교체", prefix, prefix + a, prefix, prefix + b) });
 
@@ -61,7 +70,9 @@ public static class CodeVersionComparer
             throw new InvalidDataException("지원하지 않는 코드 파일 형식입니다.");
         if (new FileInfo(path).Length > 40 * 1024 * 1024)
             throw new InvalidDataException("코드 파일은 최대 40MB까지 지원합니다.");
-        return new UTF8Encoding(false, true).GetString(File.ReadAllBytes(path)).TrimStart('\uFEFF');
+        // UTF-8 BOM is part of the source bytes for Rust's read_to_string.
+        // Stripping it here would incorrectly hide BOM-only modifications.
+        return new UTF8Encoding(false, true).GetString(File.ReadAllBytes(path));
     }
 
     // Rust split_inclusive('\n') preserves the terminator, which is significant:

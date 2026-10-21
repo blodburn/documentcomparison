@@ -12,6 +12,11 @@ public sealed class VersionFileImportResult
 
 public static class VersionFileImportPolicy
 {
+    // Windows paths are case-insensitive; on Linux/macOS filesystem paths
+    // may be distinct even when they differ only by letter case.
+    private static readonly StringComparer PathComparer =
+        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+
     private static readonly HashSet<string> CodeExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".rs", ".cs", ".py", ".js", ".jsx", ".ts", ".tsx", ".java",
@@ -32,7 +37,7 @@ public static class VersionFileImportPolicy
     public static VersionFileImportResult AddPaths(VersionHistoryProjectVm project, IEnumerable<string> paths, VersionSnapshotStore? snapshotStore = null)
     {
         var added = 0; var duplicates = 0; var unsupported = 0; var missing = 0;
-        var known = project.Versions.Select(x => Path.GetFullPath(x.Path)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var known = project.Versions.Select(x => Path.GetFullPath(x.Path)).ToHashSet(PathComparer);
         foreach (var raw in paths)
         {
             if (string.IsNullOrWhiteSpace(raw)) continue;
@@ -43,7 +48,7 @@ public static class VersionFileImportPolicy
             // Legacy imports preserve the original path-only duplicate rule. Snapshot-enabled
             // projects can capture a changed file at the same path as a distinct version.
             if (snapshotStore is null && !known.Add(path) || project.Versions.Any(v =>
-                Path.GetFullPath(v.Path).Equals(path, StringComparison.OrdinalIgnoreCase) &&
+                PathComparer.Equals(Path.GetFullPath(v.Path), path) &&
                 string.Equals(v.Sha256, blobId, StringComparison.OrdinalIgnoreCase)))
             {
                 duplicates++;

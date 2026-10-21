@@ -56,13 +56,25 @@ fn gather(root: &Path) -> io::Result<BTreeMap<String, PathBuf>> {
                 if meta.len() > MAX_FILE_BYTES {
                     return Err(io::Error::other("file size limit exceeded"));
                 }
-                let relative = entry
-                    .path()
-                    .strip_prefix(&root)
-                    .map_err(io::Error::other)?
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                files.insert(relative, entry.path());
+                let entry_path = entry.path();
+                let relative_path = entry_path.strip_prefix(&root).map_err(io::Error::other)?;
+                // Lossy decoding can collapse distinct non-UTF8 filenames to the
+                // same display path. Reject such inputs instead of dropping files.
+                let relative = relative_path.to_str().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "non-UTF8 project path")
+                })?;
+                #[cfg(windows)]
+                let relative = relative.replace('\\', "/");
+                #[cfg(not(windows))]
+                let relative = relative.to_owned();
+                // Backslash is a legal *filename character* on Unix, not a
+                // separator. It must not alias a real nested Unix path.
+                if files.insert(relative, entry_path).is_some() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "ambiguous project file path",
+                    ));
+                }
                 if files.len() > MAX_FILES {
                     return Err(io::Error::other("file count limit exceeded"));
                 }
@@ -303,6 +315,34 @@ mod tests {
         let file = fs::File::create(b.join("huge.bin")).unwrap();
         file.set_len(MAX_FILE_BYTES + 1).unwrap();
         assert!(compare_directories(&a, &b).is_err());
+        fs::remove_dir_all(a.parent().unwrap()).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_backslash_filename_does_not_alias_nested_path() {
+        let (a, b) = dirs();
+        fs::create_dir_all(a.join("src")).unwrap();
+        fs::create_dir_all(b.join("src")).unwrap();
+        fs::write(a.join("src\\main.rs"), "a").unwrap();
+        fs::write(a.join("src/main.rs"), "b").unwrap();
+        fs::write(b.join("src/main.rs"), "b").unwrap();
+        assert_eq!(
+            compare_directories(&a, &b).unwrap(),
+            vec![FileChange::Deleted("src\\main.rs".into())]
+        );
+        fs::remove_dir_all(a.parent().unwrap()).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_non_utf8_path_instead_of_dropping_file() {
+        use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+        let (a, b) = dirs();
+        let invalid = OsString::from_vec(vec![b'x', 0xff, b'.', b'r', b's']);
+        fs::write(a.join(invalid), "sample").unwrap();
+        let err = compare_directories(&a, &b).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         fs::remove_dir_all(a.parent().unwrap()).unwrap();
     }
 

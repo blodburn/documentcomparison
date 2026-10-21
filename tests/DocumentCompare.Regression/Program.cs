@@ -7,6 +7,27 @@ using DocumentCompare.Avalonia.Models;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Validation;
 
+// Developer-only cross-language parity probe. It is not part of the desktop application.
+if (args.Length==2 && args[0]=="--code-diff-corpus")
+{
+    using var input=System.Text.Json.JsonDocument.Parse(File.ReadAllText(args[1]));
+    var results=new List<object>();
+    foreach(var corpusCase in input.RootElement.EnumerateArray())
+    {
+        var before=corpusCase.GetProperty("before").GetString() ?? "";
+        var after=corpusCase.GetProperty("after").GetString() ?? "";
+        var compared=CodeVersionComparer.Compare(before,after);
+        results.Add(compared.Changes.Select(change=>new
+        {
+            kind=change.Kind switch {"추가"=>"Insert","삭제"=>"Delete",_=>"Replace"},
+            beforeStart=change.BeforeStart, beforeEnd=change.BeforeEnd,
+            afterStart=change.AfterStart, afterEnd=change.AfterEnd
+        }).ToArray());
+    }
+    Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(results));
+    return;
+}
+
 const string W="http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 var dir=Path.Combine(Path.GetTempPath(), "DocumentCompareRegression", Guid.NewGuid().ToString("N"));Directory.CreateDirectory(dir); XNamespace w=W;
 static void Check(bool ok,string msg){if(!ok)throw new Exception(msg);}
@@ -2131,7 +2152,7 @@ Console.WriteLine("PASS CODE CRLF/EOF PARITY AND LONG-FILE ANCHORS");
 
 
 // 152. Explicit UTF-8 byte <-> UTF-16 code-unit offsets for future Rust interop.
-var multibyteSource="A한😀\\r\\nZ";
+var multibyteSource="A한😀\r\nZ";
 Check(SourceTextOffsets.Utf8ByteToUtf16(multibyteSource,0)==0 &&
       SourceTextOffsets.Utf8ByteToUtf16(multibyteSource,4)==2 &&
       SourceTextOffsets.Utf8ByteToUtf16(multibyteSource,8)==4 &&
@@ -2146,5 +2167,44 @@ catch (ArgumentOutOfRangeException) { }
 try { SourceTextOffsets.Utf16ToUtf8Byte(multibyteSource,3); throw new Exception("split emoji surrogate accepted"); }
 catch (ArgumentOutOfRangeException) { }
 Console.WriteLine("PASS RUST/C# UTF8-UTF16 OFFSET CONTRACT");
+
+// 153. BOM must remain visible to the comparison engine, like Rust read_to_string.
+var bomCodePath=Path.Combine(dir,"code-with-bom.rs");
+File.WriteAllBytes(bomCodePath,new byte[]{0xEF,0xBB,0xBF,(byte)'x',(byte)'\n'});
+var bomCode=CodeVersionComparer.ReadCodeFile(bomCodePath);
+Check(bomCode=="\uFEFFx\n","UTF-8 BOM was stripped before code comparison");
+Check(CodeVersionComparer.Compare("x\n",bomCode).Changes.Single() is
+      {Kind:"교체",BeforeStart:0,BeforeEnd:1,AfterStart:0,AfterEnd:1},
+      "BOM-only modification must be a change, matching Rust");
+Console.WriteLine("PASS CODE BOM-PRESERVING RUST PARITY");
+
+// 154. Pure large insert/delete should yield one span without an LCS allocation.
+var manyLines=string.Concat(Enumerable.Repeat("x\n",100000));
+Check(CodeVersionComparer.Compare("",manyLines).Changes.Single() is
+      {Kind:"추가",BeforeStart:0,BeforeEnd:0,AfterStart:0,AfterEnd:100000},
+      "large insertion should have one exact Rust-compatible span");
+Check(CodeVersionComparer.Compare(manyLines,"").Changes.Single() is
+      {Kind:"삭제",BeforeStart:0,BeforeEnd:100000,AfterStart:0,AfterEnd:0},
+      "large deletion should have one exact Rust-compatible span");
+Console.WriteLine("PASS CODE LARGE PURE INSERT/DELETE");
+
+// 155. Linux path case is meaningful for source-version identity.
+if(OperatingSystem.IsLinux())
+{
+    var caseDir=Path.Combine(dir,"source-case");
+    Directory.CreateDirectory(caseDir);
+    var upper=Path.Combine(caseDir,"Hello.rs");
+    var lower=Path.Combine(caseDir,"hello.rs");
+    File.WriteAllText(upper,"fn first() {}");
+    File.WriteAllText(lower,"fn second() {}");
+    var caseProject=new VersionHistoryProjectVm();
+    var caseStore=VersionSnapshotStore.CreateTemporary();
+    var resultCase=VersionFileImportPolicy.AddPaths(caseProject,new[]{upper,lower},caseStore);
+    Check(resultCase.Added==2&&caseProject.Versions.Count==2,
+          "case-distinct Linux paths must not be merged as one version");
+    caseStore.CleanupTemporary();
+}
+Console.WriteLine("PASS OS-AWARE VERSION PATH IDENTITY");
+
 
 Console.WriteLine("ALL REGRESSIONS PASSED");

@@ -233,6 +233,18 @@ mod tests {
         );
     }
     #[test]
+    fn utf8_bom_is_not_silently_stripped() {
+        assert_eq!(
+            diff_lines("x\n", "\u{feff}x\n"),
+            vec![LineChange {
+                kind: ChangeKind::Replace,
+                before: 0..1,
+                after: 0..1
+            }]
+        );
+    }
+
+    #[test]
     fn trailing_blank_line_is_a_line() {
         assert_eq!(
             diff_lines("a\n", "a\n\n"),
