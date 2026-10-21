@@ -390,6 +390,16 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return Enumerable.Range(0, markers.Count).Where(i => !keep[i]).Select(i => markers[i].Line).ToHashSet();
     }
 
+    private static bool TryParseTableRowMarker(string value, out int table, out int row)
+    {
+        table = 0; row = 0;
+        if (!value.StartsWith(NativeDocumentReader.TableRowPrefix, StringComparison.Ordinal)) return false;
+        var parts = value[NativeDocumentReader.TableRowPrefix.Length..].Split(':');
+        return parts.Length == 2 &&
+               int.TryParse(parts[0], out table) && table > 0 &&
+               int.TryParse(parts[1], out row) && row > 0;
+    }
+
     private static List<NativeUnit> ParseLegalUnits(string text)
     {
         var units = new List<NativeUnit>();
@@ -399,6 +409,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         var preamble = new List<string>();
         var lines = text.Split('\n');
         var falseArticleLines = FalseEnglishArticleHeaderLines(lines);
+        var inTable = false;
 
         string CurrentSection()
         {
@@ -435,6 +446,21 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         {
             var line = lines[i].Trim();
             if (line.Length == 0) continue;
+            if (TryParseTableRowMarker(line, out var table, out var tableRow))
+            {
+                inTable = true;
+                if (header is null) preamble.Add($"표 {table} · 행 {tableRow}");
+                else body.Add($"표 {table} · 행 {tableRow}");
+                continue;
+            }
+            if (line == NativeDocumentReader.TableEndMarker) { inTable = false; continue; }
+            if (inTable)
+            {
+                // Legal article-shaped text inside a table cell is not a document article.
+                if (header is null) preamble.Add(line);
+                else body.Add(line);
+                continue;
+            }
 
             var eh = EnglishHierarchy.Match(line);
             var kh = KoreanHierarchy.Match(line);
@@ -492,6 +518,9 @@ public sealed class NativeComparisonEngine : IComparisonEngine
 
         // Python V2.8 excludes preamble from legal article comparison once real articles exist.
         if (units.Count > 0) return units;
+        // A table-only DOCX still has row/cell structure in explicitly selected legal mode.
+        if (text.Contains(NativeDocumentReader.TableRowPrefix, StringComparison.Ordinal))
+            return ParseGeneralUnits(text);
         foreach (var line in preamble)
         {
             if (EnglishHierarchy.IsMatch(line) || KoreanHierarchy.IsMatch(line)) continue;
@@ -537,6 +566,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         (string Number, string Header)? current = null;
         var body = new List<string>();
         var seq = 0;
+        var inTable = false;
         void Flush()
         {
             if (current is null && body.Count == 0) return;
@@ -546,7 +576,8 @@ public sealed class NativeComparisonEngine : IComparisonEngine
                 var b = string.Join("\n", body).Trim();
                 var num = current.Value.Number;
                 var header = current.Value.Header;
-                var title = num.Length > 0
+                var title = num.StartsWith("tbl:", StringComparison.Ordinal) ? string.Empty :
+                    num.Length > 0
                     ? Regex.Replace(header, "^\\s*" + Regex.Escape(num) + @"[.)]?\s*", string.Empty).Trim()
                     : header;
                 units.Add(NativeUnit.Create(units.Count, num.Length > 0 ? num : $"g{seq}", title, header, b, string.Empty));
@@ -561,6 +592,20 @@ public sealed class NativeComparisonEngine : IComparisonEngine
 
         foreach (var para in paras)
         {
+            if (TryParseTableRowMarker(para, out var table, out var row))
+            {
+                Flush();
+                current = ($"tbl:{table}:row:{row}", $"표 {table} · 행 {row}");
+                inTable = true;
+                continue;
+            }
+            if (para == NativeDocumentReader.TableEndMarker)
+            {
+                if (inTable) Flush();
+                inTable = false;
+                continue;
+            }
+            if (inTable) { body.Add(para); continue; }
             var heading = GenericHeading(para);
             if (heading is not null)
             {
@@ -844,6 +889,22 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     {
         double Candidate(int i, int j, out double score)
         {
+            var at = a[i].Number.StartsWith("tbl:", StringComparison.Ordinal);
+            var bt = b[j].Number.StartsWith("tbl:", StringComparison.Ordinal);
+            if (at != bt) { score = 0; return double.NegativeInfinity; }
+            if (at)
+            {
+                // Align surviving content before row positions to avoid losing matches after
+                // a row insertion at the beginning of a table.
+                var aTable = a[i].Number.Split(':');
+                var bTable = b[j].Number.Split(':');
+                if (aTable.Length != 4 || bTable.Length != 4 || aTable[1] != bTable[1])
+                { score = 0; return double.NegativeInfinity; }
+                score = Similarity(a[i].Body, b[j].Body);
+                if (string.Equals(a[i].Body, b[j].Body, StringComparison.Ordinal)) return 2.0;
+                if (a[i].Number == b[j].Number) return .60 + score * .30;
+                return score < .48 ? double.NegativeInfinity : score;
+            }
             score = Similarity(a[i].Body, b[j].Body);
             if (score < .48) return double.NegativeInfinity;
             var proximity = 1.0 - Math.Min(Math.Abs(i - j) / (double)Math.Max(1, Math.Max(a.Count, b.Count)), 1.0);
@@ -916,7 +977,8 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     }
 
     private static bool IsLegalArticle(NativeUnit u) =>
-        u.Header.Length > 0 && u.Number.Length > 0 && !u.Number.StartsWith('p') && !u.Number.StartsWith('g');
+        u.Header.Length > 0 && u.Number.Length > 0 && !u.Number.StartsWith('p') &&
+        !u.Number.StartsWith('g') && !u.Number.StartsWith("tbl:", StringComparison.Ordinal);
 
     private static readonly HashSet<string> TitleStopWords = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -1067,8 +1129,9 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             if (old is null && revised is null) continue;
             if (old is null)
             {
-                structural.Add($"{pair} · 상태: 조 신규");
-                structural.Add($"{pair} · 조 추가: {revised!.HeaderOrBody}");
+                var isTableRow = revised!.Number.StartsWith("tbl:", StringComparison.Ordinal);
+                structural.Add($"{pair} · 상태: {(isTableRow ? "표 행 추가" : "조 신규")}");
+                structural.Add($"{pair} · {(isTableRow ? "표 행 추가" : "조 추가")}: {revised.HeaderOrBody}");
                 if (revised.Header.Length > 0)
                     nativeMarkers.Add(NativeMarker.Insert(pair, order, oldDoc, newDoc, revised.Header, 0, 0, revised.Header.Length, "header", -2, -2));
                 if (revised.Body.Length > 0)
@@ -1080,8 +1143,9 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             }
             if (revised is null)
             {
-                structural.Add($"{pair} · 상태: 조 삭제");
-                structural.Add($"{pair} · 조 삭제: {old.HeaderOrBody}");
+                var isTableRow = old.Number.StartsWith("tbl:", StringComparison.Ordinal);
+                structural.Add($"{pair} · 상태: {(isTableRow ? "표 행 삭제" : "조 삭제")}");
+                structural.Add($"{pair} · {(isTableRow ? "표 행 삭제" : "조 삭제")}: {old.HeaderOrBody}");
                 if (old.Header.Length > 0)
                     nativeMarkers.Add(NativeMarker.Delete(pair, order, oldDoc, newDoc, old.Header, 0, old.Header.Length, 0, "header", -2, -2));
                 if (old.Body.Length > 0)
@@ -1143,7 +1207,10 @@ public sealed class NativeComparisonEngine : IComparisonEngine
                 structural.Add($"{pair} · 조 제목 변경: {old.Title} → {revised.Title}");
             }
         }
-        else if (!HeaderEquivalent(old, revised) && !SemanticEqual(old.Header, revised.Header) && (old.Header.Length > 0 || revised.Header.Length > 0))
+        else if (!(old.Number.StartsWith("tbl:", StringComparison.Ordinal) &&
+                   revised.Number.StartsWith("tbl:", StringComparison.Ordinal)) &&
+                 !HeaderEquivalent(old, revised) && !SemanticEqual(old.Header, revised.Header) &&
+                 (old.Header.Length > 0 || revised.Header.Length > 0))
         {
             titleChanged = true;
             result.AddRange(DiffText(old.Header, revised.Header, 0, 0, oldDoc, newDoc, pair, pairOrder, "header", includePunctuation, -1));
@@ -1215,7 +1282,8 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         var substantive = titleChanged || bodyChanged || structureChanged;
         if (articleMoved) structural.Insert(0, $"{pair} · 상태: {(substantive ? "조 이동+변경" : "조 이동")}");
         else if (structureChanged) structural.Insert(0, $"{pair} · 상태: 조 구조변경");
-        else if (titleChanged || bodyChanged) structural.Insert(0, $"{pair} · 상태: 조 변경");
+        else if (titleChanged || bodyChanged)
+            structural.Insert(0, $"{pair} · 상태: {(old.Number.StartsWith("tbl:", StringComparison.Ordinal) ? "표 셀 변경" : "조 변경")}");
         return result;
     }
 

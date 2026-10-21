@@ -170,6 +170,11 @@ internal static class NativeDocumentReader
         public Dictionary<int, Dictionary<int, int>> Counters { get; } = new();
     }
 
+    // Internal structural sentinels are converted to visible, per-row labels by the comparison
+    // parser. They keep DOCX table boundaries distinct from ordinary paragraphs and legal headings.
+    internal const string TableRowPrefix = "\uE000DC_TABLE_ROW:";
+    internal const string TableEndMarker = "\uE000DC_TABLE_END";
+
     private static string ReadDocx(string path, CancellationToken cancellationToken)
     {
         using var archive = ZipFile.OpenRead(path);
@@ -191,6 +196,7 @@ internal static class NativeDocumentReader
         }
 
         var lines = new List<string>();
+        var tableNumber = 0;
         foreach (var block in EnumerateVisibleBlocks(body, w))
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -210,16 +216,29 @@ internal static class NativeDocumentReader
             }
             else if (block.Name == w + "tbl")
             {
+                tableNumber++;
+                var rowNumber = 0;
                 foreach (var row in EnumerateTransparentChildren(block, w + "tr", w))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    var cells = EnumerateTransparentChildren(row, w + "tc", w)
-                        .Select(tc => string.Join("\n", tc.Descendants(w + "p")
-                            .Select(VisibleParagraph)
-                            .Where(x => x.Length > 0)))
-                        .ToList();
-                    if (cells.Any(x => x.Length > 0)) lines.Add(string.Join(" | ", cells));
+                    rowNumber++;
+                    lines.Add($"{TableRowPrefix}{tableNumber}:{rowNumber}");
+                    var column = 1;
+                    foreach (var cell in EnumerateTransparentChildren(row, w + "tc", w))
+                    {
+                        // Preserve the cell slot, including empty cells, rather than flattening
+                        // the entire table row to ambiguous "cell1 | cell2" plain text.
+                        var span = int.TryParse(cell.Element(w + "tcPr")?.Element(w + "gridSpan")?
+                            .Attribute(w + "val")?.Value, out var width) ? Math.Max(1, width) : 1;
+                        var label = span == 1 ? $"열 {column}" : $"열 {column}~{column + span - 1}";
+                        var texts = cell.Descendants(w + "p").Select(VisibleParagraph)
+                            .Where(x => x.Length > 0).ToList();
+                        var value = texts.Count > 0 ? string.Join(" ↵ ", texts) : "(빈 셀)";
+                        lines.Add($"{label}: {value}");
+                        column += span;
+                    }
                 }
+                lines.Add(TableEndMarker);
             }
         }
         return string.Join("\n", lines);

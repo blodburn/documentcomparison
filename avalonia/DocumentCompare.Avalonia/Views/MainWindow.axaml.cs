@@ -383,8 +383,13 @@ public partial class MainWindow : Window
         SetBusy(true, L("비교 중... 0%", "Comparing... 0%"));
         CompareProgress.Value = 0;
         CompareProgress.IsVisible = true;
+        // Progress<T> queues callbacks on the UI synchronization context. A final 100% report
+        // can arrive after CompareAsync has returned and overwrite the completion message.
+        // Invalidate this operation's queued callbacks when the compare finishes.
+        var reportInProgress = true;
         var progress = new Progress<int>(value =>
         {
+            if (!reportInProgress) return;
             CompareProgress.Value = value;
             StatusText.Text = L($"비교 중... {value}%", $"Comparing... {value}%");
         });
@@ -397,6 +402,7 @@ public partial class MainWindow : Window
             _lastMode = mode;
             _lastIncludeAc = includeAc;
             _lastIncludePunctuation = includePunctuation;
+            reportInProgress = false;
             RenderResult(_result);
             var counts = _result.UnitCounts.Count == paths.Length
                 ? string.Join(" / ", _result.UnitCounts.Select((x, i) => L($"{(char)('A' + i)} {x}단위", $"{(char)('A' + i)} {x} units")))
@@ -418,6 +424,7 @@ public partial class MainWindow : Window
         }
         finally
         {
+            reportInProgress = false;
             SetBusy(false);
             CompareProgress.IsVisible = false;
         }

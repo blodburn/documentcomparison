@@ -1394,4 +1394,58 @@ catch(InvalidOperationException){pageBreakBlocked=true;}
 Check(pageBreakBlocked,"page break deletion degraded to an ordinary manual break");
 Console.WriteLine("PASS SPECIAL-BREAK DELETION SAFETY");
 
+
+// 124. A DOCX table must compare as independent rows with column-aware text, not a flattened paragraph.
+var tableDiffA=Path.Combine(dir,"tableDiffA.docx");
+var tableDiffB=Path.Combine(dir,"tableDiffB.docx");
+Make(tableDiffA,Tbl(Row("Stable", "Old cell text")+Row("Keep", "Unchanged")));
+Make(tableDiffB,Tbl(Row("Stable", "Completely different new cell")+Row("Keep", "Unchanged")));
+var tableDiff=await eng.CompareAsync(new[]{tableDiffA,tableDiffB},0,"general",true,true);
+Check(tableDiff.Rows.Count==2,"table rows were not preserved as independent UI rows: "+tableDiff.Rows.Count);
+Check(tableDiff.Rows[0].Members[0] is not null && tableDiff.Rows[0].Members[1] is not null,
+    "entirely rewritten table cell was misclassified as unrelated row addition/deletion");
+Check(tableDiff.Rows[0].Changed && tableDiff.Rows[0].DisplayMessages.Any(x=>x.Contains("표 셀 변경")),
+    "table cell edit was not shown as a table change");
+Check(tableDiff.Rows[0].Members[0]!.Body.Contains("열 2: Old cell text") &&
+      tableDiff.Rows[0].Members[1]!.Body.Contains("열 2: Completely different new cell"),
+    "table column identity was lost from rendered comparison");
+Check(!tableDiff.Rows[1].Changed,"unchanged second table row was falsely changed");
+Console.WriteLine("PASS TABLE STRUCTURED ROW/CELL COMPARISON");
+
+// 125. Inserting a row at the front must not steal the exact surviving old row match.
+var tableAddA=Path.Combine(dir,"tableAddA.docx");var tableAddB=Path.Combine(dir,"tableAddB.docx");
+Make(tableAddA,Tbl(Row("Name","Alice")+Row("Role","Auditor")));
+Make(tableAddB,Tbl(Row("New","Inserted")+Row("Name","Alice")+Row("Role","Auditor")));
+var tableAdd=await eng.CompareAsync(new[]{tableAddA,tableAddB},0,"general",true,true);
+Check(tableAdd.Rows.Count==3,"table insertion count mismatch");
+Check(tableAdd.Rows.Count(r=>r.Members[0] is null && r.Members[1] is not null)==1,
+    "new first table row was not recognized as one insertion");
+Check(tableAdd.Rows.Count(r=>r.Members[0] is not null && r.Members[1] is not null &&
+    !r.Changed)==2,"surviving table rows were mismatched after insertion");
+Console.WriteLine("PASS TABLE INSERTION STABLE MATCHING");
+
+// 126. Blank cells and horizontal spans are preserved as visible grid positions.
+var tableGrid=Path.Combine(dir,"tableGrid.docx");
+Make(tableGrid,"<w:tbl><w:tblPr/><w:tblGrid><w:gridCol/><w:gridCol/><w:gridCol/></w:tblGrid><w:tr><w:tc><w:tcPr><w:gridSpan w:val='2'/></w:tcPr>"+P("Merged")+"</w:tc><w:tc><w:tcPr/>"+P("")+"</w:tc></w:tr></w:tbl>");
+var gridRead=await Read(tableGrid);
+Check(gridRead.Contains("열 1~2: Merged")&&gridRead.Contains("열 3: (빈 셀)"),
+    "table gridSpan/empty cell disappeared: "+gridRead);
+Console.WriteLine("PASS TABLE MERGED AND EMPTY CELLS");
+
+// 127. Article-looking text in a table cell cannot create a fictitious legal article.
+var tableLegal=Path.Combine(dir,"tableLegal.docx");
+Make(tableLegal,P("Article 1 (Terms)")+Tbl(Row("Value","Article 99 (Not a heading)"))+P("End of article one."));
+var legalTableCompare=await eng.CompareAsync(new[]{tableLegal,tableLegal},0,"legal",true,true);
+Check(legalTableCompare.Rows.Count==1 && legalTableCompare.Rows[0].Members[0]?.Number=="1" &&
+      legalTableCompare.Rows[0].Members[0]!.Body.Contains("Article 99 (Not a heading)"),
+    "a table cell was promoted to a new legal article");
+Console.WriteLine("PASS LEGAL TABLE CELL NOT ARTICLE");
+
+// 128. Explicit legal mode must preserve table-only documents as structured rows.
+var tableOnlyLegal=await eng.CompareAsync(new[]{tableDiffA,tableDiffB},0,"legal",true,true);
+Check(tableOnlyLegal.Rows.Count==2 && tableOnlyLegal.Rows[0].Changed &&
+      tableOnlyLegal.Rows[0].Members[0]?.Header.Contains("표 1") == true,
+    "legal mode flattened a table-only document into unrelated cell paragraphs");
+Console.WriteLine("PASS TABLE-ONLY LEGAL MODE");
+
 Console.WriteLine("ALL REGRESSIONS PASSED");
