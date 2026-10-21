@@ -1,0 +1,84 @@
+name: DocumentCompare v5.21.13 Windows release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/release-v5.21.13.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: documentcompare-v5.21.13-release
+  cancel-in-progress: false
+
+jobs:
+  test-publish-release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout exact main revision
+        uses: actions/checkout@v4
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Run all actual regression fixtures
+        shell: pwsh
+        run: |
+          dotnet run --project tests/DocumentCompare.Regression/DocumentCompare.Regression.csproj -c Release 2>&1 | Tee-Object -FilePath regression.txt
+          if ($LASTEXITCODE -ne 0) { throw "Full regression failed" }
+          if (-not (Select-String -Path regression.txt -Pattern '^ALL REGRESSIONS PASSED$' -Quiet)) {
+            throw "Regression completion marker missing"
+          }
+      - name: Publish Windows x64 self-contained single EXE
+        shell: pwsh
+        run: |
+          dotnet publish avalonia/DocumentCompare.Avalonia/DocumentCompare.Avalonia.csproj -c Release -r win-x64 --self-contained true -p:PublishTrimmed=false -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:DebugType=None -p:DebugSymbols=false -o dist/publish
+          if ($LASTEXITCODE -ne 0) { throw "Windows publish failed" }
+          if (-not (Test-Path dist/publish/DocumentCompare.exe)) { throw "EXE missing" }
+          New-Item -ItemType Directory dist/portable -Force | Out-Null
+          Copy-Item dist/publish/DocumentCompare.exe dist/portable/DocumentCompare.exe
+          Compress-Archive -LiteralPath dist/portable/DocumentCompare.exe -DestinationPath dist/DocumentCompare_v5.21.13_win-x64.zip -CompressionLevel Optimal
+          $archive = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path dist/DocumentCompare_v5.21.13_win-x64.zip))
+          try {
+            if ($archive.Entries.Count -ne 1 -or $archive.Entries[0].FullName -ne "DocumentCompare.exe") {
+              throw "Portable ZIP must contain exactly one EXE"
+            }
+          } finally { $archive.Dispose() }
+      - name: Publish matching GitHub tag and release assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "v5.21.13"
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) { throw "Release already exists; no overwrite is allowed" }
+          gh release create $tag dist/portable/DocumentCompare.exe dist/DocumentCompare_v5.21.13_win-x64.zip --target $env:GITHUB_SHA --title "DocumentCompare v5.21.13" --notes "Fix DOCX table structure-aware comparison, row/cell movement, and comparison completion status. Windows x64 self-contained single EXE."
+          if ($LASTEXITCODE -ne 0) { throw "Release upload failed" }
+      - name: Re-download assets and compare SHA256
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          New-Item -ItemType Directory dist/verified -Force | Out-Null
+          gh release download v5.21.13 -D dist/verified -p 'DocumentCompare.exe' -p 'DocumentCompare_v5.21.13_win-x64.zip'
+          if ($LASTEXITCODE -ne 0) { throw "Release assets download failed" }
+          foreach ($item in @(@("dist/portable/DocumentCompare.exe","dist/verified/DocumentCompare.exe"),
+                              @("dist/DocumentCompare_v5.21.13_win-x64.zip","dist/verified/DocumentCompare_v5.21.13_win-x64.zip"))) {
+            if (-not (Test-Path $item[1])) { throw "Missing downloaded asset: $($item[1])" }
+            $expected = (Get-FileHash $item[0] -Algorithm SHA256).Hash
+            $downloaded = (Get-FileHash $item[1] -Algorithm SHA256).Hash
+            if ($expected -ne $downloaded) { throw "SHA256 mismatch for $($item[1])" }
+            Write-Host "$($item[1]): SHA256 verified ($expected)"
+          }
+          git fetch origin "refs/tags/v5.21.13:refs/tags/v5.21.13"
+          if ($LASTEXITCODE -ne 0) { throw "Could not fetch release tag" }
+          $tagCommit = (git rev-parse "refs/tags/v5.21.13^{commit}").Trim()
+          $mainCommit = ((git ls-remote origin refs/heads/main) -split "\s+")[0]
+          $releaseTarget = (gh release view v5.21.13 --json targetCommitish --jq '.targetCommitish').Trim()
+          if ($tagCommit -ne $env:GITHUB_SHA -or $mainCommit -ne $env:GITHUB_SHA -or
+              $releaseTarget -ne $env:GITHUB_SHA) {
+            throw "Tag, main, and Release targets differ"
+          }
+          Write-Host "PASS main/tag/release exact commit verification"
