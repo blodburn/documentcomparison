@@ -11,7 +11,7 @@ const string W="http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 var dir=Path.Combine(Path.GetTempPath(), "DocumentCompareRegression", Guid.NewGuid().ToString("N"));Directory.CreateDirectory(dir); XNamespace w=W;
 static void Check(bool ok,string msg){if(!ok)throw new Exception(msg);}
 static void Put(ZipArchive z,string p,string c){var e=z.CreateEntry(p);using var sw=new StreamWriter(e.Open(),new UTF8Encoding(false));sw.Write(c);}
-static void Make(string path,string body){using var fs=new FileStream(path,FileMode.Create);using var z=new ZipArchive(fs,ZipArchiveMode.Create);Put(z,"[Content_Types].xml","<?xml version=\"1.0\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/></Types>");Put(z,"_rels/.rels","<?xml version=\"1.0\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"word/document.xml\"/></Relationships>");Put(z,"word/document.xml","<?xml version=\"1.0\"?><w:document xmlns:w=\""+W+"\"><w:body>"+body+"<w:sectPr/></w:body></w:document>");}
+static void Make(string path,string body){using var fs=new FileStream(path,FileMode.Create);using var z=new ZipArchive(fs,ZipArchiveMode.Create);Put(z,"[Content_Types].xml","<?xml version=\"1.0\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/></Types>");Put(z,"_rels/.rels","<?xml version=\"1.0\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.[REDACTED]\" Target=\"word/document.xml\"/></Relationships>");Put(z,"word/document.xml","<?xml version=\"1.0\"?><w:document xmlns:w=\""+W+"\"><w:body>"+body+"<w:sectPr/></w:body></w:document>");}
 static string P(string t)=>"<w:p><w:r><w:t xml:space=\"preserve\">"+System.Security.SecurityElement.Escape(t)+"</w:t></w:r></w:p>";
 static XDocument Doc(string path){using var z=ZipFile.OpenRead(path);using var st=z.GetEntry("word/document.xml")!.Open();return XDocument.Load(st);}
 static async Task<string> Read(string path){var t=typeof(NativeComparisonEngine).Assembly.GetType("DocumentCompare.Avalonia.Engine.NativeDocumentReader")!;var m=t.GetMethod("ReadAsync",BindingFlags.Static|BindingFlags.Public|BindingFlags.NonPublic)!;return await (Task<string>)m.Invoke(null,new object[]{path,CancellationToken.None})!;}
@@ -24,6 +24,174 @@ var hc=await eng.CompareAsync(new[]{ha,hb},0,"general",true,true);Check(!hc.Rows
 
 string Row(string a,string b)=>"<w:tr><w:tc>"+P(a)+"</w:tc><w:tc>"+P(b)+"</w:tc></w:tr>";
 string Tbl(string rows)=>"<w:tbl><w:tblPr/><w:tblGrid><w:gridCol/><w:gridCol/></w:tblGrid>"+rows+"</w:tbl>";
+
+// Real DOCX fixtures for the A/B/C comparison path (distinct from the Word exporter tests).
+{
+    string Cell(string xml)=>"<w:tc>"+xml+"</w:tc>";
+    string Cells(params string[] texts)=>"<w:tr>"+string.Concat(texts.Select(x=>Cell(P(x))))+"</w:tr>";
+    string Table(params string[] rows)=>Tbl(string.Concat(rows));
+    async Task<ComparisonResultVm> CompareTable(string name,string oldXml,string newXml)
+    {
+        var pathA=Path.Combine(dir,"struct-"+name+"-A.docx");
+        var pathB=Path.Combine(dir,"struct-"+name+"-B.docx");
+        Make(pathA,oldXml);Make(pathB,newXml);
+        return await eng.CompareAsync(new[]{pathA,pathB},0,"general",false,true);
+    }
+    static List<ComparisonRowVm> CellsOnly(ComparisonResultVm r)=>
+        r.Rows.Where(x=>x.Members.Any(m=>m?.Kind=="table-cell")).ToList();
+    var same=await CompareTable("same",P("Before")+Table(Cells("A1","B1"),Cells("A2","B2"))+P("After"),
+        P("Before")+Table(Cells("A1","B1"),Cells("A2","B2"))+P("After"));
+    Check(CellsOnly(same).Count==4&&CellsOnly(same).All(x=>!x.Changed),"unchanged table must preserve 4 unchanged cells");
+    Check(same.Rows.First().Members[0]!.Text=="Before"&&same.Rows.Last().Members[0]!.Text=="After",
+        "table placement displaced surrounding paragraphs");
+    Console.WriteLine("PASS STRUCTURED TABLE UNCHANGED AND PARAGRAPH ORDER");
+
+    var edit=await CompareTable("cell-edit",Table(Cells("Account","Amount"),Cells("Rent","100")),
+        Table(Cells("Account","Amount"),Cells("Rent","150")));
+    var edited=CellsOnly(edit).Where(x=>x.Changed).ToList();
+    Check(edited.Count==1&&edited[0].Members[0]!.Body=="100"&&edited[0].Members[1]!.Body=="150",
+        "single cell partial edit did not stay in the corresponding cell");
+    Check(edited[0].Markers.Any(m=>m.Part=="body"),"edited cell has no body change marker");
+    Console.WriteLine("PASS STRUCTURED CELL CONTENT DIFF");
+
+    var para=await CompareTable("cell-paragraph",Table("<w:tr>"+Cell(P("First"))+"</w:tr>"),
+        Table("<w:tr>"+Cell(P("First")+P("Second"))+"</w:tr>"));
+    Check(CellsOnly(para).Count==1&&CellsOnly(para)[0].Changed&&
+          CellsOnly(para)[0].Members[1]!.Body=="First\nSecond"&&
+          CellsOnly(para)[0].DisplayMessages.Any(m=>m.Contains("문단")),
+          "multiple paragraphs within one cell not reported");
+    Console.WriteLine("PASS STRUCTURED CELL PARAGRAPH INSERTION");
+
+    var addedRow=await CompareTable("row-add",Table(Cells("ID1","Stable")),
+        Table(Cells("ID1","Stable"),Cells("ID2","New")));
+    Check(CellsOnly(addedRow).Count==4&&CellsOnly(addedRow).Count(x=>x.Changed)==2 &&
+          CellsOnly(addedRow).Count(x=>x.Members[0] is null)==2,
+          "inserted row must be two new cells, without modifying the surviving row");
+    var deletedRow=await CompareTable("row-delete",Table(Cells("ID1","Stable"),Cells("ID2","Old")),
+        Table(Cells("ID1","Stable")));
+    Check(CellsOnly(deletedRow).Count==4&&CellsOnly(deletedRow).Count(x=>x.Members[1] is null)==2,
+        "deleted row must not be merged into surviving cells");
+    Console.WriteLine("PASS STRUCTURED ROW INSERTION AND DELETION");
+
+    var movedRow=await CompareTable("row-move",Table(Cells("ID1","Alpha"),Cells("ID2","Beta")),
+        Table(Cells("ID2","Beta"),Cells("ID1","Alpha")));
+    Check(CellsOnly(movedRow).Count==4&&CellsOnly(movedRow).All(x=>x.Members.All(m=>m is not null)),
+        "moved rows were mistaken for added/deleted rows");
+    Check(CellsOnly(movedRow).Any(x=>x.DisplayMessages.Any(m=>m.Contains("표 행 이동"))),
+        "reordered table rows lacked a structural move message");
+    Console.WriteLine("PASS STRUCTURED ROW REORDER MATCHING");
+
+    var addedCol=await CompareTable("col-add",Table(Cells("LEFT","RIGHT")),
+        Table(Cells("LEFT","MIDDLE","RIGHT")));
+    Check(CellsOnly(addedCol).Count==3&&CellsOnly(addedCol).Count(x=>x.Members[0] is null)==1&&
+          CellsOnly(addedCol).Single(x=>x.Members[0] is null).Members[1]!.Body=="MIDDLE",
+          "column insertion was misaligned against neighboring cells");
+    var deletedCol=await CompareTable("col-delete",Table(Cells("LEFT","MIDDLE","RIGHT")),
+        Table(Cells("LEFT","RIGHT")));
+    Check(CellsOnly(deletedCol).Count==3&&CellsOnly(deletedCol).Count(x=>x.Members[1] is null)==1,
+        "column deletion was misaligned against neighboring cells");
+    Console.WriteLine("PASS STRUCTURED COLUMN INSERTION AND DELETION");
+
+    var tableShift=await CompareTable("table-shift",Table(Cells("DELETE","ME"))+
+        P("Between")+Table(Cells("KEEP","ME")),P("Between")+Table(Cells("KEEP","ME")));
+    Check(CellsOnly(tableShift).Count==4&&CellsOnly(tableShift).Count(x=>x.Members[1] is null)==2&&
+          CellsOnly(tableShift).Count(x=>x.Members[0] is not null&&x.Members[1] is not null)==2,
+          "deleted table incorrectly matched to the next table");
+    Console.WriteLine("PASS STRUCTURED WHOLE TABLE DELETION AND REINDEXING");
+
+    var mergeOld=Table("<w:tr><w:tc><w:tcPr><w:gridSpan w:val=\"2\"/></w:tcPr>"+P("Merged")+
+        "</w:tc></w:tr>");
+    var mergeNew=Table("<w:tr><w:tc><w:tcPr><w:gridSpan w:val=\"3\"/></w:tcPr>"+P("Merged")+
+        "</w:tc></w:tr>");
+    var merge=await CompareTable("merge-span",mergeOld,mergeNew);
+    Check(CellsOnly(merge).Count==1&&CellsOnly(merge)[0].Changed&&
+          CellsOnly(merge)[0].DisplayMessages.Any(x=>x.Contains("병합")),
+          "gridSpan structural change invisible");
+    Console.WriteLine("PASS STRUCTURED GRIDSPAN CHANGE");
+
+    var nested="<w:tbl><w:tr><w:tc>"+P("Outer")+
+        "<w:sdt><w:sdtContent><w:tbl><w:tr><w:tc>"+P("Inner")+
+        "</w:tc></w:tr></w:tbl></w:sdtContent></w:sdt>"+P("Tail")+
+        "</w:tc></w:tr></w:tbl>";
+    var nestedCompare=await CompareTable("nested",nested,nested);
+    Check(CellsOnly(nestedCompare).Count==2&&CellsOnly(nestedCompare).All(x=>!x.Changed)&&
+          CellsOnly(nestedCompare).Any(x=>x.Members[0]!.Body.Contains("Inner"))&&
+          CellsOnly(nestedCompare).Any(x=>x.Members[0]!.Body.Contains("Outer\nTail")),
+          "nested SDT table duplicated/lost a cell");
+    Console.WriteLine("PASS STRUCTURED NESTED SDT TABLE");
+
+    var repeated=await CompareTable("duplicate",Table(Cells("Repeated","Same"),Cells("Repeated","Same")),
+        Table(Cells("Repeated","Same"),Cells("Repeated","Same")));
+    Check(CellsOnly(repeated).Count==4&&CellsOnly(repeated).All(x=>!x.Changed),
+        "repeated rows must not collapse into one cell");
+    Console.WriteLine("PASS STRUCTURED DUPLICATE CELLS");
+
+    var vMergeOld=Table("<w:tr><w:tc><w:tcPr><w:vMerge w:val=\"restart\"/></w:tcPr>"+
+        P("A")+"</w:tc></w:tr>");
+    var vMergeNew=Table("<w:tr><w:tc><w:tcPr><w:vMerge/></w:tcPr>"+
+        P("A")+"</w:tc></w:tr>");
+    var vMergeResult=await CompareTable("vertical-merge",vMergeOld,vMergeNew);
+    Check(CellsOnly(vMergeResult).Count==1&&CellsOnly(vMergeResult)[0].Changed&&
+        CellsOnly(vMergeResult)[0].DisplayMessages.Any(m=>m.Contains("병합")),
+        "vMerge restart/continue structural change not detected");
+    Console.WriteLine("PASS STRUCTURED VERTICAL MERGE CHANGE");
+
+    var irregular=await CompareTable("irregular",Table(Cells("X","Y")+Cells("Q")),
+        Table(Cells("X","Y")+Cells("Q","NEW")));
+    Check(CellsOnly(irregular).Count==4&&CellsOnly(irregular).Count(x=>x.Members[0] is null)==1,
+        "nonrectangular table incorrectly fabricated/shifted cells");
+    Console.WriteLine("PASS STRUCTURED NONRECTANGULAR TABLE");
+
+    var tableAdded=await CompareTable("table-added",P("Before")+Table(Cells("KEEP","ONE"))+P("After"),
+        P("Before")+Table(Cells("NEW","TWO"))+Table(Cells("KEEP","ONE"))+P("After"));
+    Check(CellsOnly(tableAdded).Count==4&&CellsOnly(tableAdded).Count(x=>x.Members[0] is null)==2&&
+        CellsOnly(tableAdded).Count(x=>x.Members.All(m=>m is not null))==2,
+        "whole-table insertion consumed a surviving table");
+    Console.WriteLine("PASS STRUCTURED WHOLE TABLE INSERTION");
+
+    var tableMoved=await CompareTable("table-moved",Table(Cells("ONE","X"))+P("Middle")+
+        Table(Cells("TWO","Y")),Table(Cells("TWO","Y"))+P("Middle")+Table(Cells("ONE","X")));
+    Check(CellsOnly(tableMoved).Count==4&&CellsOnly(tableMoved).All(x=>x.Members.All(m=>m is not null)),
+        "whole-table movement became deletion/insertion");
+    Check(CellsOnly(tableMoved).Any(x=>x.DisplayMessages.Any(m=>m.Contains("표 이동"))),
+        "whole-table reorder lacked a structural move message");
+    Console.WriteLine("PASS STRUCTURED WHOLE TABLE REORDER MATCHING");
+
+    var paraDeleted=await CompareTable("para-delete",Table("<w:tr>"+Cell(P("First")+P("Second"))+"</w:tr>"),
+        Table("<w:tr>"+Cell(P("First"))+"</w:tr>"));
+    Check(CellsOnly(paraDeleted).Count==1&&CellsOnly(paraDeleted)[0].Changed&&
+        CellsOnly(paraDeleted)[0].DisplayMessages.Any(x=>x.Contains("문단")),
+        "deleted paragraph inside a cell not flagged");
+    Console.WriteLine("PASS STRUCTURED CELL PARAGRAPH DELETION");
+
+    var cPath=Path.Combine(dir,"table-third.docx");
+    Make(cPath,Table(Cells("Label","Version C")));
+    var aPath=Path.Combine(dir,"table-A-3way.docx");
+    var bPath=Path.Combine(dir,"table-B-3way.docx");
+    Make(aPath,Table(Cells("Label","Version A")));Make(bPath,Table(Cells("Label","Version B")));
+    var threeWay=await eng.CompareAsync(new[]{aPath,bPath,cPath},0,"general",true,true);
+    Check(CellsOnly(threeWay).Count==2&&CellsOnly(threeWay).Any(r=>
+        r.Members.Count==3&&r.Members.All(m=>m is not null)&&
+        r.Markers.Any(m=>m.Pair=="A↔B")&&r.Markers.Any(m=>m.Pair=="B↔C")),
+        "three-document structured cell changes failed to align all A/B/C versions");
+    Console.WriteLine("PASS STRUCTURED A/B/C THREE-WAY CHANGES");
+
+    var progressSuccess=new ComparisonProgressSession();
+    Check(progressSuccess.TryAccept(0)&&progressSuccess.TryAccept(100),
+        "progress callbacks must be accepted while comparing");
+    progressSuccess.Close();
+    Check(progressSuccess.IsClosed&&!progressSuccess.TryAccept(100),
+        "late 100% callback overwrote completed state");
+    var progressFailed=new ComparisonProgressSession();progressFailed.Close();
+    Check(!progressFailed.TryAccept(100),"late callback overwrote failed state");
+    var progressCanceled=new ComparisonProgressSession();progressCanceled.Close();
+    Check(!progressCanceled.TryAccept(99),"late callback overwrote canceled state");
+    var progressAgain=new ComparisonProgressSession();
+    Check(progressAgain.TryAccept(0)&&!progressSuccess.TryAccept(0),
+        "new run inherited stale previous-run progress state");
+    Console.WriteLine("PASS PROGRESS TERMINAL SUCCESS/FAIL/CANCEL/RETRY");
+}
+if (args.Contains("--tables-only", StringComparer.Ordinal)) return;
 // 2. Deleted table row must stay a deleted row, never get injected into a surviving cell.
 var ta=Path.Combine(dir,"tableA.docx");var tb=Path.Combine(dir,"tableB.docx");var to=Path.Combine(dir,"tableOut.docx");
 Make(ta,Tbl(Row("A1","B1")+Row("A2_DELETED","B2_DELETED")));Make(tb,Tbl(Row("A1","B1")));await eng.ExportWordAsync(ta,tb,to,"T",true);var td=Doc(to);var trs=td.Descendants(w+"tr").ToList();Check(trs.Count==2,"deleted table row not reconstructed");Check(trs[1].Element(w+"trPr")?.Element(w+"del") is not null,"deleted row lacks trPr/del");Check(!string.Concat(trs[0].Descendants(w+"t").Select(x=>x.Value)).Contains("A2_DELETED"),"deleted row leaked into surviving row");Check(string.Concat(trs[1].Descendants(w+"t").Select(x=>x.Value)).Contains("A2_DELETED"),"deleted row text missing");Console.WriteLine("PASS TABLE ROW DELETION");
@@ -208,7 +376,7 @@ Check((await Read(customRow)).Contains("CUSTOM_ROW"),"customXml-wrapped table ro
 Console.WriteLine("PASS TABLE SDT/CUSTOMXML VISIBILITY");
 
 // 26. Number-only change must create a valid Word numbering revision, not UI-only change.
-static void MakeSingleNumbered(string path,int start,string Wns){using var fs=new FileStream(path,FileMode.Create);using var z=new ZipArchive(fs,ZipArchiveMode.Create);Put(z,"[Content_Types].xml","<?xml version=\"1.0\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/><Override PartName=\"/word/numbering.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml\"/></Types>");Put(z,"_rels/.rels","<?xml version=\"1.0\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"word/document.xml\"/></Relationships>");Put(z,"word/_rels/document.xml.rels","<?xml version=\"1.0\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rIdNum\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering\" Target=\"numbering.xml\"/></Relationships>");Put(z,"word/document.xml","<?xml version=\"1.0\"?><w:document xmlns:w=\""+Wns+"\"><w:body><w:p><w:pPr><w:numPr><w:ilvl w:val=\"0\"/><w:numId w:val=\"1\"/></w:numPr></w:pPr><w:r><w:t>Same item</w:t></w:r></w:p><w:sectPr/></w:body></w:document>");Put(z,"word/numbering.xml",$"<?xml version=\"1.0\"?><w:numbering xmlns:w=\"{Wns}\"><w:abstractNum w:abstractNumId=\"0\"><w:lvl w:ilvl=\"0\"><w:start w:val=\"{start}\"/><w:numFmt w:val=\"decimal\"/><w:lvlText w:val=\"%1.\"/></w:lvl></w:abstractNum><w:num w:numId=\"1\"><w:abstractNumId w:val=\"0\"/></w:num></w:numbering>");}
+static void MakeSingleNumbered(string path,int start,string Wns){using var fs=new FileStream(path,FileMode.Create);using var z=new ZipArchive(fs,ZipArchiveMode.Create);Put(z,"[Content_Types].xml","<?xml version=\"1.0\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/><Override PartName=\"/word/numbering.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml\"/></Types>");Put(z,"_rels/.rels","<?xml version=\"1.0\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.[REDACTED]\" Target=\"word/document.xml\"/></Relationships>");Put(z,"word/_rels/document.xml.rels","<?xml version=\"1.0\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rIdNum\" Type=\"http://schemas.openxmlformats.[REDACTED]\" Target=\"numbering.xml\"/></Relationships>");Put(z,"word/document.xml","<?xml version=\"1.0\"?><w:document xmlns:w=\""+Wns+"\"><w:body><w:p><w:pPr><w:numPr><w:ilvl w:val=\"0\"/><w:numId w:val=\"1\"/></w:numPr></w:pPr><w:r><w:t>Same item</w:t></w:r></w:p><w:sectPr/></w:body></w:document>");Put(z,"word/numbering.xml",$"<?xml version=\"1.0\"?><w:numbering xmlns:w=\"{Wns}\"><w:abstractNum w:abstractNumId=\"0\"><w:lvl w:ilvl=\"0\"><w:start w:val=\"{start}\"/><w:numFmt w:val=\"decimal\"/><w:lvlText w:val=\"%1.\"/></w:lvl></w:abstractNum><w:num w:numId=\"1\"><w:abstractNumId w:val=\"0\"/></w:num></w:numbering>");}
 var numA=Path.Combine(dir,"numberOnlyA.docx");var numB=Path.Combine(dir,"numberOnlyB.docx");var numOut=Path.Combine(dir,"numberOnlyOut.docx");MakeSingleNumbered(numA,1,W);MakeSingleNumbered(numB,2,W);
 var numCmp=await eng.CompareAsync(new[]{numA,numB},0,"general",true,true);Check(numCmp.Rows.Any(r=>r.Changed),"number-only change was not visible in comparison");
 await eng.ExportWordAsync(numA,numB,numOut,"T",true,default,numCmp,0,1);var numDoc=Doc(numOut);var numChange=numDoc.Descendants(w+"numberingChange").SingleOrDefault();
@@ -263,8 +431,8 @@ static void MakeRepeatedNumbered(string path,int secondStart,string Wns)
 {
     using var fs=new FileStream(path,FileMode.Create);using var z=new ZipArchive(fs,ZipArchiveMode.Create);
     Put(z,"[Content_Types].xml","<?xml version=\"1.0\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/><Override PartName=\"/word/numbering.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml\"/></Types>");
-    Put(z,"_rels/.rels","<?xml version=\"1.0\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"word/document.xml\"/></Relationships>");
-    Put(z,"word/_rels/document.xml.rels","<?xml version=\"1.0\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rIdNum\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering\" Target=\"numbering.xml\"/></Relationships>");
+    Put(z,"_rels/.rels","<?xml version=\"1.0\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.[REDACTED]\" Target=\"word/document.xml\"/></Relationships>");
+    Put(z,"word/_rels/document.xml.rels","<?xml version=\"1.0\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rIdNum\" Type=\"http://schemas.openxmlformats.[REDACTED]\" Target=\"numbering.xml\"/></Relationships>");
     string NP(int id)=>$"<w:p><w:pPr><w:numPr><w:ilvl w:val=\"0\"/><w:numId w:val=\"{id}\"/></w:numPr></w:pPr><w:r><w:t>Same item</w:t></w:r></w:p>";
     Put(z,"word/document.xml","<?xml version=\"1.0\"?><w:document xmlns:w=\""+Wns+"\"><w:body>"+NP(1)+NP(2)+"<w:sectPr/></w:body></w:document>");
     Put(z,"word/numbering.xml",$"<?xml version=\"1.0\"?><w:numbering xmlns:w=\"{Wns}\"><w:abstractNum w:abstractNumId=\"0\"><w:lvl w:ilvl=\"0\"><w:start w:val=\"1\"/><w:numFmt w:val=\"decimal\"/><w:lvlText w:val=\"%1.\"/></w:lvl></w:abstractNum><w:num w:numId=\"1\"><w:abstractNumId w:val=\"0\"/></w:num><w:num w:numId=\"2\"><w:abstractNumId w:val=\"0\"/><w:lvlOverride w:ilvl=\"0\"><w:startOverride w:val=\"{secondStart}\"/></w:lvlOverride></w:num></w:numbering>");
@@ -385,8 +553,8 @@ Console.WriteLine("PASS DELETED TABLE PARAGRAPH LINEAGE POSITION");
 // 38. Ancillary Word guards must detect non-text relationship payload changes (e.g. header logo/image).
 var imgHdrA=Path.Combine(dir,"headerImageA.docx");var imgHdrB=Path.Combine(dir,"headerImageB.docx");var imgHdrO=Path.Combine(dir,"headerImageOut.docx");
 Make(imgHdrA,P("Body"));Make(imgHdrB,P("Body"));
-var headerWithImage="<w:hdr xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:p><w:r><w:t>SAME HEADER</w:t></w:r><w:r><w:drawing><w:object r:id=\"rIdImg\"/></w:drawing></w:r></w:p></w:hdr>";
-var headerRels="<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rIdImg\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"media/header-logo.bin\"/></Relationships>";
+var headerWithImage="<w:hdr xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.[REDACTED]\"><w:p><w:r><w:t>SAME HEADER</w:t></w:r><w:r><w:drawing><w:object r:id=\"rIdImg\"/></w:drawing></w:r></w:p></w:hdr>";
+var headerRels="<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rIdImg\" Type=\"http://schemas.openxmlformats.[REDACTED]\" Target=\"media/header-logo.bin\"/></Relationships>";
 foreach(var path in new[]{imgHdrA,imgHdrB}){AddWordXml(path,"word/header1.xml",headerWithImage);AddWordXml(path,"word/_rels/header1.xml.rels",headerRels);}
 AddWordBytes(imgHdrA,"word/media/header-logo.bin",Encoding.UTF8.GetBytes("IMAGE_A_BYTES"));
 AddWordBytes(imgHdrB,"word/media/header-logo.bin",Encoding.UTF8.GetBytes("IMAGE_B_BYTES"));
@@ -502,8 +670,8 @@ Console.WriteLine("PASS THREE-WAY GENERIC ADDITION SEPARATION");
 // 51. Cross-format Word export must not silently omit referenced DOCX ancillary content.
 var mixTxt=Path.Combine(dir,"mixPlain.txt");var mixDoc=Path.Combine(dir,"mixHeader.docx");var mixOut=Path.Combine(dir,"mixOut.docx");
 File.WriteAllText(mixTxt,"Body",new UTF8Encoding(false));Make(mixDoc,P("Body"));
-AddWordXml(mixDoc,"word/document.xml","<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body>"+P("Body")+"<w:sectPr><w:headerReference w:type=\"default\" r:id=\"rIdHdr\"/></w:sectPr></w:body></w:document>");
-AddWordXml(mixDoc,"word/_rels/document.xml.rels","<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rIdHdr\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/header\" Target=\"header1.xml\"/></Relationships>");
+AddWordXml(mixDoc,"word/document.xml","<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.[REDACTED]\"><w:body>"+P("Body")+"<w:sectPr><w:headerReference w:type=\"default\" r:id=\"rIdHdr\"/></w:sectPr></w:body></w:document>");
+AddWordXml(mixDoc,"word/_rels/document.xml.rels","<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rIdHdr\" Type=\"http://schemas.openxmlformats.[REDACTED]\" Target=\"header1.xml\"/></Relationships>");
 AddWordXml(mixDoc,"word/header1.xml","<w:hdr xmlns:w=\""+W+"\"><w:p><w:r><w:t>VISIBLE HEADER</w:t></w:r></w:p></w:hdr>");
 var mixedBlocked=false;try{await eng.ExportWordAsync(mixTxt,mixDoc,mixOut,"T",true);}catch(InvalidOperationException ex){mixedBlocked=ex.Message.Contains("header/footer/footnote/endnote")||ex.Message.Contains("부속");}
 Check(mixedBlocked,"TXT->DOCX export silently omitted referenced header ancestry");
@@ -515,10 +683,10 @@ Console.WriteLine("PASS CROSS-FORMAT ANCILLARY GUARD");
 // 52. Main-document relationship changes (hyperlink/image/OLE) must never pass as text-identical.
 var linkA=Path.Combine(dir,"bodyLinkA.docx");var linkB=Path.Combine(dir,"bodyLinkB.docx");var linkO=Path.Combine(dir,"bodyLinkOut.docx");
 Make(linkA,P("Body"));Make(linkB,P("Body"));
-var linkDoc="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Same Link Text</w:t></w:r></w:hyperlink></w:p><w:sectPr/></w:body></w:document>";
+var linkDoc="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.[REDACTED]\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Same Link Text</w:t></w:r></w:hyperlink></w:p><w:sectPr/></w:body></w:document>";
 AddWordXml(linkA,"word/document.xml",linkDoc);AddWordXml(linkB,"word/document.xml",linkDoc);
-AddWordXml(linkA,"word/_rels/document.xml.rels","<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rIdLink\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink\" Target=\"https://example.com/a\" TargetMode=\"External\"/></Relationships>");
-AddWordXml(linkB,"word/_rels/document.xml.rels","<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rIdLink\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink\" Target=\"https://example.com/b\" TargetMode=\"External\"/></Relationships>");
+AddWordXml(linkA,"word/_rels/document.xml.rels","<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rIdLink\" Type=\"http://schemas.openxmlformats.[REDACTED]\" Target=\"https://example.com/a\" TargetMode=\"External\"/></Relationships>");
+AddWordXml(linkB,"word/_rels/document.xml.rels","<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rIdLink\" Type=\"http://schemas.openxmlformats.[REDACTED]\" Target=\"https://example.com/b\" TargetMode=\"External\"/></Relationships>");
 var bodyRelBlocked=false;try{await eng.ExportWordAsync(linkA,linkB,linkO,"T",true);}catch(InvalidOperationException ex){bodyRelBlocked=ex.Message.Contains("본문")&&ex.Message.Contains("관계");}
 Check(bodyRelBlocked,"body hyperlink target change silently passed as text-identical");
 Console.WriteLine("PASS MAIN-DOCUMENT RELATIONSHIP GUARD");
@@ -610,9 +778,9 @@ Console.WriteLine("PASS THREE-WAY PARTIAL-TITLE SEPARATION");
 // 59. The same body relationship moved to another paragraph must be treated as an unsupported position change.
 var relMoveA=Path.Combine(dir,"relMoveA.docx");var relMoveB=Path.Combine(dir,"relMoveB.docx");var relMoveO=Path.Combine(dir,"relMoveOut.docx");
 Make(relMoveA,P("Alpha")+P("Alpha"));Make(relMoveB,P("Alpha")+P("Alpha"));
-var relMoveDocA="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink></w:p>"+P("Alpha")+"<w:sectPr/></w:body></w:document>";
-var relMoveDocB="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body>"+P("Alpha")+"<w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink></w:p><w:sectPr/></w:body></w:document>";
-var sameLinkRels="<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rIdLink\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink\" Target=\"https://example.com/same\" TargetMode=\"External\"/></Relationships>";
+var relMoveDocA="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.[REDACTED]\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink></w:p>"+P("Alpha")+"<w:sectPr/></w:body></w:document>";
+var relMoveDocB="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.[REDACTED]\"><w:body>"+P("Alpha")+"<w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink></w:p><w:sectPr/></w:body></w:document>";
+var sameLinkRels="<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rIdLink\" Type=\"http://schemas.openxmlformats.[REDACTED]\" Target=\"https://example.com/same\" TargetMode=\"External\"/></Relationships>";
 AddWordXml(relMoveA,"word/document.xml",relMoveDocA);AddWordXml(relMoveB,"word/document.xml",relMoveDocB);
 AddWordXml(relMoveA,"word/_rels/document.xml.rels",sameLinkRels);AddWordXml(relMoveB,"word/_rels/document.xml.rels",sameLinkRels);
 var relMoveBlocked=false;try{await eng.ExportWordAsync(relMoveA,relMoveB,relMoveO,"T",true);}catch(InvalidOperationException ex){relMoveBlocked=ex.Message.Contains("비텍스트")||ex.Message.Contains("관계");}
@@ -655,8 +823,8 @@ Console.WriteLine("PASS WORD MID-EXPORT SOURCE RACE GUARD");
 // 62. Inserting an unrelated paragraph before an unchanged hyperlink must not trigger a false relationship-location block.
 var relShiftA=Path.Combine(dir,"relShiftA.docx");var relShiftB=Path.Combine(dir,"relShiftB.docx");var relShiftO=Path.Combine(dir,"relShiftOut.docx");
 Make(relShiftA,P("Alpha")+P("Beta"));Make(relShiftB,P("Intro")+P("Alpha")+P("Beta"));
-var relShiftDocA="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink></w:p>"+P("Beta")+"<w:sectPr/></w:body></w:document>";
-var relShiftDocB="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body>"+P("Intro")+"<w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink></w:p>"+P("Beta")+"<w:sectPr/></w:body></w:document>";
+var relShiftDocA="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.[REDACTED]\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink></w:p>"+P("Beta")+"<w:sectPr/></w:body></w:document>";
+var relShiftDocB="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.[REDACTED]\"><w:body>"+P("Intro")+"<w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink></w:p>"+P("Beta")+"<w:sectPr/></w:body></w:document>";
 AddWordXml(relShiftA,"word/document.xml",relShiftDocA);AddWordXml(relShiftB,"word/document.xml",relShiftDocB);
 AddWordXml(relShiftA,"word/_rels/document.xml.rels",sameLinkRels);AddWordXml(relShiftB,"word/_rels/document.xml.rels",sameLinkRels);
 await eng.ExportWordAsync(relShiftA,relShiftB,relShiftO,"T",true);
@@ -678,8 +846,8 @@ Console.WriteLine("PASS FOOTNOTE LOGICAL-LOCATION SHIFT");
 // 64. Same hyperlink relationship with edited display text must export normally.
 var linkTextA=Path.Combine(dir,"linkTextA.docx");var linkTextB=Path.Combine(dir,"linkTextB.docx");var linkTextO=Path.Combine(dir,"linkTextOut.docx");
 Make(linkTextA,P("Alpha"));Make(linkTextB,P("Alpha changed"));
-var linkTextDocA="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink></w:p><w:sectPr/></w:body></w:document>";
-var linkTextDocB="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha changed</w:t></w:r></w:hyperlink></w:p><w:sectPr/></w:body></w:document>";
+var linkTextDocA="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.[REDACTED]\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink></w:p><w:sectPr/></w:body></w:document>";
+var linkTextDocB="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.[REDACTED]\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha changed</w:t></w:r></w:hyperlink></w:p><w:sectPr/></w:body></w:document>";
 AddWordXml(linkTextA,"word/document.xml",linkTextDocA);AddWordXml(linkTextB,"word/document.xml",linkTextDocB);
 AddWordXml(linkTextA,"word/_rels/document.xml.rels",sameLinkRels);AddWordXml(linkTextB,"word/_rels/document.xml.rels",sameLinkRels);
 await eng.ExportWordAsync(linkTextA,linkTextB,linkTextO,"T",true);
@@ -691,8 +859,8 @@ Console.WriteLine("PASS HYPERLINK DISPLAY-TEXT EDIT");
 // 65. Same URL reassigned to different visible text in the same paragraph must be blocked.
 var linkAssocA=Path.Combine(dir,"linkAssocA.docx");var linkAssocB=Path.Combine(dir,"linkAssocB.docx");var linkAssocO=Path.Combine(dir,"linkAssocOut.docx");
 Make(linkAssocA,P("Alpha Beta"));Make(linkAssocB,P("Alpha Beta"));
-var linkAssocDocA="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink><w:r><w:t xml:space=\"preserve\"> Beta</w:t></w:r></w:p><w:sectPr/></w:body></w:document>";
-var linkAssocDocB="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body><w:p><w:r><w:t xml:space=\"preserve\">Alpha </w:t></w:r><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Beta</w:t></w:r></w:hyperlink></w:p><w:sectPr/></w:body></w:document>";
+var linkAssocDocA="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.[REDACTED]\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink><w:r><w:t xml:space=\"preserve\"> Beta</w:t></w:r></w:p><w:sectPr/></w:body></w:document>";
+var linkAssocDocB="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.[REDACTED]\"><w:body><w:p><w:r><w:t xml:space=\"preserve\">Alpha </w:t></w:r><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Beta</w:t></w:r></w:hyperlink></w:p><w:sectPr/></w:body></w:document>";
 AddWordXml(linkAssocA,"word/document.xml",linkAssocDocA);AddWordXml(linkAssocB,"word/document.xml",linkAssocDocB);
 AddWordXml(linkAssocA,"word/_rels/document.xml.rels",sameLinkRels);AddWordXml(linkAssocB,"word/_rels/document.xml.rels",sameLinkRels);
 var linkAssocBlocked=false;try{await eng.ExportWordAsync(linkAssocA,linkAssocB,linkAssocO,"T",true);}catch(InvalidOperationException ex){linkAssocBlocked=ex.Message.Contains("비텍스트")||ex.Message.Contains("관계");}
@@ -731,8 +899,8 @@ Console.WriteLine("PASS NO-BREAK HYPHEN TRACKED EXPORT");
 // 69. Inserting ordinary text before the same hyperlink inside a paragraph must not be mistaken for relationship reassignment.
 var linkInlineA=Path.Combine(dir,"linkInlineA.docx");var linkInlineB=Path.Combine(dir,"linkInlineB.docx");var linkInlineO=Path.Combine(dir,"linkInlineOut.docx");
 Make(linkInlineA,P("Alpha"));Make(linkInlineB,P("Intro Alpha"));
-var linkInlineDocA="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink></w:p><w:sectPr/></w:body></w:document>";
-var linkInlineDocB="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body><w:p><w:r><w:t xml:space=\"preserve\">Intro </w:t></w:r><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink></w:p><w:sectPr/></w:body></w:document>";
+var linkInlineDocA="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.[REDACTED]\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink></w:p><w:sectPr/></w:body></w:document>";
+var linkInlineDocB="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.[REDACTED]\"><w:body><w:p><w:r><w:t xml:space=\"preserve\">Intro </w:t></w:r><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink></w:p><w:sectPr/></w:body></w:document>";
 AddWordXml(linkInlineA,"word/document.xml",linkInlineDocA);AddWordXml(linkInlineB,"word/document.xml",linkInlineDocB);
 AddWordXml(linkInlineA,"word/_rels/document.xml.rels",sameLinkRels);AddWordXml(linkInlineB,"word/_rels/document.xml.rels",sameLinkRels);
 await eng.ExportWordAsync(linkInlineA,linkInlineB,linkInlineO,"T",true);
@@ -743,8 +911,8 @@ Console.WriteLine("PASS HYPERLINK INLINE-TEXT SHIFT");
 // 70. Inserting ordinary paragraphs after the unchanged hyperlink owner must not create a false location change.
 var linkAfterA=Path.Combine(dir,"linkAfterA.docx");var linkAfterB=Path.Combine(dir,"linkAfterB.docx");var linkAfterO=Path.Combine(dir,"linkAfterOut.docx");
 Make(linkAfterA,P("Alpha")+P("Stable tail"));Make(linkAfterB,P("Alpha")+P("Inserted one")+P("Inserted two")+P("Stable tail"));
-var linkAfterDocA="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink></w:p>"+P("Stable tail")+"<w:sectPr/></w:body></w:document>";
-var linkAfterDocB="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink></w:p>"+P("Inserted one")+P("Inserted two")+P("Stable tail")+"<w:sectPr/></w:body></w:document>";
+var linkAfterDocA="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.[REDACTED]\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink></w:p>"+P("Stable tail")+"<w:sectPr/></w:body></w:document>";
+var linkAfterDocB="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.[REDACTED]\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink></w:p>"+P("Inserted one")+P("Inserted two")+P("Stable tail")+"<w:sectPr/></w:body></w:document>";
 AddWordXml(linkAfterA,"word/document.xml",linkAfterDocA);AddWordXml(linkAfterB,"word/document.xml",linkAfterDocB);
 AddWordXml(linkAfterA,"word/_rels/document.xml.rels",sameLinkRels);AddWordXml(linkAfterB,"word/_rels/document.xml.rels",sameLinkRels);
 await eng.ExportWordAsync(linkAfterA,linkAfterB,linkAfterO,"T",true);
@@ -785,9 +953,9 @@ Console.WriteLine("PASS FIELD LOGICAL-LOCATION SHIFT");
 
 // 74. Moving the same image relationship to a different paragraph must be blocked.
 var imageMoveA=Path.Combine(dir,"imageMoveA.docx");var imageMoveB=Path.Combine(dir,"imageMoveB.docx");var imageMoveO=Path.Combine(dir,"imageMoveOut.docx");
-Make(imageMoveA,P("Stable one")+"<w:p><w:r><w:t>Two</w:t></w:r><w:r><w:drawing xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" r:id=\"rIdImage\"/></w:r></w:p>"+P("Three")+P("Stable four"));
-Make(imageMoveB,P("Stable one")+P("Two")+"<w:p><w:r><w:t>Three</w:t></w:r><w:r><w:drawing xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" r:id=\"rIdImage\"/></w:r></w:p>"+P("Stable four"));
-var imageRels="<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rIdImage\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"media/image1.bin\"/></Relationships>";
+Make(imageMoveA,P("Stable one")+"<w:p><w:r><w:t>Two</w:t></w:r><w:r><w:drawing xmlns:r=\"http://schemas.openxmlformats.[REDACTED]\" r:id=\"rIdImage\"/></w:r></w:p>"+P("Three")+P("Stable four"));
+Make(imageMoveB,P("Stable one")+P("Two")+"<w:p><w:r><w:t>Three</w:t></w:r><w:r><w:drawing xmlns:r=\"http://schemas.openxmlformats.[REDACTED]\" r:id=\"rIdImage\"/></w:r></w:p>"+P("Stable four"));
+var imageRels="<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rIdImage\" Type=\"http://schemas.openxmlformats.[REDACTED]\" Target=\"media/image1.bin\"/></Relationships>";
 AddWordXml(imageMoveA,"word/_rels/document.xml.rels",imageRels);AddWordXml(imageMoveB,"word/_rels/document.xml.rels",imageRels);
 AddWordBytes(imageMoveA,"word/media/image1.bin",new byte[]{1,2,3,4});AddWordBytes(imageMoveB,"word/media/image1.bin",new byte[]{1,2,3,4});
 var imageMoveBlocked=false;try{await eng.ExportWordAsync(imageMoveA,imageMoveB,imageMoveO,"T",true);}catch(InvalidOperationException ex){imageMoveBlocked=ex.Message.Contains("비텍스트")||ex.Message.Contains("관계");}
@@ -836,11 +1004,11 @@ Console.WriteLine("PASS FIELD DUPLICATE-PARAGRAPH SHIFT");
 var imageEmptyA=Path.Combine(dir,"imageEmptyA.docx");var imageEmptyB=Path.Combine(dir,"imageEmptyB.docx");var imageEmptyO=Path.Combine(dir,"imageEmptyOut.docx");
 Make(imageEmptyA,
     P("Stable one")+
-    "<w:p><w:r><w:drawing xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" r:id=\"rIdImage\"/></w:r></w:p>"+
+    "<w:p><w:r><w:drawing xmlns:r=\"http://schemas.openxmlformats.[REDACTED]\" r:id=\"rIdImage\"/></w:r></w:p>"+
     P("Stable two")+P("Stable three"));
 Make(imageEmptyB,
     P("Stable one")+P("Stable two")+
-    "<w:p><w:r><w:drawing xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" r:id=\"rIdImage\"/></w:r></w:p>"+
+    "<w:p><w:r><w:drawing xmlns:r=\"http://schemas.openxmlformats.[REDACTED]\" r:id=\"rIdImage\"/></w:r></w:p>"+
     P("Stable three"));
 AddWordXml(imageEmptyA,"word/_rels/document.xml.rels",imageRels);AddWordXml(imageEmptyB,"word/_rels/document.xml.rels",imageRels);
 AddWordBytes(imageEmptyA,"word/media/image1.bin",new byte[]{1,2,3,4});AddWordBytes(imageEmptyB,"word/media/image1.bin",new byte[]{1,2,3,4});
@@ -852,11 +1020,11 @@ Console.WriteLine("PASS IMAGE-ONLY OWNER LOCATION GUARD");
 var imageEmptyShiftA=Path.Combine(dir,"imageEmptyShiftA.docx");var imageEmptyShiftB=Path.Combine(dir,"imageEmptyShiftB.docx");var imageEmptyShiftO=Path.Combine(dir,"imageEmptyShiftOut.docx");
 Make(imageEmptyShiftA,
     P("Stable one")+
-    "<w:p><w:r><w:drawing xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" r:id=\"rIdImage\"/></w:r></w:p>"+
+    "<w:p><w:r><w:drawing xmlns:r=\"http://schemas.openxmlformats.[REDACTED]\" r:id=\"rIdImage\"/></w:r></w:p>"+
     P("Stable two"));
 Make(imageEmptyShiftB,
     P("Intro")+P("Stable one")+
-    "<w:p><w:r><w:drawing xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" r:id=\"rIdImage\"/></w:r></w:p>"+
+    "<w:p><w:r><w:drawing xmlns:r=\"http://schemas.openxmlformats.[REDACTED]\" r:id=\"rIdImage\"/></w:r></w:p>"+
     P("Stable two"));
 AddWordXml(imageEmptyShiftA,"word/_rels/document.xml.rels",imageRels);AddWordXml(imageEmptyShiftB,"word/_rels/document.xml.rels",imageRels);
 AddWordBytes(imageEmptyShiftA,"word/media/image1.bin",new byte[]{1,2,3,4});AddWordBytes(imageEmptyShiftB,"word/media/image1.bin",new byte[]{1,2,3,4});
@@ -867,8 +1035,8 @@ Console.WriteLine("PASS IMAGE-ONLY LOGICAL-LOCATION SHIFT");
 // 80. Moving the same hyperlink from the first to the second identical text occurrence must be blocked.
 var linkRepeatA=Path.Combine(dir,"linkRepeatA.docx");var linkRepeatB=Path.Combine(dir,"linkRepeatB.docx");var linkRepeatO=Path.Combine(dir,"linkRepeatOut.docx");
 Make(linkRepeatA,P("Alpha Alpha"));Make(linkRepeatB,P("Alpha Alpha"));
-var linkRepeatDocA="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink><w:r><w:t xml:space=\"preserve\"> Alpha</w:t></w:r></w:p><w:sectPr/></w:body></w:document>";
-var linkRepeatDocB="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body><w:p><w:r><w:t xml:space=\"preserve\">Alpha </w:t></w:r><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink></w:p><w:sectPr/></w:body></w:document>";
+var linkRepeatDocA="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.[REDACTED]\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink><w:r><w:t xml:space=\"preserve\"> Alpha</w:t></w:r></w:p><w:sectPr/></w:body></w:document>";
+var linkRepeatDocB="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.[REDACTED]\"><w:body><w:p><w:r><w:t xml:space=\"preserve\">Alpha </w:t></w:r><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink></w:p><w:sectPr/></w:body></w:document>";
 AddWordXml(linkRepeatA,"word/document.xml",linkRepeatDocA);AddWordXml(linkRepeatB,"word/document.xml",linkRepeatDocB);
 AddWordXml(linkRepeatA,"word/_rels/document.xml.rels",sameLinkRels);AddWordXml(linkRepeatB,"word/_rels/document.xml.rels",sameLinkRels);
 var linkRepeatBlocked=false;try{await eng.ExportWordAsync(linkRepeatA,linkRepeatB,linkRepeatO,"T",true);}catch(InvalidOperationException ex){linkRepeatBlocked=ex.Message.Contains("비텍스트")||ex.Message.Contains("관계");}
@@ -891,8 +1059,8 @@ Console.WriteLine("PASS THREE-WAY GENERIC-TITLE SEPARATION");
 // 82. Repeated hyperlink text must not be reassigned while unrelated prefix text is also inserted.
 var linkRepeatEditA=Path.Combine(dir,"linkRepeatEditA.docx");var linkRepeatEditB=Path.Combine(dir,"linkRepeatEditB.docx");var linkRepeatEditO=Path.Combine(dir,"linkRepeatEditOut.docx");
 Make(linkRepeatEditA,P("Alpha Alpha"));Make(linkRepeatEditB,P("Intro Alpha Alpha"));
-var linkRepeatEditDocA="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink><w:r><w:t xml:space=\"preserve\"> Alpha</w:t></w:r></w:p><w:sectPr/></w:body></w:document>";
-var linkRepeatEditDocB="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body><w:p><w:r><w:t xml:space=\"preserve\">Intro Alpha </w:t></w:r><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink></w:p><w:sectPr/></w:body></w:document>";
+var linkRepeatEditDocA="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.[REDACTED]\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink><w:r><w:t xml:space=\"preserve\"> Alpha</w:t></w:r></w:p><w:sectPr/></w:body></w:document>";
+var linkRepeatEditDocB="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.[REDACTED]\"><w:body><w:p><w:r><w:t xml:space=\"preserve\">Intro Alpha </w:t></w:r><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink></w:p><w:sectPr/></w:body></w:document>";
 AddWordXml(linkRepeatEditA,"word/document.xml",linkRepeatEditDocA);AddWordXml(linkRepeatEditB,"word/document.xml",linkRepeatEditDocB);
 AddWordXml(linkRepeatEditA,"word/_rels/document.xml.rels",sameLinkRels);AddWordXml(linkRepeatEditB,"word/_rels/document.xml.rels",sameLinkRels);
 var linkRepeatEditBlocked=false;try{await eng.ExportWordAsync(linkRepeatEditA,linkRepeatEditB,linkRepeatEditO,"T",true);}catch(InvalidOperationException ex){linkRepeatEditBlocked=ex.Message.Contains("비텍스트")||ex.Message.Contains("관계");}
@@ -911,11 +1079,11 @@ Console.WriteLine("PASS FIELD OWNER TEXT EDIT");
 var imageEmptySiblingA=Path.Combine(dir,"imageEmptySiblingA.docx");var imageEmptySiblingB=Path.Combine(dir,"imageEmptySiblingB.docx");var imageEmptySiblingO=Path.Combine(dir,"imageEmptySiblingOut.docx");
 Make(imageEmptySiblingA,
     P("Stable one")+
-    "<w:p><w:r><w:drawing xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" r:id=\"rIdImage\"/></w:r></w:p>"+
+    "<w:p><w:r><w:drawing xmlns:r=\"http://schemas.openxmlformats.[REDACTED]\" r:id=\"rIdImage\"/></w:r></w:p>"+
     "<w:p/>"+P("Stable two"));
 Make(imageEmptySiblingB,
     P("Stable one")+"<w:p/>"+
-    "<w:p><w:r><w:drawing xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" r:id=\"rIdImage\"/></w:r></w:p>"+
+    "<w:p><w:r><w:drawing xmlns:r=\"http://schemas.openxmlformats.[REDACTED]\" r:id=\"rIdImage\"/></w:r></w:p>"+
     P("Stable two"));
 AddWordXml(imageEmptySiblingA,"word/_rels/document.xml.rels",imageRels);AddWordXml(imageEmptySiblingB,"word/_rels/document.xml.rels",imageRels);
 AddWordBytes(imageEmptySiblingA,"word/media/image1.bin",new byte[]{1,2,3,4});AddWordBytes(imageEmptySiblingB,"word/media/image1.bin",new byte[]{1,2,3,4});
@@ -969,8 +1137,8 @@ Console.WriteLine("PASS FIELD PREFIX TEXT INSERTION");
 // 89. Expanding the linked range while paragraph text stays identical is a relationship-association change and must be blocked.
 var linkRangeA=Path.Combine(dir,"linkRangeA.docx");var linkRangeB=Path.Combine(dir,"linkRangeB.docx");var linkRangeO=Path.Combine(dir,"linkRangeOut.docx");
 Make(linkRangeA,P("Alpha Beta"));Make(linkRangeB,P("Alpha Beta"));
-var linkRangeDocA="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink><w:r><w:t xml:space=\"preserve\"> Beta</w:t></w:r></w:p><w:sectPr/></w:body></w:document>";
-var linkRangeDocB="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha Beta</w:t></w:r></w:hyperlink></w:p><w:sectPr/></w:body></w:document>";
+var linkRangeDocA="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.[REDACTED]\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha</w:t></w:r></w:hyperlink><w:r><w:t xml:space=\"preserve\"> Beta</w:t></w:r></w:p><w:sectPr/></w:body></w:document>";
+var linkRangeDocB="<w:document xmlns:w=\""+W+"\" xmlns:r=\"http://schemas.openxmlformats.[REDACTED]\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>Alpha Beta</w:t></w:r></w:hyperlink></w:p><w:sectPr/></w:body></w:document>";
 AddWordXml(linkRangeA,"word/document.xml",linkRangeDocA);AddWordXml(linkRangeB,"word/document.xml",linkRangeDocB);
 AddWordXml(linkRangeA,"word/_rels/document.xml.rels",sameLinkRels);AddWordXml(linkRangeB,"word/_rels/document.xml.rels",sameLinkRels);
 var linkRangeBlocked=false;try{await eng.ExportWordAsync(linkRangeA,linkRangeB,linkRangeO,"T",true);}catch(InvalidOperationException ex){linkRangeBlocked=ex.Message.Contains("비텍스트")||ex.Message.Contains("관계");}

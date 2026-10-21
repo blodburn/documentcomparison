@@ -109,12 +109,17 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         {
             var names = paths.Select(x => Path.GetFileName(x) ?? string.Empty).ToList();
             var texts = new List<string>(paths.Count);
+            var structuredDocuments = new List<List<DocxComparisonBlock>?>(paths.Count);
             var sourceFiles = new List<SourceFileStateVm>(paths.Count);
             for (var i = 0; i < paths.Count; i++)
             {
                 linked.Token.ThrowIfCancellationRequested();
                 var before = CaptureSourceFileState(paths[i]);
                 texts.Add(await NativeDocumentReader.ReadAsync(paths[i], linked.Token));
+                // The legacy plain-text DOCX reader is useful for non-table documents, but
+                // destroys cell boundaries. Never use it for the table comparison path.
+                structuredDocuments.Add(Path.GetExtension(paths[i]).Equals(".docx", StringComparison.OrdinalIgnoreCase)
+                    ? await StructuredDocxReader.ReadAsync(paths[i], linked.Token) : null);
                 var after = CaptureSourceFileState(paths[i]);
                 if (!SameSourceFileState(before, after))
                     throw new InvalidOperationException($"비교 중 입력 파일이 변경되었습니다: {Path.GetFileName(paths[i])}. 다시 비교하세요.");
@@ -125,19 +130,23 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             var docs = new List<List<NativeUnit>>(paths.Count);
             for (var i = 0; i < texts.Count; i++)
             {
-                docs.Add(ParseUnits(texts[i], mode));
+                var structured = structuredDocuments[i];
+                docs.Add(structured is not null && structured.Any(x => x.Cell is not null)
+                    ? ParseStructuredDocxUnits(structured, mode)
+                    : ParseUnits(texts[i], mode));
                 progress?.Report(20 + (i + 1) * 15 / texts.Count);
             }
 
             baseIndex = Math.Clamp(baseIndex, 0, paths.Count - 1);
             var aligned = BuildRows(docs, baseIndex, linked.Token);
+            var tableMoves = FindTableMovement(aligned, paths.Count, baseIndex, includeAC);
             var globalParts = BuildGlobalPartIndex(docs);
             progress?.Report(45);
             var rows = new List<ComparisonRowVm>(aligned.Count);
             for (var i = 0; i < aligned.Count; i++)
             {
                 linked.Token.ThrowIfCancellationRequested();
-                rows.Add(BuildRow(i + 1, aligned[i], paths.Count, baseIndex, includeAC, includePunctuation, globalParts));
+                rows.Add(BuildRow(i + 1, aligned[i], paths.Count, baseIndex, includeAC, includePunctuation, globalParts, tableMoves));
                 if ((i & 7) == 0) progress?.Report(45 + (int)(50.0 * (i + 1) / Math.Max(1, aligned.Count)));
             }
             ApplySectionHeaders(rows, paths.Count);
@@ -587,6 +596,37 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return units;
     }
 
+    private static List<NativeUnit> ParseStructuredDocxUnits(IReadOnlyList<DocxComparisonBlock> blocks, string mode)
+    {
+        var result = new List<NativeUnit>();
+        var paragraphs = new List<string>();
+        void Flush()
+        {
+            if (paragraphs.Count == 0) return;
+            foreach (var unit in ParseUnits(string.Join("\n", paragraphs), mode))
+                result.Add(NativeUnit.Create(result.Count, unit.Number, unit.Title,
+                    unit.Header, unit.Body, unit.Section, unit.Kind));
+            paragraphs.Clear();
+        }
+
+        foreach (var block in blocks)
+        {
+            if (block.Cell is not { } cell)
+            {
+                if (!string.IsNullOrWhiteSpace(block.Paragraph)) paragraphs.Add(block.Paragraph);
+                continue;
+            }
+            Flush();
+            var label = cell.Row < 0 ? $"표 {cell.Table + 1}" :
+                $"표 {cell.Table + 1} · {cell.Row + 1}행 {cell.Column + 1}열";
+            result.Add(NativeUnit.Create(result.Count,
+                $"tbl:{cell.Table}:row:{cell.Row}:col:{cell.Column}", "", label,
+                cell.Text, "", "table-cell", cell));
+        }
+        Flush();
+        return result;
+    }
+
     private static List<NativeUnit?[]> BuildRows(IReadOnlyList<List<NativeUnit>> docs, int baseIndex, CancellationToken token)
     {
         var n = docs.Count;
@@ -660,8 +700,106 @@ public sealed class NativeComparisonEngine : IComparisonEngine
 
     private sealed record UnitMatch(int Base, int Other, double Score, string Mode);
 
+    // Table/row/column matching is structural, and never allows a table cell to match prose.
+    // Exact unique content serves only as an anchor within an already matched table/row;
+    // ambiguous repetitions are paired by their remaining position, never by global text similarity.
+    private static List<UnitMatch> MatchStructuredUnits(
+        IReadOnlyList<NativeUnit> a, IReadOnlyList<NativeUnit> b, CancellationToken token)
+    {
+        var result = new List<UnitMatch>();
+        var plainA = Enumerable.Range(0, a.Count).Where(i => a[i].TableCell is null).ToList();
+        var plainB = Enumerable.Range(0, b.Count).Where(i => b[i].TableCell is null).ToList();
+        foreach (var match in MatchUnitSequence(plainA.Select(i => a[i]).ToList(),
+                     plainB.Select(i => b[i]).ToList(), token))
+            result.Add(new UnitMatch(plainA[match.Base], plainB[match.Other], match.Score, match.Mode));
+
+        // Unique, unchanged row/cell text can identify moved rows and inserted columns, but
+        // repeated strings cannot. Fill an equal-sized gap positionally only after anchors.
+        static List<(int A, int B)> PairWithinGroup<T>(
+            IReadOnlyList<T> oldItems, IReadOnlyList<T> newItems, Func<T, string> key)
+        {
+            var matched = new List<(int A, int B)>();
+            var oldKeys = oldItems.Select(key).ToList();
+            var newKeys = newItems.Select(key).ToList();
+            var usedB = new HashSet<int>();
+            for (var i = 0; i < oldKeys.Count; i++)
+            {
+                var k = oldKeys[i];
+                if (k.Length == 0 || oldKeys.Count(x => x == k) != 1 ||
+                    newKeys.Count(x => x == k) != 1) continue;
+                var j = newKeys.IndexOf(k);
+                matched.Add((i, j)); usedB.Add(j);
+            }
+            var anchors = new List<(int A, int B)> { (-1, -1) };
+            anchors.AddRange(matched.OrderBy(x => x.A));
+            anchors.Add((oldItems.Count, newItems.Count));
+            for (var k = 1; k < anchors.Count; k++)
+            {
+                var before = anchors[k - 1];
+                var after = anchors[k];
+                if (after.B <= before.B) continue; // a deliberate move, not a monotonic gap
+                var oldGap = Enumerable.Range(before.A + 1, after.A - before.A - 1)
+                    .Where(i => !matched.Any(x => x.A == i)).ToList();
+                var newGap = Enumerable.Range(before.B + 1, after.B - before.B - 1)
+                    .Where(j => !usedB.Contains(j)).ToList();
+                if (oldGap.Count != newGap.Count) continue; // insertion/deletion: do not guess
+                for (var n = 0; n < oldGap.Count; n++)
+                    if (!usedB.Contains(newGap[n]))
+                    {
+                        matched.Add((oldGap[n], newGap[n]));
+                        usedB.Add(newGap[n]);
+                    }
+            }
+            return matched;
+        }
+
+        var tablesA = Enumerable.Range(0, a.Count).Where(i => a[i].TableCell is not null)
+            .GroupBy(i => a[i].TableCell!.Table).OrderBy(g => g.Key).ToList();
+        var tablesB = Enumerable.Range(0, b.Count).Where(i => b[i].TableCell is not null)
+            .GroupBy(i => b[i].TableCell!.Table).OrderBy(g => g.Key).ToList();
+        var candidates = new List<(int A, int B, double Score)>();
+        for (var i = 0; i < tablesA.Count; i++)
+        for (var j = 0; j < tablesB.Count; j++)
+        {
+            token.ThrowIfCancellationRequested();
+            var oldSet = tablesA[i].Select(x => LineageNormalize(a[x].Body))
+                .Where(x => x.Length > 0).ToHashSet();
+            var newSet = tablesB[j].Select(x => LineageNormalize(b[x].Body))
+                .Where(x => x.Length > 0).ToHashSet();
+            var shared = oldSet.Intersect(newSet).Count();
+            var overlap = oldSet.Count + newSet.Count == 0 ? 1.0 :
+                shared / (double)Math.Max(oldSet.Count, newSet.Count);
+            var soleTable = tablesA.Count == 1 && tablesB.Count == 1;
+            if (overlap < .20 && !soleTable) continue;
+            candidates.Add((i, j, overlap + (i == j ? .01 : 0)));
+        }
+        var usedA = new HashSet<int>(); var usedB = new HashSet<int>();
+        foreach (var pair in candidates.OrderByDescending(x => x.Score)
+                     .ThenBy(x => Math.Abs(x.A - x.B)).ThenBy(x => x.A).ThenBy(x => x.B))
+        {
+            if (usedA.Contains(pair.A) || usedB.Contains(pair.B)) continue;
+            usedA.Add(pair.A); usedB.Add(pair.B);
+            var oldTable = tablesA[pair.A].ToList();
+            var newTable = tablesB[pair.B].ToList();
+            var oldRows = oldTable.GroupBy(i => a[i].TableCell!.Row).OrderBy(g => g.Key)
+                .Select(g => (Cells: g.ToList(), Key: string.Join("¦", g.Select(i => LineageNormalize(a[i].Body))))).ToList();
+            var newRows = newTable.GroupBy(i => b[i].TableCell!.Row).OrderBy(g => g.Key)
+                .Select(g => (Cells: g.ToList(), Key: string.Join("¦", g.Select(i => LineageNormalize(b[i].Body))))).ToList();
+            foreach (var (oldRow, newRow) in PairWithinGroup(oldRows, newRows, row => row.Key))
+            {
+                var oldCells = oldRows[oldRow].Cells.Select(i => (Index: i, Key: LineageNormalize(a[i].Body))).ToList();
+                var newCells = newRows[newRow].Cells.Select(i => (Index: i, Key: LineageNormalize(b[i].Body))).ToList();
+                foreach (var (oldCol, newCol) in PairWithinGroup(oldCells, newCells, item => item.Key))
+                    result.Add(new UnitMatch(oldCells[oldCol].Index, newCells[newCol].Index, 1, "table-cell"));
+            }
+        }
+        return result.OrderBy(x => x.Base).ToList();
+    }
+
     private static List<UnitMatch> MatchUnitSequence(IReadOnlyList<NativeUnit> a, IReadOnlyList<NativeUnit> b, CancellationToken token)
     {
+        if (a.Any(x => x.TableCell is not null) || b.Any(x => x.TableCell is not null))
+            return MatchStructuredUnits(a, b, token);
         var articleA = Enumerable.Range(0, a.Count).Where(i => IsLegalArticle(a[i])).ToList();
         var articleB = Enumerable.Range(0, b.Count).Where(i => IsLegalArticle(b[i])).ToList();
 
@@ -1138,8 +1276,54 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return true;
     }
 
+    private static Dictionary<(int OldDoc, int NewDoc, int OldIndex, int NewIndex), string> FindTableMovement(
+        IReadOnlyList<NativeUnit?[]> rows, int docCount, int baseIndex, bool includeAC)
+    {
+        var moves = new Dictionary<(int, int, int, int), string>();
+        foreach (var (oldDoc, newDoc, _, _) in PairPlan(docCount, baseIndex, includeAC))
+        {
+            var paired = rows.Select(row => (Old: row[oldDoc], New: row[newDoc]))
+                .Where(x => x.Old is not null && x.New is not null)
+                .Select(x => (Old: x.Old!, New: x.New!)).ToList();
+            var plain = paired.Where(x => x.Old.TableCell is null && x.New.TableCell is null).ToList();
+            var cells = paired.Where(x => x.Old.TableCell is not null && x.New.TableCell is not null).ToList();
+            foreach (var group in cells.GroupBy(x => (x.Old.TableCell!.Table, x.New.TableCell!.Table)))
+            {
+                var first = group.First();
+                var oldTableIndex = first.Old.Index;
+                var newTableIndex = first.New.Index;
+                var movedAcrossText = plain.Any(x =>
+                    (oldTableIndex < x.Old.Index) != (newTableIndex < x.New.Index));
+                var movedAcrossTable = cells.Any(x =>
+                    x.Old.TableCell!.Table != first.Old.TableCell!.Table &&
+                    x.New.TableCell!.Table != first.New.TableCell!.Table &&
+                    (oldTableIndex < x.Old.Index) != (newTableIndex < x.New.Index));
+                var tableMoved = movedAcrossText || movedAcrossTable;
+                var rowPairs = group.GroupBy(x => (x.Old.TableCell!.Row, x.New.TableCell!.Row))
+                    .Select(g => g.First()).ToList();
+                foreach (var row in rowPairs)
+                {
+                    var movedRow = rowPairs.Any(other =>
+                        other.Old.TableCell!.Row != row.Old.TableCell!.Row &&
+                        other.New.TableCell!.Row != row.New.TableCell!.Row &&
+                        (other.Old.TableCell!.Row < row.Old.TableCell!.Row) !=
+                        (other.New.TableCell!.Row < row.New.TableCell!.Row));
+                    var reason = tableMoved ? "표 이동" : movedRow ? "표 행 이동" : "";
+                    if (reason.Length == 0) continue;
+                    // One structural movement entry per row, not duplicate entries for each cell.
+                    var firstCell = group.Where(x => x.Old.TableCell!.Row == row.Old.TableCell!.Row &&
+                                                        x.New.TableCell!.Row == row.New.TableCell!.Row)
+                        .OrderBy(x => x.Old.TableCell!.Column).First();
+                    moves[(oldDoc, newDoc, firstCell.Old.Index, firstCell.New.Index)] = reason;
+                }
+            }
+        }
+        return moves;
+    }
+
     private static ComparisonRowVm BuildRow(int id, NativeUnit?[] members, int docCount, int baseIndex, bool includeAC, bool includePunctuation,
-        IReadOnlyList<Dictionary<string, List<PartLocation>>> globalParts)
+        IReadOnlyList<Dictionary<string, List<PartLocation>>> globalParts,
+        IReadOnlyDictionary<(int OldDoc, int NewDoc, int OldIndex, int NewIndex), string> tableMoves)
     {
         var nativeMarkers = new List<NativeMarker>();
         var structural = new List<string>();
@@ -1175,6 +1359,8 @@ public sealed class NativeComparisonEngine : IComparisonEngine
                 }
                 continue;
             }
+            if (tableMoves.TryGetValue((oldDoc, newDoc, old.Index, revised.Index), out var movement))
+                structural.Add($"{pair} · {movement}: {old.Header} → {revised.Header}");
             nativeMarkers.AddRange(ComparePair(old, revised, oldDoc, newDoc, pair, order, includePunctuation, structural, globalParts));
         }
         nativeMarkers.Sort(NativeMarkerComparer.Instance);
@@ -1205,6 +1391,15 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         bool includePunctuation, List<string> structural,
         IReadOnlyList<Dictionary<string, List<PartLocation>>> globalParts)
     {
+        if (old.TableCell is { } oldCell && revised.TableCell is { } newCell)
+        {
+            if (oldCell.Span != newCell.Span || oldCell.VerticalMerge != newCell.VerticalMerge)
+                structural.Add($"{pair} · 표 셀 병합 변경: {old.Header} → {revised.Header}");
+            if (oldCell.ParagraphCount != newCell.ParagraphCount)
+                structural.Add($"{pair} · 셀 내부 문단 수 변경: {oldCell.ParagraphCount} → {newCell.ParagraphCount}");
+            return DiffText(old.Body, revised.Body, old.Header.Length + 1, revised.Header.Length + 1,
+                oldDoc, newDoc, pair, pairOrder, "body", includePunctuation, 0);
+        }
         var result = new List<NativeMarker>();
         var articleMoved = false; var titleChanged = false; var bodyChanged = false; var structureChanged = false;
         if (IsLegalArticle(old) && IsLegalArticle(revised))
@@ -1689,7 +1884,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return i;
     }
 
-    private static string RecoverEmbeddedExplicitItemBoundaries(string text)
+    private static string [REDACTED](string text)
     {
         if (string.IsNullOrEmpty(text)) return text ?? string.Empty;
 
@@ -1824,7 +2019,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     private static List<NativePart> ParseParts(string text)
     {
         text = NativeDocumentReader.NormalizeNewlines(text ?? string.Empty);
-        var scanText = RecoverEmbeddedExplicitItemBoundaries(StructuralParseView(text));
+        var scanText = [REDACTED](StructuralParseView(text));
         var matches = ExplicitItem.Matches(scanText).Cast<Match>().ToList();
         if (matches.Count == 0)
         {
@@ -2889,12 +3084,15 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         public string Header { get; init; } = "";
         public string Body { get; init; } = "";
         public string Section { get; init; } = "";
+        public DocxComparisonCell? TableCell { get; init; }
         public string Text => Header.Length == 0 ? Body : Body.Length == 0 ? Header : Header + "\n" + Body;
         public string HeaderOrBody => Header.Length > 0 ? Header : Body;
         public string NormalizedBody => Normalize(Body);
         public string NormalizedText => Normalize(Text);
-        public static NativeUnit Create(int index, string number, string title, string header, string body, string section, string kind = "block") =>
-            new() { Index = index, Kind = kind, Number = number, Title = title, Header = header, Body = body, Section = section };
+        public static NativeUnit Create(int index, string number, string title, string header, string body, string section,
+            string kind = "block", DocxComparisonCell? tableCell = null) =>
+            new() { Index = index, Kind = kind, Number = number, Title = title, Header = header, Body = body,
+                Section = section, TableCell = tableCell };
         public MemberVm ToViewModel() => new()
         {
             Index = Index, Kind = Kind, Number = Number, Title = Title, Header = Header,

@@ -47,7 +47,7 @@ internal static class NativeDocumentReader
         // Pure CJK UTF-16 without a BOM can contain almost no NUL bytes, so the fast lane-bias
         // heuristic above cannot identify it.  Only after every normal text encoding failed,
         // compare strict LE/BE UTF-16 candidates by textual-script plausibility.
-        if (TryDecodeBomlessUtf16ByTextPlausibility(bytes, out var cjkUtf16Text))
+        if ([REDACTED](bytes, out var cjkUtf16Text))
             return NormalizeNewlines(cjkUtf16Text);
 
         // Last-resort replacement fallback only after strict UTF-8 / CP949 / EUC-KR / UTF-16 fail.
@@ -135,7 +135,7 @@ internal static class NativeDocumentReader
         return score / Math.Max(1, count);
     }
 
-    private static bool TryDecodeBomlessUtf16ByTextPlausibility(byte[] bytes, out string text)
+    private static bool [REDACTED](byte[] bytes, out string text)
     {
         text = string.Empty;
         if (bytes.Length < 4 || (bytes.Length & 1) != 0) return false;
@@ -443,9 +443,9 @@ internal static class NativeDocumentReader
     private static bool IntAttr(XElement e, XName name, out int value) => int.TryParse(e.Attribute(name)?.Value, out value);
     private static int IntVal(XElement? e, XNamespace w, int fallback) => int.TryParse(Val(e, w), out var v) ? v : fallback;
     private static string? Val(XElement? e, XNamespace w) => e?.Attribute(w + "val")?.Value;
-    private static string Compact(string value) => string.Concat((value ?? string.Empty).Where(c => !char.IsWhiteSpace(c))).ToLowerInvariant();
+    internal static string Compact(string value) => string.Concat((value ?? string.Empty).Where(c => !char.IsWhiteSpace(c))).ToLowerInvariant();
 
-    private static string TrimStructuralEdges(string value)
+    internal static string TrimStructuralEdges(string value)
     {
         value ??= string.Empty;
         var start = 0; var end = value.Length;
@@ -496,7 +496,7 @@ internal static class NativeDocumentReader
         return sb.ToString();
     }
 
-    private static string ParagraphText(XElement paragraph, XNamespace w) => ParagraphVisibleText(paragraph, w);
+    internal static string ParagraphText(XElement paragraph, XNamespace w) => ParagraphVisibleText(paragraph, w);
 
     internal static string NormalizeNewlines(string value) =>
         (value ?? string.Empty).Replace("\r\n", "\n").Replace('\r', '\n');
