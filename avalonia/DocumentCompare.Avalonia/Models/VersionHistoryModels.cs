@@ -5,6 +5,8 @@ public sealed class VersionFileVm
     public string Label { get; set; } = "";
     public string Path { get; set; } = "";
     public string Sha256 { get; set; } = "";
+    // Null for legacy path-only projects; non-null means an immutable blob was captured.
+    public string? SnapshotBlobId { get; set; }
     public DateTime AddedAtUtc { get; set; } = DateTime.UtcNow;
 }
 

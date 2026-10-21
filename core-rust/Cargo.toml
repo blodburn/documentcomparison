@@ -1,0 +1,14 @@
+[package]
+name = "documentcompare_core"
+version = "0.1.0"
+edition = "2024"
+license = "LicenseRef-Proprietary"
+description = "Experimental Rust text comparison core for DocumentCompare"
+
+[lib]
+name = "documentcompare_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dc-code-diff"
+path = "src/main.rs"

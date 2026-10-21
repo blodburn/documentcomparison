@@ -1841,4 +1841,64 @@ Check(structuralOnly.Title=="항/호 구조 변경"&&structuralOnly.Detail.Conta
     "concrete structural change was not described clearly");
 Console.WriteLine("PASS VERSION HISTORY CONCRETE STRUCTURE LABELS");
 
+// 147. Saved projects persist immutable blobs instead of depending on the mutable source path.
+var snapshotPath=Path.Combine(dir,"immutable-version.txt");
+File.WriteAllText(snapshotPath,"v1: alpha",new UTF8Encoding(false));
+var transientStore=VersionSnapshotStore.CreateTemporary();
+var snapshotProject=new VersionHistoryProjectVm();
+var firstSnapshot=VersionFileImportPolicy.AddPaths(snapshotProject,new[]{snapshotPath},transientStore);
+Check(firstSnapshot.Added==1&&snapshotProject.Versions[0].SnapshotBlobId?.Length==64,"new imports must capture a snapshot");
+File.WriteAllText(snapshotPath,"v2: beta",new UTF8Encoding(false));
+var secondSnapshot=VersionFileImportPolicy.AddPaths(snapshotProject,new[]{snapshotPath},transientStore);
+Check(secondSnapshot.Added==1&&snapshotProject.Versions.Count==2,"same source path with new bytes must be a new version");
+var identicalSnapshot=VersionFileImportPolicy.AddPaths(snapshotProject,new[]{snapshotPath},transientStore);
+Check(identicalSnapshot.Added==0&&identicalSnapshot.Duplicates==1,"same source path/content must deduplicate");
+var savedPath=Path.Combine(dir,"project.dcv.json");
+var persisted=await VersionHistoryProjectStore.SaveAsync(snapshotProject,transientStore,savedPath);
+var savedStore=VersionSnapshotStore.ForProject(savedPath);
+File.Delete(snapshotPath);
+Check(File.ReadAllText(savedStore.Resolve(persisted.Versions[0]))=="v1: alpha"&&
+      File.ReadAllText(savedStore.Resolve(persisted.Versions[1]))=="v2: beta",
+      "past versions must survive source replacement/deletion");
+var reopened=System.Text.Json.JsonSerializer.Deserialize<VersionHistoryProjectVm>(File.ReadAllText(savedPath))!;
+Check(reopened.Versions.Count==2&&File.ReadAllText(savedStore.Resolve(reopened.Versions[0]))=="v1: alpha",
+      "saved project does not reopen immutable content");
+var snapshotCompare=await eng.CompareAsync(new[]{savedStore.Resolve(reopened.Versions[0]),savedStore.Resolve(reopened.Versions[1])},0,"general",false,true);
+Check(snapshotCompare.Rows.Any(row=>row.Changed),"historical snapshots must remain comparable after original deletion");
+var maliciousVersion=new VersionFileVm{Path=snapshotPath,SnapshotBlobId="../not-a-blob",Sha256="../not-a-blob"};
+var unsafeIdRejected=false;
+try { savedStore.Resolve(maliciousVersion); } catch(InvalidDataException) { unsafeIdRejected=true; }
+Check(unsafeIdRejected,"malformed snapshot IDs must not access arbitrary filesystem paths");
+var savedAgain=await VersionHistoryProjectStore.SaveAsync(reopened,savedStore,savedPath);
+Check(File.ReadAllText(savedStore.Resolve(savedAgain.Versions[1]))=="v2: beta",
+      "re-saving an already saved project must preserve all version blobs");
+var firstStored=savedStore.Resolve(reopened.Versions[0]);
+File.WriteAllText(firstStored,"tampered");
+var corruptedDetected=false;
+try { savedStore.Resolve(reopened.Versions[0]); } catch(InvalidDataException) { corruptedDetected=true; }
+Check(corruptedDetected,"corrupt snapshot content must not be shown as valid history");
+Console.WriteLine("PASS IMMUTABLE VERSION SNAPSHOTS AND CORRUPTION DETECTION");
+
+// 148. Existing path-only .dcv.json projects migrate on save without falsely claiming missing content.
+var legacyPath=Path.Combine(dir,"legacy.txt");File.WriteAllText(legacyPath,"legacy body");
+var missingLegacy=Path.Combine(dir,"missing-legacy.txt");
+var legacyProject=new VersionHistoryProjectVm{Versions=new(){new(){Path=legacyPath},new(){Path=missingLegacy}}};
+var legacySavedPath=Path.Combine(dir,"legacy.dcv.json");
+var migrated=await VersionHistoryProjectStore.SaveAsync(legacyProject,VersionSnapshotStore.CreateTemporary(),legacySavedPath);
+Check(migrated.Versions[0].SnapshotBlobId?.Length==64&&
+      File.ReadAllText(VersionSnapshotStore.ForProject(legacySavedPath).Resolve(migrated.Versions[0]))=="legacy body",
+      "legacy existing file must be migrated to immutable content");
+Check(migrated.Versions[1].SnapshotBlobId is null,"missing legacy source must never be marked as preserved");
+Console.WriteLine("PASS LEGACY VERSION PROJECT MIGRATION");
+
+// 149. Shared change-event identity is independent of display review numbers.
+var fromLocation=new UnifiedChangeLocation("version-A","src/test.rs",UnifiedLocationKind.CodeNode,"fn:x",10,30);
+var toLocation=new UnifiedChangeLocation("version-B","src/test.rs",UnifiedLocationKind.CodeNode,"fn:y",10,33);
+var eventA=UnifiedChangeEvents.Create(UnifiedChangeKind.Rename,fromLocation,toLocation,"function renamed","AST+body match",0,.95);
+var eventB=UnifiedChangeEvents.Create(UnifiedChangeKind.Rename,fromLocation,toLocation,"function renamed","AST+body match",0,.95);
+var eventC=UnifiedChangeEvents.Create(UnifiedChangeKind.Rename,fromLocation,toLocation,"function renamed","AST+body match",1,.95);
+Check(eventA.EventId==eventB.EventId&&eventA.EventId!=eventC.EventId,
+      "unified change IDs must be deterministic and distinguish duplicate changes");
+Console.WriteLine("PASS UNIFIED CHANGE EVENT IDENTITY");
+
 Console.WriteLine("ALL REGRESSIONS PASSED");

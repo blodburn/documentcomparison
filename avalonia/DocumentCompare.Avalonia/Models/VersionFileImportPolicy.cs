@@ -19,7 +19,7 @@ public static class VersionFileImportPolicy
             || ext.Equals(".txt", StringComparison.OrdinalIgnoreCase);
     }
 
-    public static VersionFileImportResult AddPaths(VersionHistoryProjectVm project, IEnumerable<string> paths)
+    public static VersionFileImportResult AddPaths(VersionHistoryProjectVm project, IEnumerable<string> paths, VersionSnapshotStore? snapshotStore = null)
     {
         var added = 0; var duplicates = 0; var unsupported = 0; var missing = 0;
         var known = project.Versions.Select(x => Path.GetFullPath(x.Path)).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -29,12 +29,23 @@ public static class VersionFileImportPolicy
             var path = Path.GetFullPath(raw);
             if (!File.Exists(path)) { missing++; continue; }
             if (!IsSupported(path)) { unsupported++; continue; }
-            if (!known.Add(path)) { duplicates++; continue; }
+            var blobId = snapshotStore is null ? Hash(path) : snapshotStore.Import(path);
+            // Legacy imports preserve the original path-only duplicate rule. Snapshot-enabled
+            // projects can capture a changed file at the same path as a distinct version.
+            if (snapshotStore is null && !known.Add(path) || project.Versions.Any(v =>
+                Path.GetFullPath(v.Path).Equals(path, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(v.Sha256, blobId, StringComparison.OrdinalIgnoreCase)))
+            {
+                duplicates++;
+                continue;
+            }
+            known.Add(path);
             project.Versions.Add(new VersionFileVm
             {
                 Label = Path.GetFileNameWithoutExtension(path),
                 Path = path,
-                Sha256 = Hash(path),
+                Sha256 = blobId,
+                SnapshotBlobId = snapshotStore is null ? null : blobId,
                 AddedAtUtc = DateTime.UtcNow
             });
             added++;

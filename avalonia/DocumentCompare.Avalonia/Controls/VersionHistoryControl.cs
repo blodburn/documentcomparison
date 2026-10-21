@@ -17,6 +17,7 @@ public sealed class VersionHistoryControl : UserControl
 {
     private readonly IComparisonEngine _engine = new NativeComparisonEngine();
     private VersionHistoryProjectVm _project = new();
+    private VersionSnapshotStore _snapshotStore = VersionSnapshotStore.CreateTemporary();
     private int _beforeIndex = -1;
     private int _afterIndex = -1;
     private int _activeIndex = -1;
@@ -176,15 +177,23 @@ public sealed class VersionHistoryControl : UserControl
         var paths = files.Select(x => x.TryGetLocalPath())
             .Where(x => !string.IsNullOrWhiteSpace(x))
             .Cast<string>();
-        var result = VersionFileImportPolicy.AddPaths(_project, paths);
-        if (result.Added == 0)
+        try
         {
-            _status.Text = ImportStatus(result, "추가된 버전이 없습니다.");
-            return;
+            var result = VersionFileImportPolicy.AddPaths(_project, paths, _snapshotStore);
+            if (result.Added == 0)
+            {
+                _status.Text = ImportStatus(result, "추가된 버전이 없습니다.");
+                return;
+            }
+            RefreshTree();
+            _status.Text = ImportStatus(result, $"{result.Added}개 버전을 추가했습니다.");
+            await ShowSelectedAsync();
         }
-        RefreshTree();
-        _status.Text = ImportStatus(result, $"{result.Added}개 버전을 추가했습니다.");
-        await ShowSelectedAsync();
+        catch (Exception ex)
+        {
+            RefreshTree();
+            _status.Text = "버전 파일 보관 실패: " + ex.Message;
+        }
     }
 
     private void OnVersionDragOver(object? sender, DragEventArgs e)
@@ -202,13 +211,21 @@ public sealed class VersionHistoryControl : UserControl
             .Where(x => !string.IsNullOrWhiteSpace(x))
             .Cast<string>()
             .ToArray() ?? Array.Empty<string>();
-        var result = VersionFileImportPolicy.AddPaths(_project, paths);
-        if (result.Added > 0)
+        try
+        {
+            var result = VersionFileImportPolicy.AddPaths(_project, paths, _snapshotStore);
+            if (result.Added > 0)
+            {
+                RefreshTree();
+                await ShowSelectedAsync();
+            }
+            _status.Text = ImportStatus(result, result.Added > 0 ? $"드롭으로 {result.Added}개 버전을 추가했습니다." : "추가된 버전이 없습니다.");
+        }
+        catch (Exception ex)
         {
             RefreshTree();
-            await ShowSelectedAsync();
+            _status.Text = "드롭 파일 보관 실패: " + ex.Message;
         }
-        _status.Text = ImportStatus(result, result.Added > 0 ? $"드롭으로 {result.Added}개 버전을 추가했습니다." : "추가된 버전이 없습니다.");
     }
 
     private static string ImportStatus(VersionFileImportResult result, string prefix)
@@ -236,7 +253,13 @@ public sealed class VersionHistoryControl : UserControl
         {
             var loaded = JsonSerializer.Deserialize<VersionHistoryProjectVm>(await File.ReadAllTextAsync(path));
             if (loaded is null) throw new InvalidDataException("프로젝트 내용을 읽을 수 없습니다.");
+            var snapshotStore = VersionSnapshotStore.ForProject(path);
+            foreach (var version in loaded.Versions.Where(v => !string.IsNullOrWhiteSpace(v.SnapshotBlobId)))
+                snapshotStore.Resolve(version); // Reject broken sidecars instead of showing a false history.
+            var oldStore = _snapshotStore;
             _project = loaded;
+            _snapshotStore = snapshotStore;
+            try { oldStore.CleanupTemporary(); } catch { }
             _projectPath = path;
             _beforeIndex = -1;
             _afterIndex = -1;
@@ -270,9 +293,16 @@ public sealed class VersionHistoryControl : UserControl
         if (string.IsNullOrWhiteSpace(path)) return;
         try
         {
-            await File.WriteAllTextAsync(path, JsonSerializer.Serialize(_project, new JsonSerializerOptions { WriteIndented = true }));
+            var oldStore = _snapshotStore;
+            var saved = await VersionHistoryProjectStore.SaveAsync(_project, oldStore, path);
+            _project = saved;
+            _snapshotStore = VersionSnapshotStore.ForProject(path);
+            try { oldStore.CleanupTemporary(); } catch { }
             _projectPath = path;
-            _status.Text = $"프로젝트를 저장했습니다: {Path.GetFileName(path)}";
+            var unavailable = saved.Versions.Count(v => string.IsNullOrWhiteSpace(v.SnapshotBlobId));
+            _status.Text = unavailable > 0
+                ? $"프로젝트 저장 완료 · 원본을 찾을 수 없는 이전 형식 버전 {unavailable}개는 보존하지 못했습니다."
+                : $"버전 원본과 프로젝트를 저장했습니다: {Path.GetFileName(path)}";
         }
         catch (Exception ex)
         {
@@ -385,25 +415,20 @@ public sealed class VersionHistoryControl : UserControl
 
         var display = _project.Versions[displayIndex];
         _previewTitle.Text = Path.GetFileName(display.Path);
-        if (!File.Exists(display.Path))
-        {
-            _previewSubtitle.Text = "원본 파일을 찾을 수 없습니다.";
-            _changeSummary.Text = "파일 경로를 확인하세요.";
-            _preview.Children.Add(Message("원본 파일이 이동되었거나 삭제되었습니다.", "#C62828"));
-            return;
-        }
-
         try
         {
+            var displayPath = _snapshotStore.Resolve(display);
+            if (!File.Exists(displayPath))
+                throw new FileNotFoundException("버전 파일을 찾을 수 없습니다. 이전 형식으로 저장된 프로젝트라면 원본 파일이 필요합니다.");
             if (_beforeIndex < 0 || _afterIndex < 0)
             {
                 var role = _afterIndex >= 0 ? "후" : "전";
                 var waiting = _afterIndex >= 0 ? "전" : "후";
                 _previewSubtitle.Text = $"{role} 문서 지정됨 · {waiting} 문서를 선택하면 비교를 시작합니다.";
                 _changeSummary.Text = $"{waiting} 문서 선택 대기";
-                var standaloneStyleMap = VersionDocumentStyleMap.Load(display.Path);
-                var standaloneTableMap = VersionDocxTableMap.Load(display.Path);
-                var self = await _engine.CompareAsync(new[] { display.Path, display.Path }, 1, "auto", false, true, token);
+                var standaloneStyleMap = VersionDocumentStyleMap.Load(displayPath);
+                var standaloneTableMap = VersionDocxTableMap.Load(displayPath);
+                var self = await _engine.CompareAsync(new[] { displayPath, displayPath }, 1, "auto", false, true, token);
                 foreach (var row in self.Rows)
                     _preview.Children.Add(new VersionPreviewRowControl(row, 1, standaloneStyleMap, null, standaloneTableMap));
                 _changes.Children.Add(Message($"현재 {role} 문서만 지정되어 있습니다. 트리에서 다른 문서를 선택하면 {waiting} 문서로 지정됩니다.", "#64748B"));
@@ -412,25 +437,23 @@ public sealed class VersionHistoryControl : UserControl
 
             var previous = _project.Versions[_beforeIndex];
             var current = _project.Versions[_afterIndex];
-            if (!File.Exists(previous.Path) || !File.Exists(current.Path))
-            {
-                _previewSubtitle.Text = "전/후 원본 파일 중 하나를 찾을 수 없습니다.";
-                _changeSummary.Text = "파일 경로를 확인하세요.";
-                return;
-            }
+            var previousPath = _snapshotStore.Resolve(previous);
+            var currentPath = _snapshotStore.Resolve(current);
+            if (!File.Exists(previousPath) || !File.Exists(currentPath))
+                throw new FileNotFoundException("전/후 버전 파일을 찾을 수 없습니다.");
 
             _previewTitle.Text = Path.GetFileName(current.Path);
             _previewSubtitle.Text = $"{Path.GetFileName(previous.Path)} [전]  →  {Path.GetFileName(current.Path)} [후] · 후 문서 표시 중";
             _changeSummary.Text = "비교 중...";
-            var formattingItems = VersionFormattingInspector.Compare(previous.Path, current.Path);
+            var formattingItems = VersionFormattingInspector.Compare(previousPath, currentPath);
             var formatAnchors = formattingItems
                 .Where(x => !string.IsNullOrWhiteSpace(x.AnchorText))
                 .Select(x => VersionDocumentStyleMap.Normalize(x.AnchorText))
                 .Where(x => x.Length > 0)
                 .ToHashSet(StringComparer.Ordinal);
-            var styleMap = VersionDocumentStyleMap.Load(current.Path);
-            var tableMap = VersionDocxTableMap.Load(current.Path);
-            var result = await _engine.CompareAsync(new[] { previous.Path, current.Path }, 1, "auto", false, true, token);
+            var styleMap = VersionDocumentStyleMap.Load(currentPath);
+            var tableMap = VersionDocxTableMap.Load(currentPath);
+            var result = await _engine.CompareAsync(new[] { previousPath, currentPath }, 1, "auto", false, true, token);
             var changeItems = VersionHistoryChangeSequencer.Sequence(result, formattingItems, 1);
             var contentNumbers = result.Rows.SelectMany(x => x.Markers).Select(x => x.Num).ToHashSet();
             var supplementalByRow = changeItems

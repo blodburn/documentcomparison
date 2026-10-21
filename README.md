@@ -9,14 +9,16 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.21.11**
+**V5.21.12 — Phase 1 of the unified version-management migration**
 
-- Increased the Version History preview's safe line-height floor so mixed Korean/Latin text and larger runs are not clipped.
-- Added vertical breathing room around preview lines instead of relying only on Word paragraph line-height values.
-- Increased table-cell vertical padding and minimum height for the same readability fix.
+- Version History now captures immutable copies of imported DOCX/TXT files. Saving a `.dcv.json` project also saves a neighboring `.dcv.json.assets/` directory with the version contents.
+- Previously saved version snapshots remain readable and comparable if the original source file is edited, moved, or deleted. Keep the project JSON **and** its assets directory together when moving or backing up a project.
+- Older path-based version projects still open; saving the project captures available legacy source files. Missing legacy originals cannot be recovered automatically.
+- The new experimental `core-rust/` crate provides a standalone UTF-8 line-comparison CLI and tests. It is **not** wired into the released Windows UI yet; the existing C#/Avalonia comparison and Word export engine remain unchanged.
 
 ## Architecture reviews
 
+- [Phase 1 implementation: immutable version snapshots + experimental Rust core (2026-10-21)](docs/architecture/UNIFIED_VERSION_PHASE1_2026-10-21.md)
 - [Unified document/code version management and Rust migration — initial technical review (2026-10-20)](docs/architecture/UNIFIED_VERSION_CODE_RUST_REVIEW_2026-10-20.md)
 
 ## Features
