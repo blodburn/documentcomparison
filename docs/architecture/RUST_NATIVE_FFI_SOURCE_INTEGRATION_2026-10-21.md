@@ -34,7 +34,21 @@ The C# document comparison engine and Word/Excel exporters are unchanged.
 ## Scope and remaining constraints
 
 - This is line-based comparison through Rust, not AST semantics.
-- Rust code-folder CLI is not yet callable through FFI from the GUI.
+- Native Rust folder comparison is now callable through the same ABI.
+  The version-history screen offers a separate "폴더 비교" action and
+  displays added/deleted/modified/exact-byte moved or renamed files.
+  Results use batch rendering (250 entries at a time) to avoid freezing
+  the UI for large folders; all findings remain accessible. The folder
+  comparison is read-only and is not saved as an immutable folder snapshot.
+  It rejects a missing native engine instead of inventing an approximate
+  managed comparison.
+- Rust folder rename/move detection requires unique byte-identical files
+  on both sides. Modified-and-moved files are not inferred as renames.
+  Build folders are excluded; maximum 20,000 files and 20,000 directories
+  per side, maximum 40 MB per file.
+- Folder ABI appends functions to ABI v1 and returns explicit length-delimited
+  UTF-8 paths in Rust-owned buffers, released by dc_free_folder_result.
+  C# validates count, buffer bounds, type codes, UTF-8, and layout.
 - Build-time Rust is mandatory for Windows builds that must use Rust;
   manually building only the C# project without a native binary produces
   the intentional C# compatibility fallback.

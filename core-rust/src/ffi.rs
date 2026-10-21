@@ -200,3 +200,266 @@ mod tests {
         unsafe { dc_free_diff_result(&mut output) };
     }
 }
+
+/// UTF-8 path byte offsets into DcFolderResult.names (not zero-terminated).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DcFolderChange {
+    pub kind: u32, // 1=added, 2=deleted, 3=modified, 4=renamed
+    pub reserved: u32,
+    pub before_offset: u32,
+    pub before_len: u32,
+    pub after_offset: u32,
+    pub after_len: u32,
+}
+
+#[repr(C)]
+pub struct DcFolderResult {
+    pub entries: *mut DcFolderChange,
+    pub count: usize,
+    pub names: *mut u8,
+    pub names_len: usize,
+}
+
+impl DcFolderResult {
+    fn empty() -> Self {
+        Self {
+            entries: ptr::null_mut(),
+            count: 0,
+            names: ptr::null_mut(),
+            names_len: 0,
+        }
+    }
+}
+
+const MAX_FOLDER_PATH_BYTES: usize = 32768;
+const MAX_RESULT_NAME_BYTES: usize = 64 * 1024 * 1024;
+
+fn append_name(buffer: &mut Vec<u8>, name: &str) -> Result<(u32, u32), i32> {
+    let offset = u32::try_from(buffer.len()).map_err(|_| 2)?;
+    let len = u32::try_from(name.len()).map_err(|_| 2)?;
+    if buffer.len().saturating_add(name.len()) > MAX_RESULT_NAME_BYTES {
+        return Err(2);
+    }
+    buffer.extend_from_slice(name.as_bytes());
+    Ok((offset, len))
+}
+
+/// Compare complete directories using the same deterministic Rust logic as the
+/// CLI. Output owns its memory and must be released with dc_free_folder_result.
+/// Status: 0 success, 1 invalid UTF-8, 2 invalid/oversized input,
+/// 3 filesystem error, 4 Rust panic.
+///
+/// # Safety
+/// The path pointers must be readable for the supplied lengths; output must be
+/// a writable DcFolderResult. No concurrent mutation of output is allowed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dc_compare_folders_utf8(
+    before: *const u8,
+    before_len: usize,
+    after: *const u8,
+    after_len: usize,
+    output: *mut DcFolderResult,
+) -> i32 {
+    if output.is_null() {
+        return 2;
+    }
+    // SAFETY: caller guarantees a valid writable output pointer.
+    unsafe { ptr::write(output, DcFolderResult::empty()) };
+    if before.is_null()
+        || after.is_null()
+        || before_len == 0
+        || after_len == 0
+        || before_len > MAX_FOLDER_PATH_BYTES
+        || after_len > MAX_FOLDER_PATH_BYTES
+    {
+        return 2;
+    }
+
+    let compared = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: caller guarantees both input pointer lengths.
+        let old = unsafe { slice::from_raw_parts(before, before_len) };
+        let new = unsafe { slice::from_raw_parts(after, after_len) };
+        let old = std::str::from_utf8(old).map_err(|_| 1)?;
+        let new = std::str::from_utf8(new).map_err(|_| 1)?;
+        if old.contains('\0') || new.contains('\0') {
+            return Err(2);
+        }
+        let changes = crate::folder::compare_directories(
+            std::path::Path::new(old),
+            std::path::Path::new(new),
+        )
+        .map_err(|_| 3)?;
+        let mut entries = Vec::with_capacity(changes.len());
+        let mut names = Vec::new();
+        for change in changes {
+            use crate::folder::FileChange;
+            let (kind, before, after) = match change {
+                FileChange::Added(path) => (1, String::new(), path),
+                FileChange::Deleted(path) => (2, path, String::new()),
+                FileChange::Modified(path) => (3, path.clone(), path),
+                FileChange::Renamed { before, after } => (4, before, after),
+            };
+            let (before_offset, before_len) = append_name(&mut names, &before)?;
+            let (after_offset, after_len) = append_name(&mut names, &after)?;
+            entries.push(DcFolderChange {
+                kind,
+                reserved: 0,
+                before_offset,
+                before_len,
+                after_offset,
+                after_len,
+            });
+        }
+        Ok::<_, i32>((entries.into_boxed_slice(), names.into_boxed_slice()))
+    }));
+
+    match compared {
+        Ok(Ok((entries, names))) => {
+            let count = entries.len();
+            let names_len = names.len();
+            let entries = if count == 0 {
+                ptr::null_mut()
+            } else {
+                Box::into_raw(entries) as *mut DcFolderChange
+            };
+            let names = if names_len == 0 {
+                ptr::null_mut()
+            } else {
+                Box::into_raw(names) as *mut u8
+            };
+            // SAFETY: valid result pointer and owned allocations.
+            unsafe {
+                ptr::write(
+                    output,
+                    DcFolderResult {
+                        entries,
+                        count,
+                        names,
+                        names_len,
+                    },
+                )
+            };
+            0
+        }
+        Ok(Err(status)) => status,
+        Err(_) => 4,
+    }
+}
+
+/// # Safety
+/// Output must be a valid writable result previously produced by the native
+/// folder comparison API, and must not be concurrently accessed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dc_free_folder_result(output: *mut DcFolderResult) {
+    if output.is_null() {
+        return;
+    }
+    // SAFETY: output is a valid writable result by caller contract.
+    let result = unsafe { ptr::replace(output, DcFolderResult::empty()) };
+    if !result.entries.is_null() && result.count != 0 {
+        let raw = ptr::slice_from_raw_parts_mut(result.entries, result.count);
+        // SAFETY: allocated by Box::into_raw in dc_compare_folders_utf8.
+        unsafe { drop(Box::from_raw(raw)) };
+    }
+    if !result.names.is_null() && result.names_len != 0 {
+        let raw = ptr::slice_from_raw_parts_mut(result.names, result.names_len);
+        // SAFETY: allocated by Box::into_raw in dc_compare_folders_utf8.
+        unsafe { drop(Box::from_raw(raw)) };
+    }
+}
+
+#[cfg(test)]
+mod folder_ffi_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn folder_ffi_moves_and_unicode_paths() {
+        let root = std::env::temp_dir().join(format!("dc-ffi-folder-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let a = root.join("before");
+        let b = root.join("after");
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        fs::write(a.join("옛날.rs"), "a").unwrap();
+        fs::write(b.join("새로운.rs"), "a").unwrap();
+        fs::write(b.join("added.py"), "b").unwrap();
+        let old = a.to_string_lossy();
+        let new = b.to_string_lossy();
+        let mut result = DcFolderResult::empty();
+        let status = unsafe {
+            dc_compare_folders_utf8(
+                old.as_ptr(),
+                old.len(),
+                new.as_ptr(),
+                new.len(),
+                &mut result,
+            )
+        };
+        assert_eq!(status, 0);
+        assert_eq!(result.count, 2);
+        let entries = unsafe { slice::from_raw_parts(result.entries, result.count) };
+        let data = unsafe { slice::from_raw_parts(result.names, result.names_len) };
+        let tuples: Vec<_> = entries
+            .iter()
+            .map(|entry| {
+                let before = &data[entry.before_offset as usize
+                    ..(entry.before_offset + entry.before_len) as usize];
+                let after = &data
+                    [entry.after_offset as usize..(entry.after_offset + entry.after_len) as usize];
+                (
+                    entry.kind,
+                    std::str::from_utf8(before).unwrap().to_owned(),
+                    std::str::from_utf8(after).unwrap().to_owned(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            tuples,
+            vec![
+                (1, "".to_string(), "added.py".to_string()),
+                (4, "옛날.rs".to_string(), "새로운.rs".to_string()),
+            ]
+        );
+        unsafe { dc_free_folder_result(&mut result) };
+        assert_eq!(result.count, 0);
+        assert!(result.names.is_null());
+        unsafe { dc_free_folder_result(&mut result) };
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn folder_abi_has_fixed_x64_layout() {
+        assert_eq!(std::mem::size_of::<DcFolderChange>(), 24);
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(std::mem::size_of::<DcFolderResult>(), 32);
+    }
+
+    #[test]
+    fn folder_ffi_rejects_invalid_paths_and_empty_result() {
+        let mut result = DcFolderResult::empty();
+        let invalid = [0xff_u8];
+        let name = b"abc";
+        assert_eq!(
+            unsafe {
+                dc_compare_folders_utf8(
+                    invalid.as_ptr(),
+                    invalid.len(),
+                    name.as_ptr(),
+                    name.len(),
+                    &mut result,
+                )
+            },
+            1
+        );
+        assert_eq!(
+            unsafe {
+                dc_compare_folders_utf8(ptr::null(), 0, name.as_ptr(), name.len(), &mut result)
+            },
+            2
+        );
+        assert_eq!(result.count, 0);
+        unsafe { dc_free_folder_result(&mut result) };
+    }
+}

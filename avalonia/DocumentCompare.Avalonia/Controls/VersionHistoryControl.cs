@@ -23,6 +23,9 @@ public sealed class VersionHistoryControl : UserControl
     private int _activeIndex = -1;
     private string? _projectPath;
     private CancellationTokenSource? _loadCts;
+    private IReadOnlyList<NativeCodeVersionComparer.FolderChange>? _folderChanges;
+    private int _folderRendered;
+    private Button? _folderMore;
 
     private readonly StackPanel _tree = new() { Spacing = 4 };
     private readonly StackPanel _preview = new() { Spacing = 0 };
@@ -96,7 +99,9 @@ public sealed class VersionHistoryControl : UserControl
         var add = Primary("+ 버전 추가"); add.Click += AddVersions_Click;
         var open = Secondary("열기"); open.Click += OpenProject_Click;
         var save = Secondary("저장"); save.Click += SaveProject_Click;
+        var folders = Secondary("폴더 비교"); folders.Click += CompareFolders_Click;
         actions.Children.Add(add); actions.Children.Add(open); actions.Children.Add(save);
+        actions.Children.Add(folders);
         Grid.SetRow(actions, 1); leftRoot.Children.Add(actions);
         Grid.SetRow(_dropHint, 2); leftRoot.Children.Add(_dropHint);
 
@@ -159,6 +164,115 @@ public sealed class VersionHistoryControl : UserControl
         right.Child = rightRoot;
         Grid.SetColumn(right, 4); root.Children.Add(right);
         return root;
+    }
+
+    private async void CompareFolders_Click(object? sender, RoutedEventArgs e)
+    {
+        var top = TopLevel.GetTopLevel(this);
+        if (top?.StorageProvider is null) return;
+        try
+        {
+            var beforeFolders = await top.StorageProvider.OpenFolderPickerAsync(
+                new FolderPickerOpenOptions { Title = "변경 전 소스 폴더 선택", AllowMultiple = false });
+            var before = beforeFolders.FirstOrDefault()?.TryGetLocalPath();
+            if (string.IsNullOrWhiteSpace(before)) return;
+            var afterFolders = await top.StorageProvider.OpenFolderPickerAsync(
+                new FolderPickerOpenOptions { Title = "변경 후 소스 폴더 선택", AllowMultiple = false });
+            var after = afterFolders.FirstOrDefault()?.TryGetLocalPath();
+            if (string.IsNullOrWhiteSpace(after)) return;
+
+            _loadCts?.Cancel();
+            _loadCts = new CancellationTokenSource();
+            var token = _loadCts.Token;
+            _status.Text = "Rust 폴더 비교 중...";
+            var changes = await Task.Run(
+                () => NativeCodeVersionComparer.CompareFolders(before, after), token);
+            token.ThrowIfCancellationRequested();
+            _folderChanges = changes;
+            _folderRendered = 0;
+            _folderMore = null;
+            _preview.Children.Clear();
+            _changes.Children.Clear();
+            _previewTargets.Clear();
+            _changeTargets.Clear();
+            _previewTitle.Text = "Rust 폴더 비교";
+            _previewSubtitle.Text = $"{before} [전] → {after} [후] · 파일 이동은 내용이 동일한 경우만 판정";
+            _changeSummary.Text = $"전체 {changes.Count:N0}건 · " +
+                string.Join(" · ", changes.GroupBy(x => x.Kind).Select(g => $"{g.Key} {g.Count():N0}"));
+            if (changes.Count == 0)
+                _changes.Children.Add(Message("추가·삭제·수정·이동된 파일이 없습니다.", "#64748B"));
+            else
+                RenderFolderBatch();
+            _status.Text = $"Rust 폴더 비교 완료 · {changes.Count:N0}건 · 결과는 현재 화면에만 표시됩니다.";
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            _status.Text = "Rust 폴더 비교 실패: " + ex.Message;
+        }
+    }
+
+    // Page the review controls, not the findings: every folder change stays in
+    // the native result and remains available through subsequent batches.
+    private void RenderFolderBatch()
+    {
+        if (_folderChanges is null) return;
+        if (_folderMore is not null) _changes.Children.Remove(_folderMore);
+        _folderMore = null;
+        var end = Math.Min(_folderRendered + 250, _folderChanges.Count);
+        for (var i = _folderRendered; i < end; i++)
+        {
+            var entry = _folderChanges[i];
+            var marker = i + 1;
+            var summary = entry.Kind == "이동/이름 변경"
+                ? $"{entry.BeforePath} → {entry.AfterPath}"
+                : entry.Kind == "삭제" ? entry.BeforePath : entry.AfterPath;
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+            var markerButton = Secondary($"[{marker}]");
+            markerButton.Click += (_, _) => ScrollToChange(marker);
+            row.Children.Add(markerButton);
+            row.Children.Add(new TextBlock
+            {
+                Text = $"{entry.Kind} · {summary}",
+                FontSize = 12,
+                TextWrapping = TextWrapping.Wrap,
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            var preview = new Border { Child = row, Padding = new Thickness(8, 5),
+                Background = i % 2 == 0
+                    ? new SolidColorBrush(Color.Parse("#F5F8FD")) : Brushes.Transparent };
+            _preview.Children.Add(preview);
+            _previewTargets[marker] = preview;
+            var card = new Border
+            {
+                Background = Brushes.White,
+                BorderBrush = new SolidColorBrush(Color.Parse("#DCE3EC")),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(9, 7),
+                Cursor = new Cursor(StandardCursorType.Hand),
+                Child = new TextBlock
+                {
+                    Text = $"[{marker}] {entry.Kind}\n{summary}",
+                    TextWrapping = TextWrapping.Wrap,
+                    FontSize = 11.5
+                }
+            };
+            card.PointerPressed += (_, args) =>
+            {
+                ScrollToPreview(marker);
+                args.Handled = true;
+            };
+            _changes.Children.Add(card);
+            _changeTargets[marker] = card;
+        }
+        _folderRendered = end;
+        if (end < _folderChanges.Count)
+        {
+            _folderMore = Secondary($"다음 250건 표시 ({end:N0}/{_folderChanges.Count:N0})");
+            _folderMore.Click += (_, _) => RenderFolderBatch();
+            _changes.Children.Add(_folderMore);
+        }
     }
 
     private async void AddVersions_Click(object? sender, RoutedEventArgs e)
@@ -398,6 +512,9 @@ public sealed class VersionHistoryControl : UserControl
         _loadCts?.Cancel();
         _loadCts = new CancellationTokenSource();
         var token = _loadCts.Token;
+        _folderChanges = null;
+        _folderMore = null;
+        _folderRendered = 0;
         _preview.Children.Clear();
         _previewScroll.HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
         _changes.Children.Clear();

@@ -2403,4 +2403,53 @@ if(NativeCodeVersionComparer.IsAvailable)
 }
 Console.WriteLine("PASS REPEATED RUST FFI RESOURCE LIFETIME");
 
+
+// 163. Folder comparison is now an actual Rust FFI call, not just a Rust CLI.
+var nativeFolderTest=Path.Combine(dir,"rust-folder-ffi-한글");
+var nativeFolderBefore=Path.Combine(nativeFolderTest,"before");
+var nativeFolderAfter=Path.Combine(nativeFolderTest,"after");
+Directory.CreateDirectory(nativeFolderBefore);
+Directory.CreateDirectory(nativeFolderAfter);
+Directory.CreateDirectory(Path.Combine(nativeFolderBefore,"코드"));
+Directory.CreateDirectory(Path.Combine(nativeFolderAfter,"이동"));
+File.WriteAllText(Path.Combine(nativeFolderBefore,"코드","원본.rs"),"fn main(){println!(\"😀\");}\n");
+File.WriteAllText(Path.Combine(nativeFolderAfter,"이동","변경.rs"),"fn main(){println!(\"😀\");}\n");
+File.WriteAllText(Path.Combine(nativeFolderBefore,"edited.cs"),"int a=1;");
+File.WriteAllText(Path.Combine(nativeFolderAfter,"edited.cs"),"int a=2;");
+File.WriteAllText(Path.Combine(nativeFolderBefore,"removed.py"),"old_only");
+File.WriteAllText(Path.Combine(nativeFolderAfter,"created.ts"),"new_only");
+File.WriteAllText(Path.Combine(nativeFolderBefore,"identical.txt"),"stay");
+File.WriteAllText(Path.Combine(nativeFolderAfter,"identical.txt"),"stay");
+if(NativeCodeVersionComparer.IsAvailable)
+{
+    var folderNative=NativeCodeVersionComparer.CompareFolders(nativeFolderBefore,nativeFolderAfter);
+    var expectedFolderChanges=new[]
+    {
+        new NativeCodeVersionComparer.FolderChange("수정","edited.cs","edited.cs"),
+        new NativeCodeVersionComparer.FolderChange("삭제","removed.py",""),
+        new NativeCodeVersionComparer.FolderChange("추가","","created.ts"),
+        new NativeCodeVersionComparer.FolderChange("이동/이름 변경","코드/원본.rs","이동/변경.rs")
+    };
+    Check(folderNative.Count==expectedFolderChanges.Length &&
+          folderNative.All(entry=>expectedFolderChanges.Contains(entry)),
+          "Rust FFI folder added/deleted/modified/moved result mismatch");
+    var repeatedFolder=NativeCodeVersionComparer.CompareFolders(nativeFolderBefore,nativeFolderAfter);
+    Check(repeatedFolder.SequenceEqual(folderNative),
+          "Rust FFI folder events changed between identical runs");
+    var sameFolder=NativeCodeVersionComparer.CompareFolders(nativeFolderBefore,nativeFolderBefore);
+    Check(sameFolder.Count==0,"same-source folder comparison must be empty");
+    var missingFolderRejected=false;
+    try { NativeCodeVersionComparer.CompareFolders(nativeFolderBefore,Path.Combine(dir,"folder-missing")); }
+    catch(DirectoryNotFoundException) { missingFolderRejected=true; }
+    Check(missingFolderRejected,"missing folder must be rejected before native call");
+}
+else
+{
+    var requiredNative= false;
+    try { NativeCodeVersionComparer.CompareFolders(nativeFolderBefore,nativeFolderAfter); }
+    catch(NotSupportedException) { requiredNative=true; }
+    Check(requiredNative, "native-absent folder comparison must fail explicitly, not silently");
+}
+Console.WriteLine("PASS RUST FOLDER FFI AND EXPLICIT FALLBACK");
+
 Console.WriteLine("ALL REGRESSIONS PASSED");

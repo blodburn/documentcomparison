@@ -29,6 +29,36 @@ public static class NativeCodeVersionComparer
         public ulong AfterEnd;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeFolderResult
+    {
+        public IntPtr Entries;
+        public nuint Count;
+        public IntPtr Names;
+        public nuint NamesLength;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeFolderChange
+    {
+        public uint Kind;
+        public uint Reserved;
+        public uint BeforeOffset;
+        public uint BeforeLength;
+        public uint AfterOffset;
+        public uint AfterLength;
+    }
+
+    public sealed record FolderChange(string Kind, string BeforePath, string AfterPath);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int FolderDiffDelegate(
+        [In] byte[] before, nuint beforeLength, [In] byte[] after,
+        nuint afterLength, out NativeFolderResult result);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void FolderFreeDelegate(ref NativeFolderResult result);
+
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate uint VersionDelegate();
 
@@ -46,6 +76,8 @@ public static class NativeCodeVersionComparer
         public readonly IntPtr Handle;
         public readonly DiffDelegate Diff;
         public readonly FreeDelegate Free;
+        public readonly FolderDiffDelegate FolderDiff;
+        public readonly FolderFreeDelegate FolderFree;
 
         public Exports(IntPtr handle)
         {
@@ -58,6 +90,10 @@ public static class NativeCodeVersionComparer
                 NativeLibrary.GetExport(handle, "dc_diff_lines_utf8"));
             Free = Marshal.GetDelegateForFunctionPointer<FreeDelegate>(
                 NativeLibrary.GetExport(handle, "dc_free_diff_result"));
+            FolderDiff = Marshal.GetDelegateForFunctionPointer<FolderDiffDelegate>(
+                NativeLibrary.GetExport(handle, "dc_compare_folders_utf8"));
+            FolderFree = Marshal.GetDelegateForFunctionPointer<FolderFreeDelegate>(
+                NativeLibrary.GetExport(handle, "dc_free_folder_result"));
         }
     }
 
@@ -120,6 +156,78 @@ public static class NativeCodeVersionComparer
         finally
         {
             exports.Free(ref nativeResult);
+        }
+    }
+
+    /// <summary>
+    /// Compare two entire source folders through the native Rust engine.
+    /// Folder mode intentionally has no C# fallback; a missing or mismatched
+    /// native DLL is reported instead of silently omitting file moves.
+    /// </summary>
+    public static IReadOnlyList<FolderChange> CompareFolders(string before, string after)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(before);
+        ArgumentException.ThrowIfNullOrWhiteSpace(after);
+        var exports = Native.Value ?? throw new NotSupportedException(
+            "폴더 비교에는 Rust 네이티브 엔진이 필요합니다. Rust를 포함해 빌드하세요.");
+        if (!Directory.Exists(before) || !Directory.Exists(after))
+            throw new DirectoryNotFoundException("비교할 폴더가 존재하지 않습니다.");
+        var encoding = new UTF8Encoding(false, true);
+        var left = encoding.GetBytes(Path.GetFullPath(before));
+        var right = encoding.GetBytes(Path.GetFullPath(after));
+        // Marshal an explicit pointer+length ABI, never a zero-terminated path.
+        var status = exports.FolderDiff(left, (nuint)left.Length,
+            right, (nuint)right.Length, out var output);
+        try
+        {
+            if (status != 0)
+                throw new InvalidDataException(
+                    $"Rust 폴더 비교 실패 (상태 {status}, 파일·디렉터리 제한/권한/경로 확인).");
+            if (output.Count > 40000 || output.NamesLength > 64UL * 1024 * 1024 ||
+                (output.Count > 0 && output.Entries == IntPtr.Zero) ||
+                (output.NamesLength > 0 && output.Names == IntPtr.Zero))
+                throw new InvalidDataException("Rust 폴더 비교 결과가 허용 범위를 벗어났습니다.");
+
+            var names = new byte[checked((int)output.NamesLength)];
+            if (names.Length > 0) Marshal.Copy(output.Names, names, 0, names.Length);
+            var size = Marshal.SizeOf<NativeFolderChange>();
+            if (size != 24)
+                throw new InvalidDataException("Rust 폴더 이벤트 ABI 크기가 일치하지 않습니다.");
+            string Name(uint offset, uint length)
+            {
+                if ((ulong)offset + length > (ulong)names.Length)
+                    throw new InvalidDataException("Rust 폴더 이벤트 경로의 범위가 잘못되었습니다.");
+                return encoding.GetString(names, (int)offset, (int)length);
+            }
+            var events = new List<FolderChange>(checked((int)output.Count));
+            for (var i = 0; i < (int)output.Count; i++)
+            {
+                var entry = Marshal.PtrToStructure<NativeFolderChange>(
+                    IntPtr.Add(output.Entries, checked(i * size)));
+                if (entry.Reserved != 0)
+                    throw new InvalidDataException("Rust 폴더 이벤트 예약 필드가 잘못되었습니다.");
+                var kind = entry.Kind switch
+                {
+                    1 => "추가",
+                    2 => "삭제",
+                    3 => "수정",
+                    4 => "이동/이름 변경",
+                    _ => throw new InvalidDataException("지원하지 않는 Rust 폴더 이벤트 유형입니다.")
+                };
+                var beforePath = Name(entry.BeforeOffset, entry.BeforeLength);
+                var afterPath = Name(entry.AfterOffset, entry.AfterLength);
+                if ((entry.Kind == 1 && (beforePath.Length != 0 || afterPath.Length == 0)) ||
+                    (entry.Kind == 2 && (beforePath.Length == 0 || afterPath.Length != 0)) ||
+                    ((entry.Kind == 3 || entry.Kind == 4) &&
+                        (beforePath.Length == 0 || afterPath.Length == 0)))
+                    throw new InvalidDataException("Rust 폴더 이벤트 경로가 누락되었습니다.");
+                events.Add(new FolderChange(kind, beforePath, afterPath));
+            }
+            return events;
+        }
+        finally
+        {
+            exports.FolderFree(ref output);
         }
     }
 
