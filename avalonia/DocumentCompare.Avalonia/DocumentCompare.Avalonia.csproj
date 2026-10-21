@@ -6,10 +6,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>DocumentCompare</AssemblyName>
     <RootNamespace>DocumentCompare.Avalonia</RootNamespace>
-    <Version>5.21.12</Version>
-    <AssemblyVersion>5.21.12</AssemblyVersion>
-    <FileVersion>5.21.12</FileVersion>
-    <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
+    <Version>5.21.13</Version>
+    <AssemblyVersion>5.21.13</AssemblyVersion>
+    <FileVersion>5.21.13</FileVersion>
+    <[REDACTED]>false</[REDACTED]>
     <AvaloniaNameGeneratorIsEnabled>false</AvaloniaNameGeneratorIsEnabled>
     <ApplicationIcon>Assets\DocumentCompare.ico</ApplicationIcon>
     <Company>blodburn</Company>
