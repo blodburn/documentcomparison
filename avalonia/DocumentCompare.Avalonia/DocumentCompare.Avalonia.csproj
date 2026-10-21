@@ -23,6 +23,18 @@
     <RunAnalyzersDuringLiveAnalysis>false</RunAnalyzersDuringLiveAnalysis>
     <NoWarn>$(NoWarn);CS9057</NoWarn>
   </PropertyGroup>
+  <!-- Native Rust code core is built separately and embedded as an assembly
+       resource. Unlike a sidecar DLL, it remains inside single-file releases. -->
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == 'win-x64' Or ('$(RuntimeIdentifier)' == '' And '$(OS)' == 'Windows_NT')">
+    <EmbeddedResource Include="../../core-rust/target/release/documentcompare_core.dll"
+      LogicalName="DocumentCompare.Native.win-x64.documentcompare_core.dll"
+      Condition="Exists('../../core-rust/target/release/documentcompare_core.dll')" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == 'linux-x64' Or ('$(RuntimeIdentifier)' == '' And '$(OS)' != 'Windows_NT')">
+    <EmbeddedResource Include="../../core-rust/target/release/libdocumentcompare_core.so"
+      LogicalName="DocumentCompare.Native.linux-x64.libdocumentcompare_core.so"
+      Condition="Exists('../../core-rust/target/release/libdocumentcompare_core.so')" />
+  </ItemGroup>
   <ItemGroup>
     <AvaloniaResource Include="Assets\DocumentCompare.ico" />
   </ItemGroup>

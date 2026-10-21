@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run identical UTF-8 code-diff inputs through Rust and C#, comparing exact hunks.
+"""Run identical UTF-8 code-diff inputs through Rust CLI and .NET/native FFI, comparing exact hunks.
 Usage: python3 tests/code_diff_parity.py [dotnet_path] [cargo_path]
 The probe is opt-in and does not change the Windows UI or shipped runtime.
 """

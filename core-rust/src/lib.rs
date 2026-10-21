@@ -1,3 +1,4 @@
+pub mod ffi;
 pub mod folder;
 // First Rust engine slice: deterministic text-line comparison.
 // It is intentionally separate from the existing C# document judgement engine.

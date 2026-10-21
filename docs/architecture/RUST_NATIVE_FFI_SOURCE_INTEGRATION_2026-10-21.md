@@ -1,0 +1,43 @@
+# Rust native code-diff integration (source only)
+
+## Execution path
+
+The code-version view in VersionHistoryControl calls
+NativeCodeVersionComparer.Compare, not the managed LCS directly.
+The native library implements a versioned C ABI in core-rust/src/ffi.rs;
+C# verifies ABI major version 1, uses explicit UTF-8 bytes and zero-based,
+half-open line spans, and frees the native result with dc_free_diff_result
+in a finally block. CodeVersionChangeMapper receives the resulting spans
+and produces stable UnifiedChangeEvent records. The existing
+CodeVersionComparer remains a managed fallback only when the native
+library has not been embedded. An incompatible or broken embedded
+library raises an error rather than silently changing comparison engines.
+
+## Build
+
+1. Install .NET 8 SDK and stable Rust.
+2. Run cargo build --manifest-path core-rust/Cargo.toml --release.
+3. Run dotnet run --project tests/DocumentCompare.Regression/DocumentCompare.Regression.csproj -c Release
+   with DOCUMENTCOMPARE_REQUIRE_NATIVE=1 to verify native use.
+4. Run python3 tests/code_diff_parity.py dotnet cargo with
+   DOCUMENTCOMPARE_REQUIRE_NATIVE=1 for cross-language hunk parity.
+
+Windows x64 produces core-rust/target/release/documentcompare_core.dll.
+Linux x64 produces core-rust/target/release/libdocumentcompare_core.so.
+MSBuild embeds the matching binary as a managed resource. The Windows
+build script and Windows CI job compile Rust before C# compilation.
+Single-file packaging includes the resource, so no sidecar DLL has to be
+distributed. At run time the native binary is extracted into a
+SHA-256-addressed temporary folder and validated before being loaded.
+The C# document comparison engine and Word/Excel exporters are unchanged.
+
+## Scope and remaining constraints
+
+- This is line-based comparison through Rust, not AST semantics.
+- Rust code-folder CLI is not yet callable through FFI from the GUI.
+- Build-time Rust is mandatory for Windows builds that must use Rust;
+  manually building only the C# project without a native binary produces
+  the intentional C# compatibility fallback.
+- Runtime extraction needs temp-directory write access; a corrupt
+  extracted library triggers a visible error.
+- This change does not create a release or alter the app version.

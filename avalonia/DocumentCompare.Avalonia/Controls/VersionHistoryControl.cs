@@ -498,6 +498,7 @@ public sealed class VersionHistoryControl : UserControl
         token.ThrowIfCancellationRequested();
         CodeVersionComparer.Result? comparison = null;
         IReadOnlyList<UnifiedChangeEvent>? codeEvents = null;
+        var usedNativeCodeEngine = false;
         var previousName = "";
         if (_beforeIndex >= 0 && _afterIndex >= 0)
         {
@@ -508,17 +509,18 @@ public sealed class VersionHistoryControl : UserControl
             var beforeText = await Task.Run(() => CodeVersionComparer.ReadCodeFile(previousPath), token);
             var compared = await Task.Run(() =>
             {
-                var result = CodeVersionComparer.Compare(beforeText, afterText);
+                var result = NativeCodeVersionComparer.Compare(beforeText, afterText, out var usedNative);
                 var events = CodeVersionChangeMapper.Map(beforeText, afterText, result,
                     string.IsNullOrWhiteSpace(previous.Sha256)
                         ? CodeVersionChangeMapper.ContentId(beforeText) : previous.Sha256,
                     string.IsNullOrWhiteSpace(display.Sha256)
                         ? CodeVersionChangeMapper.ContentId(afterText) : display.Sha256,
                     Path.GetFileName(previous.Path), Path.GetFileName(display.Path));
-                return (result, events);
+                return (result, events, usedNative);
             }, token);
             comparison = compared.result;
             codeEvents = compared.events;
+            usedNativeCodeEngine = compared.usedNative;
             previousName = Path.GetFileName(previous.Path);
         }
         token.ThrowIfCancellationRequested();
@@ -563,7 +565,8 @@ public sealed class VersionHistoryControl : UserControl
         _previewTitle.Text = Path.GetFileName(display.Path);
         _previewSubtitle.Text = comparison is null
             ? "코드 파일을 표시 중입니다. 전/후 버전을 지정하면 변경사항을 비교합니다."
-            : $"{previousName} [전] → {Path.GetFileName(display.Path)} [후] · 코드 줄 비교";
+            : $"{previousName} [전] → {Path.GetFileName(display.Path)} [후] · " +
+              (usedNativeCodeEngine ? "Rust 코드 비교" : "C# 코드 비교(호환 모드)");
         const int displayLimit = 10000;
         var visibleLines = CodeVersionComparer.PreviewLineIndices(lines.Length, comparison?.Changes, displayLimit);
         var highlighted = new HashSet<int>();

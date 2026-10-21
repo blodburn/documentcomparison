@@ -28,7 +28,17 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
+      - name: Install Windows Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Build native Windows Rust code engine
+        shell: pwsh
+        run: |
+          cargo build --manifest-path core-rust/Cargo.toml --release
+          if ($LASTEXITCODE -ne 0) { throw "Rust native build failed" }
+          if (-not (Test-Path core-rust/target/release/documentcompare_core.dll)) { throw "Native Rust DLL is missing" }
       - name: Run regression suite
+        env:
+          DOCUMENTCOMPARE_REQUIRE_NATIVE: '1'
         shell: pwsh
         run: |
           dotnet run --project tests/DocumentCompare.Regression/DocumentCompare.Regression.csproj -c Release 2>&1 | Tee-Object -FilePath regression.txt

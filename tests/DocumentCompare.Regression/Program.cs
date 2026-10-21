@@ -16,7 +16,9 @@ if (args.Length==2 && args[0]=="--code-diff-corpus")
     {
         var before=corpusCase.GetProperty("before").GetString() ?? "";
         var after=corpusCase.GetProperty("after").GetString() ?? "";
-        var compared=CodeVersionComparer.Compare(before,after);
+        var compared=NativeCodeVersionComparer.Compare(before,after,out var usedNative);
+        if (Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_REQUIRE_NATIVE")=="1" && !usedNative)
+            throw new InvalidDataException("Rust native code diff must be loaded for parity corpus.");
         results.Add(compared.Changes.Select(change=>new
         {
             kind=change.Kind switch {"추가"=>"Insert","삭제"=>"Delete",_=>"Replace"},
@@ -2353,5 +2355,52 @@ try
 catch(InvalidDataException) { invalidSpanRejected=true; }
 Check(invalidSpanRejected,"out-of-bounds source positions must never produce unified events");
 Console.WriteLine("PASS LIVE CODE UNIFIED EVENT UTF8-UTF16 MAPPING");
+
+
+// 161. Exercise the loaded Rust C ABI, not just C# algorithm parity.
+var nativeMustBePresent=Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_REQUIRE_NATIVE")=="1";
+Check(!nativeMustBePresent || NativeCodeVersionComparer.IsAvailable,
+      "Windows/CI native package must embed a loadable Rust core");
+var nativeFixtures=new (string Before,string After)[]
+{
+    ("",""), ("","a\n"), ("a\n",""), ("a\nb\n","a\nx\n"),
+    ("가😀\r\n","가😀\n"), ("hello\n","hello"),
+    ("repeat\nrepeat\n","repeat\n"), ("a\n","a\n\n"),
+    ("\uFEFFheader\n","header\n"),
+    (string.Concat(Enumerable.Repeat("before\n",2200)),
+     string.Concat(Enumerable.Repeat("after\n",2200)))
+};
+foreach(var fixture in nativeFixtures)
+{
+    var nativeCompared=NativeCodeVersionComparer.Compare(fixture.Before,fixture.After,out var usedNative);
+    Check(!nativeMustBePresent || usedNative, "Rust core was not used for code diff");
+    var managedCompared=CodeVersionComparer.Compare(fixture.Before,fixture.After);
+    Check(nativeCompared.Changes.SequenceEqual(managedCompared.Changes) &&
+          nativeCompared.BeforeLines.SequenceEqual(managedCompared.BeforeLines) &&
+          nativeCompared.AfterLines.SequenceEqual(managedCompared.AfterLines),
+          "native Rust hunk or line display differs from managed fallback");
+    var nativeEvents=CodeVersionChangeMapper.Map(fixture.Before,fixture.After,nativeCompared,
+        "sha-before","sha-after","test.rs","test.rs");
+    var managedEvents=CodeVersionChangeMapper.Map(fixture.Before,fixture.After,managedCompared,
+        "sha-before","sha-after","test.rs","test.rs");
+    Check(nativeEvents.SequenceEqual(managedEvents),
+          "native comparison must yield the same unified change events and offsets");
+}
+Console.WriteLine(NativeCodeVersionComparer.IsAvailable
+    ? "PASS RUST NATIVE FFI REAL LOADING AND EVENT PARITY"
+    : "PASS NATIVE-ABSENT C# FALLBACK AND EVENT PARITY");
+
+// 162. Repeated Rust FFI calls must safely free Rust allocations.
+if(NativeCodeVersionComparer.IsAvailable)
+{
+    for(var iteration=0;iteration<500;iteration++)
+    {
+        var comparison=NativeCodeVersionComparer.Compare(
+            "가😀\r\nkeep\n", "가😀\nkeep\nextra\n",out var usedNative);
+        Check(usedNative&&comparison.Changes.Count==2,
+              "repeated Rust FFI calls failed to preserve the change result");
+    }
+}
+Console.WriteLine("PASS REPEATED RUST FFI RESOURCE LIFETIME");
 
 Console.WriteLine("ALL REGRESSIONS PASSED");

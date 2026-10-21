@@ -3,8 +3,8 @@ using System.Text;
 namespace DocumentCompare.Avalonia.Engine;
 
 /// <summary>
-/// UI fallback for code versions while Rust's native Windows binary and interop contract
-/// are being validated. Byte-identical logic is tested against the Rust line-diff corpus.
+/// C# line-diff fallback used when the compiled Rust native core is unavailable.
+/// The exact hunk spans are verified against both Rust CLI and native FFI.
 /// Does not claim to infer semantic equivalence or AST changes.
 /// </summary>
 public static class CodeVersionComparer
