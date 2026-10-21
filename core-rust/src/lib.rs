@@ -199,4 +199,48 @@ mod tests {
         assert_eq!(events[0].kind, ChangeKind::Replace);
         assert_eq!(events[0].before, 0..2200);
     }
+    #[test]
+    fn terminal_newline_is_significant() {
+        assert_eq!(
+            diff_lines("abc\n", "abc"),
+            vec![LineChange {
+                kind: ChangeKind::Replace,
+                before: 0..1,
+                after: 0..1
+            }]
+        );
+    }
+    #[test]
+    fn crlf_to_lf_is_a_replacement() {
+        assert_eq!(
+            diff_lines("hello\r\n", "hello\n"),
+            vec![LineChange {
+                kind: ChangeKind::Replace,
+                before: 0..1,
+                after: 0..1
+            }]
+        );
+    }
+    #[test]
+    fn deleting_last_line_anchors_end() {
+        assert_eq!(
+            diff_lines("a\nb\n", "a\n"),
+            vec![LineChange {
+                kind: ChangeKind::Delete,
+                before: 1..2,
+                after: 1..1
+            }]
+        );
+    }
+    #[test]
+    fn trailing_blank_line_is_a_line() {
+        assert_eq!(
+            diff_lines("a\n", "a\n\n"),
+            vec![LineChange {
+                kind: ChangeKind::Insert,
+                before: 1..1,
+                after: 1..2
+            }]
+        );
+    }
 }

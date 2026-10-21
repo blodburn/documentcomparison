@@ -130,28 +130,32 @@ pub fn compare_directories(before: &Path, after: &Path) -> io::Result<Vec<FileCh
         .iter()
         .map(|p| fingerprint(&right[p]))
         .collect::<io::Result<_>>()?;
+    // Index signatures once. The earlier nested scans were quadratic for 20K
+    // unmatched files even when every candidate had different content.
+    let mut left_groups: BTreeMap<(u64, u64), Vec<usize>> = BTreeMap::new();
+    let mut right_groups: BTreeMap<(u64, u64), Vec<usize>> = BTreeMap::new();
+    for (i, signature) in left_hashes.into_iter().enumerate() {
+        left_groups.entry(signature).or_default().push(i);
+    }
+    for (j, signature) in right_hashes.into_iter().enumerate() {
+        right_groups.entry(signature).or_default().push(j);
+    }
+
     let mut used_l = BTreeSet::new();
     let mut used_r = BTreeSet::new();
-    for (i, hash) in left_hashes.iter().enumerate() {
-        if left_hashes
-            .iter()
-            .filter(|candidate| *candidate == hash)
-            .count()
-            != 1
-        {
+    for (signature, left_candidates) in &left_groups {
+        if left_candidates.len() != 1 {
             continue;
         }
-        let matches: Vec<_> = right_hashes
-            .iter()
-            .enumerate()
-            .filter(|(_, candidate)| *candidate == hash)
-            .map(|(j, _)| j)
-            .collect();
-        if matches.len() != 1 {
+        let Some(right_candidates) = right_groups.get(signature) else {
+            continue;
+        };
+        if right_candidates.len() != 1 {
             continue;
         }
-        let j = matches[0];
-        // Fingerprints only narrow candidates; every reported rename verifies raw bytes.
+        let i = left_candidates[0];
+        let j = right_candidates[0];
+        // Fingerprints are never proof of equality; compare the bytes in full.
         if !identical(&left[&deleted[i]], &right[&added[j]])? {
             continue;
         }
@@ -237,6 +241,82 @@ mod tests {
         fs::write(b.join(".git/config"), "config").unwrap();
         fs::write(b.join("target/build"), "build").unwrap();
         assert!(compare_directories(&a, &b).unwrap().is_empty());
+        fs::remove_dir_all(a.parent().unwrap()).unwrap();
+    }
+    #[test]
+    fn added_deleted_modified_and_unicode_move() {
+        let (a, b) = dirs();
+        fs::create_dir_all(a.join("소스")).unwrap();
+        fs::create_dir_all(b.join("새폴더")).unwrap();
+        fs::write(a.join("소스/옛이름.rs"), "fn 인사() {}\n").unwrap();
+        fs::write(b.join("새폴더/새이름.rs"), "fn 인사() {}\n").unwrap();
+        fs::write(a.join("remove.py"), "x=1").unwrap();
+        fs::write(b.join("added.ts"), "let x=1").unwrap();
+        fs::write(a.join("same.cs"), "int n = 1;").unwrap();
+        fs::write(b.join("same.cs"), "int n = 2;").unwrap();
+        assert_eq!(
+            compare_directories(&a, &b).unwrap(),
+            vec![
+                FileChange::Added("added.ts".into()),
+                FileChange::Deleted("remove.py".into()),
+                FileChange::Modified("same.cs".into()),
+                FileChange::Renamed {
+                    before: "소스/옛이름.rs".into(),
+                    after: "새폴더/새이름.rs".into()
+                },
+            ]
+        );
+        fs::remove_dir_all(a.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn same_path_same_content_not_changed() {
+        let (a, b) = dirs();
+        fs::write(a.join("same.txt"), "hello\r\n").unwrap();
+        fs::write(b.join("same.txt"), "hello\r\n").unwrap();
+        assert!(compare_directories(&a, &b).unwrap().is_empty());
+        fs::remove_dir_all(a.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn multiple_moved_identical_files_stay_ambiguous() {
+        let (a, b) = dirs();
+        for name in ["a.py", "b.py"] {
+            fs::write(a.join(name), "same").unwrap();
+        }
+        for name in ["c.py", "d.py"] {
+            fs::write(b.join(name), "same").unwrap();
+        }
+        let events = compare_directories(&a, &b).unwrap();
+        assert_eq!(events.len(), 4);
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, FileChange::Renamed { .. }))
+        );
+        fs::remove_dir_all(a.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn refuses_oversized_file() {
+        let (a, b) = dirs();
+        let file = fs::File::create(b.join("huge.bin")).unwrap();
+        file.set_len(MAX_FILE_BYTES + 1).unwrap();
+        assert!(compare_directories(&a, &b).is_err());
+        fs::remove_dir_all(a.parent().unwrap()).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn does_not_follow_symlink_directory() {
+        use std::os::unix::fs::symlink;
+        let (a, b) = dirs();
+        fs::write(a.join("outside.txt"), "secret").unwrap();
+        symlink(&a, b.join("outside-link")).unwrap();
+        assert_eq!(
+            compare_directories(&a, &b).unwrap(),
+            vec![FileChange::Deleted("outside.txt".into())]
+        );
         fs::remove_dir_all(a.parent().unwrap()).unwrap();
     }
 }

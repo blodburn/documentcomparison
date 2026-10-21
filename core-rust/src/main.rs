@@ -4,7 +4,7 @@ use std::{env, fs, process};
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() != 3 {
-        eprintln!("Usage: dc-code-diff <before-utf8-file> <after-utf8-file>");
+        eprintln!("Usage: dc-code-diff <before-file-or-directory> <after-file-or-directory>");
         process::exit(2);
     }
     if fs::metadata(&args[1]).is_ok_and(|m| m.is_dir())

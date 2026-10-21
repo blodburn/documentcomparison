@@ -14,8 +14,8 @@ public static class CodeVersionComparer
 
     public static Result Compare(string before, string after)
     {
-        var left = Split(before);
-        var right = Split(after);
+        var left = Tokenize(before);
+        var right = Tokenize(after);
         var prefix = 0;
         while (prefix < left.Length && prefix < right.Length && left[prefix] == right[prefix]) prefix++;
         var suffix = 0;
@@ -23,9 +23,9 @@ public static class CodeVersionComparer
                left[left.Length - suffix - 1] == right[right.Length - suffix - 1]) suffix++;
         var a = left.Length - prefix - suffix;
         var b = right.Length - prefix - suffix;
-        if (a == 0 && b == 0) return new(left, right, Array.Empty<LineChange>());
+        if (a == 0 && b == 0) return new(Display(left), Display(right), Array.Empty<LineChange>());
         if ((long)a * b > 4_000_000)
-            return new(left, right, new[] { new LineChange("교체", prefix, prefix + a, prefix, prefix + b) });
+            return new(Display(left), Display(right), new[] { new LineChange("교체", prefix, prefix + a, prefix, prefix + b) });
 
         var cols = b + 1;
         var dp = new int[(a + 1) * cols];
@@ -52,7 +52,7 @@ public static class CodeVersionComparer
             changes.Add(new LineChange(ai > startA && bj > startB ? "교체" : ai > startA ? "삭제" : "추가",
                 prefix + startA, prefix + ai, prefix + startB, prefix + bj));
         }
-        return new(left, right, changes);
+        return new(Display(left), Display(right), changes);
     }
 
     public static string ReadCodeFile(string path)
@@ -64,11 +64,50 @@ public static class CodeVersionComparer
         return new UTF8Encoding(false, true).GetString(File.ReadAllBytes(path)).TrimStart('\uFEFF');
     }
 
-    private static string[] Split(string value)
+    // Rust split_inclusive('\n') preserves the terminator, which is significant:
+    // changing CRLF to LF or removing the terminal LF must be a real change.
+    private static string[] Tokenize(string text)
     {
-        if (value.Length == 0) return Array.Empty<string>();
-        var lines = value.Split('\n');
-        // A final LF terminator isn't an extra source line.
-        return value.EndsWith('\n') ? lines[..^1] : lines;
+        if (text.Length == 0) return Array.Empty<string>();
+        var result = new List<string>();
+        var offset = 0;
+        while (offset < text.Length)
+        {
+            var end = text.IndexOf('\n', offset);
+            if (end < 0) { result.Add(text[offset..]); break; }
+            result.Add(text[offset..(end + 1)]);
+            offset = end + 1;
+        }
+        return result.ToArray();
+    }
+
+    // UI lines intentionally hide the line ending; comparison tokens do not.
+    private static string[] Display(string[] tokens) => tokens.Select(token =>
+    {
+        if (!token.EndsWith('\n')) return token;
+        var text = token[..^1];
+        return text.EndsWith('\r') ? text[..^1] : text;
+    }).ToArray();
+
+    public static string[] DisplayLines(string text) => Display(Tokenize(text));
+
+    // Preview the first rows and every changed location, including changes after row 10,000.
+    // Preserve original (not compacted) line indices so badge navigation remains accurate.
+    public static IReadOnlyList<int> PreviewLineIndices(int lineCount, IReadOnlyList<LineChange>? changes,
+        int firstLines = 10000)
+    {
+        if (lineCount < 0 || firstLines < 0) throw new ArgumentOutOfRangeException();
+        var visible = new SortedSet<int>();
+        for (var i = 0; i < Math.Min(firstLines, lineCount); i++) visible.Add(i);
+        if (changes is not null && lineCount > 0)
+            foreach (var change in changes)
+            {
+                var anchor = Math.Clamp(change.AfterStart, 0, lineCount - 1);
+                // All change markers must have a real source-code anchor, even beyond the cut-off.
+                visible.Add(anchor);
+                if (anchor > 0) visible.Add(anchor - 1);
+                if (anchor + 1 < lineCount) visible.Add(anchor + 1);
+            }
+        return visible.ToArray();
     }
 }

@@ -4,11 +4,11 @@ cd /d "%~dp0"
 
 set "DIST_ROOT=DEPLOY_PACKAGE"
 set "APP_DIR=%DIST_ROOT%\DocumentCompare"
-set "ZIP_FILE=%DIST_ROOT%\[REDACTED].zip"
+set "ZIP_FILE=%DIST_ROOT%\DocumentCompare-Windows-x64.zip"
 set "PUBLISH_STAGE=.build\avalonia_publish"
 
 echo =====================================================
-echo   Document Compare V5.21.14 - Native C# One File Build
+echo   Document Compare V5.21.15 - Native C# One File Build
 echo =====================================================
 echo.
 where dotnet >nul 2>nul || (
@@ -39,7 +39,7 @@ dotnet publish "avalonia\DocumentCompare.Avalonia\DocumentCompare.Avalonia.cspro
   --self-contained true ^
   -p:PublishTrimmed=false ^
   -p:PublishSingleFile=true ^
-  -p:[REDACTED]true ^
+  -p:IncludeNativeLibrariesForSelfExtract=true ^
   -p:EnableCompressionInSingleFile=true ^
   -p:DebugType=None ^
   -p:DebugSymbols=false ^

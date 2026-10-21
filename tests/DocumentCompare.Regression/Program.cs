@@ -2101,4 +2101,50 @@ Check(CodeVersionComparer.Compare("obsolete\n", "").Changes.Single().AfterEnd==0
       "nonempty-to-empty code file should preserve deletion anchor");
 Console.WriteLine("PASS CODE FILE VERSION SNAPSHOTS AND LINE DIFF");
 
+// 151. C# and Rust use identical half-open line spans, including terminal newlines.
+var finalNewline=CodeVersionComparer.Compare("alpha\n","alpha");
+Check(finalNewline.Changes.Count==1&&finalNewline.Changes[0].Kind=="교체"&&
+      finalNewline.Changes[0].BeforeStart==0&&finalNewline.Changes[0].AfterEnd==1,
+      "removing the final LF must not be reported as identical");
+var crlf=CodeVersionComparer.Compare("한글\r\n","한글\n");
+Check(crlf.Changes.Count==1&&crlf.Changes[0].Kind=="교체",
+      "changing CRLF to LF must be recognized, matching Rust");
+Check(CodeVersionComparer.Compare("a\nb\n","a\n").Changes.Single() is
+      {Kind:"삭제",BeforeStart:1,BeforeEnd:2,AfterStart:1,AfterEnd:1},
+      "last-line deletion must anchor at end of the after file");
+Check(CodeVersionComparer.Compare("a\n","a\n\n").Changes.Single() is
+      {Kind:"추가",BeforeStart:1,BeforeEnd:1,AfterStart:1,AfterEnd:2},
+      "trailing blank line insertion must match Rust");
+Check(CodeVersionComparer.DisplayLines("a\r\nb\n").SequenceEqual(new[]{"a","b"}),
+      "preview must strip display-only CRLF while preserving comparison semantics");
+var longBefore=string.Concat(Enumerable.Repeat("same\n",12000));
+var longAfter=string.Concat(Enumerable.Repeat("same\n",11999))+"changed\n";
+var longCode=CodeVersionComparer.Compare(longBefore,longAfter);
+Check(longCode.Changes.Single().AfterStart==11999,
+      "long code file must preserve the physical line anchor");
+var visible=CodeVersionComparer.PreviewLineIndices(longCode.AfterLines.Length,longCode.Changes);
+Check(visible.Contains(11999)&&visible.Contains(9999)&&visible.Count<=10003,
+      "markers after 10,000 lines must have scrollable preview targets");
+Check(CodeVersionComparer.PreviewLineIndices(0,CodeVersionComparer.Compare("x\n","").Changes).Count==0,
+      "empty-after preview needs a placeholder anchor without a real line");
+Console.WriteLine("PASS CODE CRLF/EOF PARITY AND LONG-FILE ANCHORS");
+
+
+// 152. Explicit UTF-8 byte <-> UTF-16 code-unit offsets for future Rust interop.
+var multibyteSource="A한😀\\r\\nZ";
+Check(SourceTextOffsets.Utf8ByteToUtf16(multibyteSource,0)==0 &&
+      SourceTextOffsets.Utf8ByteToUtf16(multibyteSource,4)==2 &&
+      SourceTextOffsets.Utf8ByteToUtf16(multibyteSource,8)==4 &&
+      SourceTextOffsets.Utf8ByteToUtf16(multibyteSource,11)==7,
+      "Rust UTF-8 offsets must map to correct Korean/emoji/CRLF UTF-16 positions");
+Check(SourceTextOffsets.Utf16ToUtf8Byte(multibyteSource,2)==4 &&
+      SourceTextOffsets.Utf16ToUtf8Byte(multibyteSource,4)==8 &&
+      SourceTextOffsets.Utf16ToUtf8Byte(multibyteSource,7)==11,
+      "UTF-16 positions must round-trip to Rust UTF-8 byte indices");
+try { SourceTextOffsets.Utf8ByteToUtf16(multibyteSource,5); throw new Exception("split UTF-8 code point accepted"); }
+catch (ArgumentOutOfRangeException) { }
+try { SourceTextOffsets.Utf16ToUtf8Byte(multibyteSource,3); throw new Exception("split emoji surrogate accepted"); }
+catch (ArgumentOutOfRangeException) { }
+Console.WriteLine("PASS RUST/C# UTF8-UTF16 OFFSET CONTRACT");
+
 Console.WriteLine("ALL REGRESSIONS PASSED");

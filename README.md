@@ -9,6 +9,14 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
+**V5.21.15 — Code-version comparison hardening**
+
+- Preserve Rust/C# parity for LF and CRLF changes, terminal-newline edits, and last-line insertions/deletions. Report newline-only edits in code review.
+- Enable change-number navigation after line 10,000 by rendering actual changed locations in lengthy source files.
+- Index Rust folder rename candidates to handle thousands of files efficiently, retaining full byte-for-byte confirmation and conservative duplicate-content handling.
+- Validate UTF-8 byte and UTF-16 source offset translations for future Rust native integration, including Korean and emoji.
+- Repair the Windows build batch script and architecture documentation links.
+
 **V5.21.14 — Unified code-version comparison, phase 2**
 
 - Add source-code files (Rust, C#, Python, JavaScript/TypeScript, etc.) directly to Version History. They are saved as immutable versions alongside DOCX and TXT files.
@@ -18,9 +26,11 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Architecture reviews
 
+- [Phase 2 hardening: code navigation, line parity and directory performance (2026-10-21)](docs/architecture/UNIFIED_VERSION_PHASE2_HARDENING_2026-10-21.md)
+
 - [Phase 2: code-file Version History UI and Rust folder comparison (2026-10-21)](docs/architecture/UNIFIED_VERSION_PHASE2_2026-10-21.md)
-- [Phase 1 implementation: immutable version snapshots + experimental Rust core (2026-10-21)]([REDACTED].md)
-- [Unified document/code version management and Rust migration — initial technical review (2026-10-20)]([REDACTED].md)
+- [Phase 1 implementation: immutable version snapshots + experimental Rust core (2026-10-21)](docs/architecture/UNIFIED_VERSION_PHASE1_2026-10-21.md)
+- [Unified document/code version management and Rust migration — initial technical review (2026-10-20)](docs/architecture/UNIFIED_VERSION_CODE_RUST_REVIEW_2026-10-20.md)
 
 ## Features
 

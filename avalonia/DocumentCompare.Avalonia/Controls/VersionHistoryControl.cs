@@ -509,8 +509,7 @@ public sealed class VersionHistoryControl : UserControl
             previousName = Path.GetFileName(previous.Path);
         }
         token.ThrowIfCancellationRequested();
-        var lines = comparison?.AfterLines ?? (afterText.Length == 0
-            ? Array.Empty<string>() : afterText.Split('\n'));
+        var lines = comparison?.AfterLines ?? CodeVersionComparer.DisplayLines(afterText);
         var changeItems = new List<VersionChangeVm>();
         var marks = new Dictionary<int, List<int>>();
         if (comparison is not null)
@@ -528,9 +527,13 @@ public sealed class VersionHistoryControl : UserControl
                     ? $"{change.AfterStart + 1}행 앞(삭제 위치)" : $"{change.AfterStart + 1}~{change.AfterEnd}행";
                 var oldExcerpt = CodeExcerpt(comparison.BeforeLines, change.BeforeStart, change.BeforeEnd);
                 var newExcerpt = CodeExcerpt(comparison.AfterLines, change.AfterStart, change.AfterEnd);
+                var oldDisplay = comparison.BeforeLines.Skip(change.BeforeStart).Take(change.BeforeEnd - change.BeforeStart);
+                var newDisplay = comparison.AfterLines.Skip(change.AfterStart).Take(change.AfterEnd - change.AfterStart);
+                var label = change.Kind == "교체" && oldDisplay.SequenceEqual(newDisplay)
+                    ? "줄바꿈 변경" : change.Kind;
                 changeItems.Add(new VersionChangeVm
                 {
-                    Category = "코드", Title = change.Kind, MarkerNumber = num,
+                    Category = "코드", Title = label, MarkerNumber = num,
                     Detail = $"이전 {oldRange} → 이후 {newRange}\n전: {oldExcerpt}\n후: {newExcerpt}"
                 });
             }
@@ -552,8 +555,13 @@ public sealed class VersionHistoryControl : UserControl
             if (marks.TryGetValue(0, out var emptyMarkers))
                 foreach (var num in emptyMarkers) _previewTargets[num] = empty;
         }
-        for (var i = 0; i < Math.Min(lines.Length, displayLimit); i++)
+        var visibleLines = CodeVersionComparer.PreviewLineIndices(lines.Length, comparison?.Changes, displayLimit);
+        var previousVisible = -1;
+        foreach (var i in visibleLines)
         {
+            if (i > previousVisible + 1)
+                _preview.Children.Add(Message($"… {i - previousVisible - 1:N0}행 생략 …", "#64748B"));
+            previousVisible = i;
             var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5 };
             if (marks.TryGetValue(i, out var nums))
                 foreach (var number in nums)
@@ -576,7 +584,7 @@ public sealed class VersionHistoryControl : UserControl
             if (nums is not null) foreach (var n in nums) _previewTargets[n] = border;
         }
         if (lines.Length > displayLimit)
-            _preview.Children.Add(Message($"파일이 너무 길어 앞부분 {displayLimit:N0}행만 표시합니다.", "#B45309"));
+            _preview.Children.Add(Message($"긴 파일: 앞부분 {displayLimit:N0}행과 모든 변경 위치를 표시합니다.", "#B45309"));
         if (comparison is not null)
         {
             RenderChanges(changeItems);
