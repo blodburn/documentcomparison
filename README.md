@@ -9,22 +9,16 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.21.13 — Structured Word table comparison and terminal progress status**
+**V5.21.14 — Unified code-version comparison, phase 2**
 
-- DOCX tables now preserve typed table, row, cell, span and vertical merge coordinates through A/B/C comparison rather than flattening each row into delimiter-separated prose.
-- Table cells are displayed as individually aligned comparison entries, with body-level text markers, row/column/table insertion and deletion handling, and reordered table/row structural movement messages.
-- Progress updates are gated per operation so delayed 100% callbacks cannot replace completed, failed, canceled or restarted statuses; successful comparisons display **비교 완료**.
-- Added real DOCX structure regression fixtures covering repeated cells, SDT/nested and irregular tables, merges, cell paragraphs, table moves and A/B/C changes. Original B Word export remains in the dedicated exporter pipeline.
-
-### Previous release — V5.21.12
-
-- Version History now captures immutable copies of imported DOCX/TXT files. Saving a `.dcv.json` project also saves a neighboring `.dcv.json.assets/` directory with the version contents.
-- Previously saved version snapshots remain readable and comparable if the original source file is edited, moved, or deleted. Keep the project JSON **and** its assets directory together when moving or backing up a project.
-- Older path-based version projects still open; saving the project captures available legacy source files. Missing legacy originals cannot be recovered automatically.
-- The new experimental `core-rust/` crate provides a standalone UTF-8 line-comparison CLI and tests. It is **not** wired into the released Windows UI yet; the existing C#/Avalonia comparison and Word export engine remain unchanged.
+- Add source-code files (Rust, C#, Python, JavaScript/TypeScript, etc.) directly to Version History. They are saved as immutable versions alongside DOCX and TXT files.
+- Select a code file's Before and After versions to inspect numbered code lines and clickable change ranges in the familiar Version History panel. The desktop interface currently uses a bounded C# line-diff adapter; code-aware AST analysis is not yet available in the UI.
+- Experimental `core-rust/` now compares whole project directories, identifying additions, deletions, edits, and unambiguous byte-identical moves/renames without following symlinks or traversing build directories.
+- Repaired malformed project-source and test-fixture identifiers inherited from the prior source revision so the full comparison regression suite runs again.
 
 ## Architecture reviews
 
+- [Phase 2: code-file Version History UI and Rust folder comparison (2026-10-21)](docs/architecture/UNIFIED_VERSION_PHASE2_2026-10-21.md)
 - [Phase 1 implementation: immutable version snapshots + experimental Rust core (2026-10-21)]([REDACTED].md)
 - [Unified document/code version management and Rust migration — initial technical review (2026-10-20)]([REDACTED].md)
 
@@ -34,7 +28,7 @@ It is designed for general documents as well as structured legal, policy, and re
 - Manage sequential document versions in the Version History workspace
   - Assign Before / After independently; click an assigned file again to clear that role
   - Before / After markers make the active comparison pair explicit in the version tree
-  - Add versions by file picker or by dropping DOCX/TXT files onto the Version History panel
+  - Add versions by file picker or by dropping DOCX/TXT/source-code files onto the Version History panel
   - Save and reopen `.dcv.json` version projects
   - Preview DOCX font/paragraph styles and table rows/cells while reviewing text, structure, and formatting changes
 - Highlight deletions with red strikethrough and additions with blue underline

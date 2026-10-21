@@ -47,7 +47,7 @@ public sealed class VersionHistoryControl : UserControl
         Margin = new Thickness(12, 0, 12, 8),
         Child = new TextBlock
         {
-            Text = "DOCX/TXT 파일을 이 영역에 드롭하여 버전 추가",
+            Text = "DOCX/TXT/코드 파일을 이 영역에 드롭하여 버전 추가",
             FontSize = 11,
             Foreground = new SolidColorBrush(Color.Parse("#64748B")),
             TextWrapping = TextWrapping.Wrap,
@@ -171,7 +171,7 @@ public sealed class VersionHistoryControl : UserControl
             Title = "버전 문서 추가",
             FileTypeFilter = new[]
             {
-                new FilePickerFileType("지원 문서") { Patterns = new[] { "*.docx", "*.txt" } }
+                new FilePickerFileType("문서 및 코드") { Patterns = new[] { "*.docx", "*.txt", "*.rs", "*.cs", "*.py", "*.js", "*.jsx", "*.ts", "*.tsx", "*.java", "*.c", "*.h", "*.cc", "*.cpp", "*.hpp", "*.go", "*.rb", "*.php", "*.swift", "*.kt", "*.sql", "*.sh", "*.ps1", "*.json", "*.yaml", "*.yml", "*.toml", "*.xml", "*.html", "*.css", "*.md" } }
             }
         });
         var paths = files.Select(x => x.TryGetLocalPath())
@@ -399,6 +399,7 @@ public sealed class VersionHistoryControl : UserControl
         _loadCts = new CancellationTokenSource();
         var token = _loadCts.Token;
         _preview.Children.Clear();
+        _previewScroll.HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
         _changes.Children.Clear();
         _previewTargets.Clear();
         _changeTargets.Clear();
@@ -420,6 +421,15 @@ public sealed class VersionHistoryControl : UserControl
             var displayPath = _snapshotStore.Resolve(display);
             if (!File.Exists(displayPath))
                 throw new FileNotFoundException("버전 파일을 찾을 수 없습니다. 이전 형식으로 저장된 프로젝트라면 원본 파일이 필요합니다.");
+            if (VersionFileImportPolicy.IsCodeFile(display.Path))
+            {
+                await ShowCodeVersionsAsync(display, displayPath, token);
+                return;
+            }
+            if (_beforeIndex >= 0 && _afterIndex >= 0 &&
+                (VersionFileImportPolicy.IsCodeFile(_project.Versions[_beforeIndex].Path) ||
+                 VersionFileImportPolicy.IsCodeFile(_project.Versions[_afterIndex].Path)))
+                throw new InvalidDataException("코드 파일과 일반 문서는 비교할 수 없습니다. 같은 유형의 버전을 선택하세요.");
             if (_beforeIndex < 0 || _afterIndex < 0)
             {
                 var role = _afterIndex >= 0 ? "후" : "전";
@@ -479,6 +489,111 @@ public sealed class VersionHistoryControl : UserControl
             _changeSummary.Text = "버전 비교 실패";
             _changes.Children.Add(Message(ex.Message, "#C62828"));
         }
+    }
+
+    private async Task ShowCodeVersionsAsync(VersionFileVm display, string displayPath, CancellationToken token)
+    {
+        _previewScroll.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
+        var afterText = await Task.Run(() => CodeVersionComparer.ReadCodeFile(displayPath), token);
+        token.ThrowIfCancellationRequested();
+        CodeVersionComparer.Result? comparison = null;
+        var previousName = "";
+        if (_beforeIndex >= 0 && _afterIndex >= 0)
+        {
+            var previous = _project.Versions[_beforeIndex];
+            if (!VersionFileImportPolicy.IsCodeFile(previous.Path))
+                throw new InvalidDataException("코드 파일과 문서 파일은 비교할 수 없습니다.");
+            var previousPath = _snapshotStore.Resolve(previous);
+            var beforeText = await Task.Run(() => CodeVersionComparer.ReadCodeFile(previousPath), token);
+            comparison = await Task.Run(() => CodeVersionComparer.Compare(beforeText, afterText), token);
+            previousName = Path.GetFileName(previous.Path);
+        }
+        token.ThrowIfCancellationRequested();
+        var lines = comparison?.AfterLines ?? (afterText.Length == 0
+            ? Array.Empty<string>() : afterText.Split('\n'));
+        var changeItems = new List<VersionChangeVm>();
+        var marks = new Dictionary<int, List<int>>();
+        if (comparison is not null)
+        {
+            for (var i = 0; i < comparison.Changes.Count; i++)
+            {
+                var change = comparison.Changes[i];
+                var num = i + 1;
+                var line = Math.Min(change.AfterStart, Math.Max(0, lines.Length - 1));
+                if (!marks.TryGetValue(line, out var nums)) marks[line] = nums = new List<int>();
+                nums.Add(num);
+                var oldRange = change.BeforeEnd == change.BeforeStart
+                    ? $"{change.BeforeStart + 1}행 앞(삽입 위치)" : $"{change.BeforeStart + 1}~{change.BeforeEnd}행";
+                var newRange = change.AfterEnd == change.AfterStart
+                    ? $"{change.AfterStart + 1}행 앞(삭제 위치)" : $"{change.AfterStart + 1}~{change.AfterEnd}행";
+                var oldExcerpt = CodeExcerpt(comparison.BeforeLines, change.BeforeStart, change.BeforeEnd);
+                var newExcerpt = CodeExcerpt(comparison.AfterLines, change.AfterStart, change.AfterEnd);
+                changeItems.Add(new VersionChangeVm
+                {
+                    Category = "코드", Title = change.Kind, MarkerNumber = num,
+                    Detail = $"이전 {oldRange} → 이후 {newRange}\n전: {oldExcerpt}\n후: {newExcerpt}"
+                });
+            }
+        }
+        _previewTitle.Text = Path.GetFileName(display.Path);
+        _previewSubtitle.Text = comparison is null
+            ? "코드 파일을 표시 중입니다. 전/후 버전을 지정하면 변경사항을 비교합니다."
+            : $"{previousName} [전] → {Path.GetFileName(display.Path)} [후] · 코드 줄 비교";
+        const int displayLimit = 10000;
+        var highlighted = new HashSet<int>();
+        if (comparison is not null) foreach (var change in comparison.Changes)
+            for (var rowNumber = change.AfterStart; rowNumber < Math.Min(change.AfterEnd, displayLimit); rowNumber++)
+                highlighted.Add(rowNumber);
+        if (lines.Length == 0)
+        {
+            var empty = new Border { Padding = new Thickness(8, 5),
+                Child = new TextBlock { Text = "(빈 코드 파일)", Foreground = Brushes.Gray } };
+            _preview.Children.Add(empty);
+            if (marks.TryGetValue(0, out var emptyMarkers))
+                foreach (var num in emptyMarkers) _previewTargets[num] = empty;
+        }
+        for (var i = 0; i < Math.Min(lines.Length, displayLimit); i++)
+        {
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5 };
+            if (marks.TryGetValue(i, out var nums))
+                foreach (var number in nums)
+                {
+                    var n = number;
+                    var badge = new Button { Content = $"[{n}]", FontSize = 10, Padding = new Thickness(4, 1),
+                        Background = new SolidColorBrush(Color.Parse("#DBEAFE")),
+                        BorderThickness = new Thickness(0) };
+                    badge.Click += (_, _) => ScrollToChange(n);
+                    row.Children.Add(badge);
+                }
+            row.Children.Add(new TextBlock { Text = $"{i + 1,5}  {lines[i]}",
+                FontFamily = FontFamily.Parse("Consolas, Courier New, monospace"),
+                FontSize = 12.5, TextWrapping = TextWrapping.NoWrap,
+                Foreground = new SolidColorBrush(Color.Parse("#1E293B")) });
+            var border = new Border { Padding = new Thickness(8, 3), Child = row,
+                Background = highlighted.Contains(i) || marks.ContainsKey(i)
+                    ? new SolidColorBrush(Color.Parse("#EFF6FF")) : Brushes.Transparent };
+            _preview.Children.Add(border);
+            if (nums is not null) foreach (var n in nums) _previewTargets[n] = border;
+        }
+        if (lines.Length > displayLimit)
+            _preview.Children.Add(Message($"파일이 너무 길어 앞부분 {displayLimit:N0}행만 표시합니다.", "#B45309"));
+        if (comparison is not null)
+        {
+            RenderChanges(changeItems);
+            _status.Text = $"코드 비교 완료 · {comparison.Changes.Count}개 변경 구간";
+        }
+        else
+        {
+            _changeSummary.Text = "전/후 버전 선택 대기";
+            _changes.Children.Add(Message("비교할 두 코드 버전을 선택하세요.", "#64748B"));
+        }
+    }
+
+    private static string CodeExcerpt(string[] lines, int start, int end)
+    {
+        if (start == end) return "(없음)";
+        var excerpt = string.Join(" ↵ ", lines.Skip(start).Take(Math.Min(end - start, 3)));
+        return excerpt.Length <= 180 ? excerpt : excerpt[..180] + "…";
     }
 
     private void RenderChanges(List<VersionChangeVm> items)

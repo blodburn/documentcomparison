@@ -47,7 +47,7 @@ internal static class NativeDocumentReader
         // Pure CJK UTF-16 without a BOM can contain almost no NUL bytes, so the fast lane-bias
         // heuristic above cannot identify it.  Only after every normal text encoding failed,
         // compare strict LE/BE UTF-16 candidates by textual-script plausibility.
-        if ([REDACTED](bytes, out var cjkUtf16Text))
+        if (TryDecodeBomlessUtf16ByTextPlausibility(bytes, out var cjkUtf16Text))
             return NormalizeNewlines(cjkUtf16Text);
 
         // Last-resort replacement fallback only after strict UTF-8 / CP949 / EUC-KR / UTF-16 fail.
@@ -135,7 +135,7 @@ internal static class NativeDocumentReader
         return score / Math.Max(1, count);
     }
 
-    private static bool [REDACTED](byte[] bytes, out string text)
+    private static bool TryDecodeBomlessUtf16ByTextPlausibility(byte[] bytes, out string text)
     {
         text = string.Empty;
         if (bytes.Length < 4 || (bytes.Length & 1) != 0) return false;

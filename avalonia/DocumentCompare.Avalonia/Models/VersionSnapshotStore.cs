@@ -92,7 +92,7 @@ public sealed class VersionSnapshotStore
     private string ObjectPath(string blobId, string extension)
     {
         if (blobId.Length != 64 || blobId.Any(c => !Uri.IsHexDigit(c)) ||
-            extension is not (".docx" or ".txt"))
+            !VersionFileImportPolicy.IsSupported("file" + extension))
             throw new InvalidDataException("스냅샷 식별자 또는 확장자가 올바르지 않습니다.");
         var hash = blobId.ToLowerInvariant();
         return Path.Combine(Root, "objects", hash[..2], hash + extension);

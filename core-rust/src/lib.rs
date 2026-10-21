@@ -1,6 +1,7 @@
-//! First Rust engine slice: deterministic text-line comparison.
-//! It is intentionally separate from the existing C# document judgement engine.
-//! Structure/AST/rename detection is NOT implemented here yet.
+pub mod folder;
+// First Rust engine slice: deterministic text-line comparison.
+// It is intentionally separate from the existing C# document judgement engine.
+// Structure/AST/rename detection is NOT implemented here yet.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeKind {

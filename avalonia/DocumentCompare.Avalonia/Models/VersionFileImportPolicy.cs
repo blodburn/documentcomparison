@@ -12,11 +12,21 @@ public sealed class VersionFileImportResult
 
 public static class VersionFileImportPolicy
 {
+    private static readonly HashSet<string> CodeExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".rs", ".cs", ".py", ".js", ".jsx", ".ts", ".tsx", ".java",
+        ".c", ".h", ".cc", ".cpp", ".hpp", ".go", ".rb", ".php",
+        ".swift", ".kt", ".kts", ".sql", ".sh", ".ps1", ".json",
+        ".yaml", ".yml", ".toml", ".xml", ".html", ".css", ".md"
+    };
+
+    public static bool IsCodeFile(string path) => CodeExtensions.Contains(Path.GetExtension(path));
     public static bool IsSupported(string path)
     {
         var ext = Path.GetExtension(path);
         return ext.Equals(".docx", StringComparison.OrdinalIgnoreCase)
-            || ext.Equals(".txt", StringComparison.OrdinalIgnoreCase);
+            || ext.Equals(".txt", StringComparison.OrdinalIgnoreCase)
+            || CodeExtensions.Contains(ext);
     }
 
     public static VersionFileImportResult AddPaths(VersionHistoryProjectVm project, IEnumerable<string> paths, VersionSnapshotStore? snapshotStore = null)

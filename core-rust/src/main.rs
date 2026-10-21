@@ -1,4 +1,4 @@
-use documentcompare_core::diff_lines;
+use documentcompare_core::{diff_lines, folder::compare_directories};
 use std::{env, fs, process};
 
 fn main() {
@@ -6,6 +6,18 @@ fn main() {
     if args.len() != 3 {
         eprintln!("Usage: dc-code-diff <before-utf8-file> <after-utf8-file>");
         process::exit(2);
+    }
+    if fs::metadata(&args[1]).is_ok_and(|m| m.is_dir())
+        && fs::metadata(&args[2]).is_ok_and(|m| m.is_dir())
+    {
+        let changes = compare_directories(args[1].as_ref(), args[2].as_ref()).unwrap_or_else(|e| {
+            eprintln!("Folder comparison failed: {e}");
+            process::exit(1)
+        });
+        for event in changes {
+            println!("{event:?}");
+        }
+        return;
     }
     let old = fs::read_to_string(&args[1]).unwrap_or_else(|e| {
         eprintln!("Failed to open before file: {e}");

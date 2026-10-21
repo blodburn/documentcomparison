@@ -1884,7 +1884,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return i;
     }
 
-    private static string [REDACTED](string text)
+    private static string RecoverEmbeddedExplicitItemBoundaries(string text)
     {
         if (string.IsNullOrEmpty(text)) return text ?? string.Empty;
 
@@ -2019,7 +2019,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     private static List<NativePart> ParseParts(string text)
     {
         text = NativeDocumentReader.NormalizeNewlines(text ?? string.Empty);
-        var scanText = [REDACTED](StructuralParseView(text));
+        var scanText = RecoverEmbeddedExplicitItemBoundaries(StructuralParseView(text));
         var matches = ExplicitItem.Matches(scanText).Cast<Match>().ToList();
         if (matches.Count == 0)
         {

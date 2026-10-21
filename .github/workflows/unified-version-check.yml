@@ -1,0 +1,38 @@
+name: Unified version transition tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  rust-core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --manifest-path core-rust/Cargo.toml --check
+      - run: cargo clippy --manifest-path core-rust/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --manifest-path core-rust/Cargo.toml
+
+  windows-document-and-code:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Run regression suite
+        shell: pwsh
+        run: |
+          dotnet run --project tests/DocumentCompare.Regression/DocumentCompare.Regression.csproj -c Release 2>&1 | Tee-Object -FilePath regression.txt
+          if ($LASTEXITCODE -ne 0) { throw "Regression failed" }
+          if (-not (Select-String -Path regression.txt -Pattern '^ALL REGRESSIONS PASSED$' -Quiet)) { throw "Missing regression completion marker" }
+      - name: Verify portable Windows executable build
+        run: dotnet publish avalonia/DocumentCompare.Avalonia/DocumentCompare.Avalonia.csproj -c Release -r win-x64 --self-contained true -p:PublishTrimmed=false -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:DebugType=None -p:DebugSymbols=false -o dist/publish
