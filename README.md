@@ -9,7 +9,14 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Current release
 
-**V5.21.12 — Phase 1 of the unified version-management migration**
+**V5.21.13 — Structured Word table comparison and terminal progress status**
+
+- DOCX tables now preserve typed table, row, cell, span and vertical merge coordinates through A/B/C comparison rather than flattening each row into delimiter-separated prose.
+- Table cells are displayed as individually aligned comparison entries, with body-level text markers, row/column/table insertion and deletion handling, and reordered table/row structural movement messages.
+- Progress updates are gated per operation so delayed 100% callbacks cannot replace completed, failed, canceled or restarted statuses; successful comparisons display **비교 완료**.
+- Added real DOCX structure regression fixtures covering repeated cells, SDT/nested and irregular tables, merges, cell paragraphs, table moves and A/B/C changes. Original B Word export remains in the dedicated exporter pipeline.
+
+### Previous release — V5.21.12
 
 - Version History now captures immutable copies of imported DOCX/TXT files. Saving a `.dcv.json` project also saves a neighboring `.dcv.json.assets/` directory with the version contents.
 - Previously saved version snapshots remain readable and comparable if the original source file is edited, moved, or deleted. Keep the project JSON **and** its assets directory together when moving or backing up a project.
@@ -18,8 +25,8 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Architecture reviews
 
-- [Phase 1 implementation: immutable version snapshots + experimental Rust core (2026-10-21)](docs/architecture/UNIFIED_VERSION_PHASE1_2026-10-21.md)
-- [Unified document/code version management and Rust migration — initial technical review (2026-10-20)](docs/architecture/UNIFIED_VERSION_CODE_RUST_REVIEW_2026-10-20.md)
+- [Phase 1 implementation: immutable version snapshots + experimental Rust core (2026-10-21)]([REDACTED].md)
+- [Unified document/code version management and Rust migration — initial technical review (2026-10-20)]([REDACTED].md)
 
 ## Features
 
