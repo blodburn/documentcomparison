@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 
 namespace DocumentCompare.Avalonia.Engine;
 
@@ -59,6 +60,26 @@ public static class NativeCodeVersionComparer
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void FolderFreeDelegate(ref NativeFolderResult result);
 
+    public sealed record AstChange(
+        string Kind, string SymbolKind, string BeforeName, string AfterName,
+        int BeforeStart, int BeforeEnd, int AfterStart, int AfterEnd);
+    public sealed record AstComparison(bool Supported, IReadOnlyList<AstChange> Changes, string? Reason = null);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeAstResult
+    {
+        public IntPtr Data;
+        public nuint Length;
+    }
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int AstDiffDelegate(
+        uint language, [In] byte[] before, nuint beforeLength,
+        [In] byte[] after, nuint afterLength, out NativeAstResult result);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void AstFreeDelegate(ref NativeAstResult result);
+
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate uint VersionDelegate();
 
@@ -78,6 +99,8 @@ public static class NativeCodeVersionComparer
         public readonly FreeDelegate Free;
         public readonly FolderDiffDelegate FolderDiff;
         public readonly FolderFreeDelegate FolderFree;
+        public readonly AstDiffDelegate AstDiff;
+        public readonly AstFreeDelegate AstFree;
 
         public Exports(IntPtr handle)
         {
@@ -94,6 +117,10 @@ public static class NativeCodeVersionComparer
                 NativeLibrary.GetExport(handle, "dc_compare_folders_utf8"));
             FolderFree = Marshal.GetDelegateForFunctionPointer<FolderFreeDelegate>(
                 NativeLibrary.GetExport(handle, "dc_free_folder_result"));
+            AstDiff = Marshal.GetDelegateForFunctionPointer<AstDiffDelegate>(
+                NativeLibrary.GetExport(handle, "dc_compare_ast_json_utf8"));
+            AstFree = Marshal.GetDelegateForFunctionPointer<AstFreeDelegate>(
+                NativeLibrary.GetExport(handle, "dc_free_ast_json_result"));
         }
     }
 
@@ -156,6 +183,64 @@ public static class NativeCodeVersionComparer
         finally
         {
             exports.Free(ref nativeResult);
+        }
+    }
+
+    /// <summary>
+    /// Returns syntax-tree declaration changes only for Rust/C#. Unsupported
+    /// languages, malformed syntax, and parser budget errors are explicitly
+    /// marked unsupported so the already-computed exact line diff still works.
+    /// </summary>
+    public static AstComparison CompareAst(string extension, string before, string after)
+    {
+        ArgumentNullException.ThrowIfNull(before);
+        ArgumentNullException.ThrowIfNull(after);
+        var language = extension.ToLowerInvariant() switch
+        {
+            ".rs" => 1U,
+            ".cs" => 2U,
+            _ => 0U
+        };
+        if (language == 0)
+            return new AstComparison(false, Array.Empty<AstChange>(), "AST 지원 언어는 Rust와 C#입니다.");
+        var exports = Native.Value;
+        if (exports is null)
+            return new AstComparison(false, Array.Empty<AstChange>(), "Rust 네이티브 엔진이 없습니다.");
+        var encoding = new UTF8Encoding(false, true);
+        var beforeBytes = encoding.GetBytes(before);
+        var afterBytes = encoding.GetBytes(after);
+        var status = exports.AstDiff(language, beforeBytes,
+            (nuint)beforeBytes.Length, afterBytes, (nuint)afterBytes.Length, out var output);
+        try
+        {
+            if (status == 3)
+                return new AstComparison(false, Array.Empty<AstChange>(),
+                    "AST 구문 오류 또는 분석 한도 초과 · 줄 비교만 표시합니다.");
+            if (status != 0)
+                throw new InvalidDataException($"Rust AST 비교 실패 (상태 {status}).");
+            if (output.Length == 0 || output.Length > 4UL * 1024 * 1024 ||
+                output.Data == IntPtr.Zero)
+                throw new InvalidDataException("Rust AST JSON 결과의 길이 또는 포인터가 잘못되었습니다.");
+            var json = new byte[checked((int)output.Length)];
+            Marshal.Copy(output.Data, json, 0, json.Length);
+            var changes = JsonSerializer.Deserialize<List<AstChange>>(json,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
+                ?? throw new InvalidDataException("Rust AST 결과가 비어 있습니다.");
+            if (changes.Count > 15000)
+                throw new InvalidDataException("Rust AST 결과가 예상 범위를 초과했습니다.");
+            foreach (var c in changes)
+            {
+                if (c.Kind is not ("Add" or "Delete" or "Modify" or "Move" or "Rename") ||
+                    c.BeforeStart < 0 || c.BeforeEnd < c.BeforeStart ||
+                    c.AfterStart < 0 || c.AfterEnd < c.AfterStart ||
+                    c.BeforeEnd > beforeBytes.Length || c.AfterEnd > afterBytes.Length)
+                    throw new InvalidDataException("Rust AST 변경 이벤트의 유형 또는 위치가 잘못되었습니다.");
+            }
+            return new AstComparison(true, changes);
+        }
+        finally
+        {
+            exports.AstFree(ref output);
         }
     }
 

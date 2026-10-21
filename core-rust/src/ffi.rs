@@ -463,3 +463,172 @@ mod folder_ffi_tests {
         unsafe { dc_free_folder_result(&mut result) };
     }
 }
+
+/// Rust-owned JSON representation of bounded AST declaration changes.
+#[repr(C)]
+pub struct DcAstJsonResult {
+    pub data: *mut u8,
+    pub length: usize,
+}
+
+impl DcAstJsonResult {
+    fn empty() -> Self {
+        Self {
+            data: ptr::null_mut(),
+            length: 0,
+        }
+    }
+}
+
+/// Language: 1 Rust, 2 C#. Returns a UTF-8 JSON array of declaration events.
+/// 0 success; 1 invalid UTF-8; 2 invalid args; 3 syntax/budget unsupported;
+/// 4 internal serialization error; 5 unexpected Rust panic.
+/// The syntax error case is NOT a false "no changes" result.
+///
+/// # Safety
+/// Input pointers must be readable for supplied lengths. Output must be
+/// writable and not concurrently used. Free successful results with
+/// dc_free_ast_json_result.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dc_compare_ast_json_utf8(
+    language: u32,
+    before: *const u8,
+    before_len: usize,
+    after: *const u8,
+    after_len: usize,
+    output: *mut DcAstJsonResult,
+) -> i32 {
+    if output.is_null() {
+        return 2;
+    }
+    // SAFETY: writable output memory is guaranteed by caller.
+    unsafe { ptr::write(output, DcAstJsonResult::empty()) };
+    let language = match language {
+        1 => crate::ast::Language::Rust,
+        2 => crate::ast::Language::CSharp,
+        _ => return 2,
+    };
+    if before_len > MAX_INPUT_BYTES
+        || after_len > MAX_INPUT_BYTES
+        || (before_len != 0 && before.is_null())
+        || (after_len != 0 && after.is_null())
+    {
+        return 2;
+    }
+    let compared = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let old = if before_len == 0 {
+            &[][..]
+        } else {
+            // SAFETY: caller guarantees valid readable bytes.
+            unsafe { slice::from_raw_parts(before, before_len) }
+        };
+        let new = if after_len == 0 {
+            &[][..]
+        } else {
+            // SAFETY: caller guarantees valid readable bytes.
+            unsafe { slice::from_raw_parts(after, after_len) }
+        };
+        let old = std::str::from_utf8(old).map_err(|_| 1)?;
+        let new = std::str::from_utf8(new).map_err(|_| 1)?;
+        let changes = crate::ast::compare(language, old, new).map_err(|_| 3)?;
+        serde_json::to_vec(&changes).map_err(|_| 4)
+    }));
+    match compared {
+        Ok(Ok(json)) => {
+            let raw = json.into_boxed_slice();
+            let length = raw.len();
+            let data = Box::into_raw(raw) as *mut u8;
+            // SAFETY: writable output memory is guaranteed by caller.
+            unsafe { ptr::write(output, DcAstJsonResult { data, length }) };
+            0
+        }
+        Ok(Err(code)) => code,
+        Err(_) => 5,
+    }
+}
+
+/// # Safety
+/// Output must be null or a writable result previously returned by
+/// dc_compare_ast_json_utf8, with exclusive ownership during this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dc_free_ast_json_result(output: *mut DcAstJsonResult) {
+    if output.is_null() {
+        return;
+    }
+    // SAFETY: valid writable result memory is guaranteed by caller.
+    let old = unsafe { ptr::replace(output, DcAstJsonResult::empty()) };
+    if !old.data.is_null() && old.length != 0 {
+        // SAFETY: allocated by Box::into_raw in dc_compare_ast_json_utf8.
+        unsafe {
+            drop(Box::from_raw(ptr::slice_from_raw_parts_mut(
+                old.data, old.length,
+            )))
+        };
+    }
+}
+
+#[cfg(test)]
+mod ast_ffi_tests {
+    use super::*;
+
+    #[test]
+    fn serializes_real_ast_changes_and_frees_memory() {
+        let before = "fn first() { 1; }\n";
+        let after = "fn second() { 1; }\n";
+        let mut output = DcAstJsonResult::empty();
+        let code = unsafe {
+            dc_compare_ast_json_utf8(
+                1,
+                before.as_ptr(),
+                before.len(),
+                after.as_ptr(),
+                after.len(),
+                &mut output,
+            )
+        };
+        assert_eq!(code, 0);
+        let bytes = unsafe { slice::from_raw_parts(output.data, output.length) };
+        let events: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        assert_eq!(events[0]["kind"], "Rename");
+        assert_eq!(events[0]["beforeName"], "first");
+        assert_eq!(events[0]["afterName"], "second");
+        unsafe { dc_free_ast_json_result(&mut output) };
+        assert_eq!(output.length, 0);
+        unsafe { dc_free_ast_json_result(&mut output) };
+    }
+
+    #[test]
+    fn rejects_unknown_language_and_malformed_source() {
+        let old = "fn x() {";
+        let new = "fn x() {}";
+        let mut output = DcAstJsonResult::empty();
+        assert_eq!(
+            unsafe {
+                dc_compare_ast_json_utf8(
+                    0,
+                    old.as_ptr(),
+                    old.len(),
+                    new.as_ptr(),
+                    new.len(),
+                    &mut output,
+                )
+            },
+            2
+        );
+        assert_eq!(
+            unsafe {
+                dc_compare_ast_json_utf8(
+                    1,
+                    old.as_ptr(),
+                    old.len(),
+                    new.as_ptr(),
+                    new.len(),
+                    &mut output,
+                )
+            },
+            3
+        );
+        assert_eq!(output.length, 0);
+        unsafe { dc_free_ast_json_result(&mut output) };
+    }
+}

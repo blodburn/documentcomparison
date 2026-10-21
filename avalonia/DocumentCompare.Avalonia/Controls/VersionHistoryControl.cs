@@ -615,6 +615,8 @@ public sealed class VersionHistoryControl : UserControl
         token.ThrowIfCancellationRequested();
         CodeVersionComparer.Result? comparison = null;
         IReadOnlyList<UnifiedChangeEvent>? codeEvents = null;
+        NativeCodeVersionComparer.AstComparison? astComparison = null;
+        string? beforeSource = null;
         var usedNativeCodeEngine = false;
         var previousName = "";
         if (_beforeIndex >= 0 && _afterIndex >= 0)
@@ -624,6 +626,7 @@ public sealed class VersionHistoryControl : UserControl
                 throw new InvalidDataException("코드 파일과 문서 파일은 비교할 수 없습니다.");
             var previousPath = _snapshotStore.Resolve(previous);
             var beforeText = await Task.Run(() => CodeVersionComparer.ReadCodeFile(previousPath), token);
+            beforeSource = beforeText;
             var compared = await Task.Run(() =>
             {
                 var result = NativeCodeVersionComparer.Compare(beforeText, afterText, out var usedNative);
@@ -633,10 +636,13 @@ public sealed class VersionHistoryControl : UserControl
                     string.IsNullOrWhiteSpace(display.Sha256)
                         ? CodeVersionChangeMapper.ContentId(afterText) : display.Sha256,
                     Path.GetFileName(previous.Path), Path.GetFileName(display.Path));
-                return (result, events, usedNative);
+                var ast = NativeCodeVersionComparer.CompareAst(
+                    Path.GetExtension(display.Path), beforeText, afterText);
+                return (result, events, usedNative, ast);
             }, token);
             comparison = compared.result;
             codeEvents = compared.events;
+            astComparison = compared.ast;
             usedNativeCodeEngine = compared.usedNative;
             previousName = Path.GetFileName(previous.Path);
         }
@@ -679,13 +685,76 @@ public sealed class VersionHistoryControl : UserControl
                 });
             }
         }
+        if (comparison is not null && astComparison is { Supported: true })
+        {
+            // Full UTF-8 bytes are scanned once so every syntax-tree byte offset
+            // lands on the correct physical preview row even for emoji/CRLF.
+            var newLineStarts = CodeAstLineLocation.Index(afterText);
+            var oldLineStarts = CodeAstLineLocation.Index(beforeSource!);
+            for (var i = 0; i < astComparison.Changes.Count; i++)
+            {
+                var ast = astComparison.Changes[i];
+                var number = comparison.Changes.Count + i + 1;
+                var locationBefore = ast.Kind == "Add" ? null : new UnifiedChangeLocation(
+                    string.IsNullOrWhiteSpace(_project.Versions[_beforeIndex].Sha256)
+                        ? previousName : _project.Versions[_beforeIndex].Sha256,
+                    previousName, UnifiedLocationKind.CodeNode,
+                    ast.SymbolKind + ":" + ast.BeforeName,
+                    ast.BeforeStart, ast.BeforeEnd);
+                var locationAfter = ast.Kind == "Delete" ? null : new UnifiedChangeLocation(
+                    string.IsNullOrWhiteSpace(display.Sha256) ? display.Path : display.Sha256,
+                    Path.GetFileName(display.Path), UnifiedLocationKind.CodeNode,
+                    ast.SymbolKind + ":" + ast.AfterName,
+                    ast.AfterStart, ast.AfterEnd);
+                var kind = ast.Kind switch
+                {
+                    "Add" => UnifiedChangeKind.Insert,
+                    "Delete" => UnifiedChangeKind.Delete,
+                    "Move" => UnifiedChangeKind.Move,
+                    "Rename" => UnifiedChangeKind.Rename,
+                    _ => UnifiedChangeKind.Replace
+                };
+                var evt = UnifiedChangeEvents.Create(kind, locationBefore, locationAfter,
+                    "AST " + ast.SymbolKind, "tree-sitter unique declaration/body", i);
+                var title = ast.Kind switch
+                {
+                    "Add" => "선언 추가",
+                    "Delete" => "선언 삭제",
+                    "Modify" => "선언 내용 변경",
+                    "Move" => "선언 이동",
+                    "Rename" => "선언 이름 변경",
+                    _ => "구조 변경"
+                };
+                changeItems.Add(new VersionChangeVm
+                {
+                    Category = "구조",
+                    Title = $"{title} · {ast.SymbolKind}",
+                    Detail = $"이전: {ast.BeforeName} → 이후: {ast.AfterName}" +
+                             $"\n원본 UTF-8 범위: {ast.BeforeStart}~{ast.BeforeEnd} → {ast.AfterStart}~{ast.AfterEnd}",
+                    MarkerNumber = number,
+                    EventId = evt.EventId
+                });
+                var line = ast.Kind == "Delete"
+                    ? oldLineStarts.LineForByte(ast.BeforeStart)
+                    : newLineStarts.LineForByte(ast.AfterStart);
+                line = Math.Min(line, Math.Max(0, lines.Length - 1));
+                if (!marks.TryGetValue(line, out var nums)) marks[line] = nums = new List<int>();
+                nums.Add(number);
+            }
+        }
+
         _previewTitle.Text = Path.GetFileName(display.Path);
         _previewSubtitle.Text = comparison is null
             ? "코드 파일을 표시 중입니다. 전/후 버전을 지정하면 변경사항을 비교합니다."
             : $"{previousName} [전] → {Path.GetFileName(display.Path)} [후] · " +
-              (usedNativeCodeEngine ? "Rust 코드 비교" : "C# 코드 비교(호환 모드)");
+              (usedNativeCodeEngine ? "Rust 코드 비교" : "C# 코드 비교(호환 모드)") +
+              (astComparison is { Supported: true }
+                  ? $" · AST 구조 {astComparison.Changes.Count}건"
+                  : $" · AST 분석 제외 ({astComparison?.Reason ?? "미지원"})");
         const int displayLimit = 10000;
-        var visibleLines = CodeVersionComparer.PreviewLineIndices(lines.Length, comparison?.Changes, displayLimit);
+        var visibleLines = CodeVersionComparer.PreviewLineIndices(lines.Length, comparison?.Changes, displayLimit)
+            .Concat(marks.Keys.Where(line => line >= 0 && line < lines.Length))
+            .Distinct().OrderBy(line => line).ToArray();
         var highlighted = new HashSet<int>();
         if (comparison is not null)
         {
@@ -744,7 +813,8 @@ public sealed class VersionHistoryControl : UserControl
         if (comparison is not null)
         {
             RenderChanges(changeItems);
-            _status.Text = $"코드 비교 완료 · {comparison.Changes.Count}개 변경 구간";
+            _status.Text = $"코드 비교 완료 · 줄 변경 {comparison.Changes.Count}건" +
+                (astComparison is { Supported: true } ? $" · AST 구조 변경 {astComparison.Changes.Count}건" : "");
         }
         else
         {

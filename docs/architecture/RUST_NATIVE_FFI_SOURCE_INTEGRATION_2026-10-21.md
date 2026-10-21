@@ -33,7 +33,24 @@ The C# document comparison engine and Word/Excel exporters are unchanged.
 
 ## Scope and remaining constraints
 
-- This is line-based comparison through Rust, not AST semantics.
+- Rust now uses the actual Tree-sitter Rust and C# grammars to compare
+  bounded declaration syntax trees, in parallel with unchanged exact line
+  diff results. The AST layer can identify uniquely named functions/classes,
+  track changes to a declaration, and detect moves/renames only with unique
+  byte-identical, nontrivial method bodies. Empty/duplicated bodies never
+  prove a move. Unsupported languages, parsing errors, or AST limits produce
+  an explicit AST-unavailable state while exact line comparison continues.
+  Tree-sitter AST results are transferred as Rust-owned UTF-8 JSON with
+  dc_compare_ast_json_utf8 and dc_free_ast_json_result.
+  The view adds numbered "구조" items alongside the pre-existing "코드" items,
+  with UTF-8 byte span provenance and anchors to original physical lines.
+- AST results are *syntactic*, not full semantic equivalence or dependency
+  analysis. Declarations that also contain changed nested members may
+  produce both parent and child changes. Cross-file AST move detection, Git
+  rename history, and language-aware refactoring analysis are not implemented.
+  Exact line changes remain authoritative for character-level content diffs.
+- AST parser hard limits are 2 MB per source, 5,000 declarations and 128
+  levels of nesting; no AST claims are emitted when those limits are hit.
 - Native Rust folder comparison is now callable through the same ABI.
   The version-history screen offers a separate "폴더 비교" action and
   displays added/deleted/modified/exact-byte moved or renamed files.

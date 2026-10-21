@@ -2452,4 +2452,46 @@ else
 }
 Console.WriteLine("PASS RUST FOLDER FFI AND EXPLICIT FALLBACK");
 
+
+// 164. Actual Tree-sitter Rust/C# AST detection through the shared native ABI.
+if(NativeCodeVersionComparer.IsAvailable)
+{
+    var rustBefore="mod first { fn hello() { println!(\"안녕😀\"); } }\nmod second {}\n";
+    var rustAfter="mod first {}\nmod second { fn hello() { println!(\"안녕😀\"); } }\n";
+    var astMoved=NativeCodeVersionComparer.CompareAst(".rs",rustBefore,rustAfter);
+    Check(astMoved.Supported && astMoved.Changes.Count==1 &&
+          astMoved.Changes.Single() is {Kind:"Move",BeforeName:"hello",AfterName:"hello"} &&
+          astMoved.Changes[0].AfterStart > astMoved.Changes[0].BeforeStart,
+          "Rust Tree-sitter must detect moved function by unique identical body");
+    var astRenamed=NativeCodeVersionComparer.CompareAst(".cs",
+        "class C { void First() { int x=1; } }",
+        "class C { void Second() { int x=1; } }");
+    Check(astRenamed.Supported && astRenamed.Changes.Any(
+            c=>c.Kind=="Rename" && c.BeforeName=="First" && c.AfterName=="Second"),
+          "C# Tree-sitter must recognize function rename with unchanged body");
+    var astInvalid=NativeCodeVersionComparer.CompareAst(".rs","fn x() {", "fn x() {}");
+    Check(!astInvalid.Supported && astInvalid.Changes.Count==0 &&
+          !string.IsNullOrWhiteSpace(astInvalid.Reason),
+          "syntax errors must be reported as unsupported AST, never as no changes");
+    var astOther=NativeCodeVersionComparer.CompareAst(".txt","x","y");
+    Check(!astOther.Supported,"unknown language must stay on line-diff mode");
+    var astPlain=NativeCodeVersionComparer.CompareAst(".rs","fn same() { 1; }","fn same() { 1; }");
+    Check(astPlain.Supported && astPlain.Changes.Count==0,
+          "valid unchanged declarations must return explicit empty AST results");
+}
+Console.WriteLine("PASS RUST CSHARP TREE SITTER AST FFI");
+
+
+// 165. AST syntax offsets navigate exact lines with CRLF, UTF-8 and emoji.
+var astIndex=CodeAstLineLocation.Index("가😀\r\nline\n마지막");
+Check(astIndex.LineForByte(0)==0 &&
+      astIndex.LineForByte(3)==0 &&
+      astIndex.LineForByte(8)==0 &&
+      astIndex.LineForByte(9)==1 &&
+      astIndex.LineForByte(14)==2,
+      "AST UTF-8 byte locations must resolve to correct displayed physical lines");
+try { astIndex.LineForByte(-1); throw new Exception("negative byte index accepted"); }
+catch(ArgumentOutOfRangeException) { }
+Console.WriteLine("PASS AST UTF8 PHYSICAL LINE ANCHORS");
+
 Console.WriteLine("ALL REGRESSIONS PASSED");
