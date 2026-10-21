@@ -169,7 +169,7 @@ public partial class MainWindow : Window
 
     private void ApplyLanguage()
     {
-        Title = L("문서 비교기 V5.21.12", "Document Compare V5.21.12");
+        Title = L("문서 비교기 V5.21.13", "Document Compare V5.21.13");
         AppTitleText.Text = L("문서 비교기", "Document Compare");
         QuickCompareModeButton.Content = L("빠른 비교", "Quick compare");
         VersionHistoryModeButton.Content = L("버전 관리", "Version history");
@@ -448,7 +448,7 @@ public partial class MainWindow : Window
         _operationCts = new CancellationTokenSource();
         var operationCts = _operationCts;
         var operationToken = operationCts.Token;
-        var acceptProgress = true;
+        var progressSession = new ComparisonProgressSession();
         SetBusy(true, L("비교 중... 0%", "Comparing... 0%"));
         CompareProgress.Value = 0;
         CompareProgress.IsVisible = true;
@@ -457,7 +457,7 @@ public partial class MainWindow : Window
             // Progress<T> posts callbacks back to the UI synchronization context. The engine can
             // finish before the final queued callback runs, so a stale "Comparing... 100%" update
             // must not overwrite the terminal Complete/Canceled/Failed status.
-            if (!acceptProgress ||
+            if (!progressSession.TryAccept(value) ||
                 !ReferenceEquals(_operationCts, operationCts) ||
                 operationToken.IsCancellationRequested)
                 return;
@@ -468,20 +468,15 @@ public partial class MainWindow : Window
         {
             _result = await _engine.CompareAsync(
                 paths, baseIndex, mode, includeAc, includePunctuation, operationToken, progress);
-            acceptProgress = false;
+            progressSession.Close();
             _lastPaths = paths;
             _lastBaseIndex = baseIndex;
             _lastMode = mode;
             _lastIncludeAc = includeAc;
             _lastIncludePunctuation = includePunctuation;
             RenderResult(_result);
-            var counts = _result.UnitCounts.Count == paths.Length
-                ? string.Join(" / ", _result.UnitCounts.Select((x, i) => L($"{(char)('A' + i)} {x}단위", $"{(char)('A' + i)} {x} units")))
-                : L($"{_result.Rows.Count}행", $"{_result.Rows.Count} rows");
-            var pairText = paths.Length == 3 ? (includeAc ? "A↔B / B↔C / A↔C" : "A↔B / B↔C") : "A↔B";
-            var punctText = includePunctuation ? L("특수문자 포함", "punctuation included") : L("특수문자 제외", "punctuation excluded");
             CompareProgress.Value = 100;
-            StatusText.Text = L($"비교 완료 · {pairText} · {punctText} · {counts}", $"Comparison complete · {pairText} · {punctText} · {counts}");
+            StatusText.Text = L("비교 완료", "Comparison complete");
             ExcelButton.IsEnabled = true;
             WordButton.IsEnabled = true;
             await CompletionDialog.ShowAsync(this, _language,
@@ -497,7 +492,7 @@ public partial class MainWindow : Window
         }
         finally
         {
-            acceptProgress = false;
+            progressSession.Close();
             SetBusy(false);
             CompareProgress.IsVisible = false;
         }
