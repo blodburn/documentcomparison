@@ -107,6 +107,14 @@ public static class NativeCodeVersionComparer
     public sealed record DocumentWhitespaceResult(
         bool Eligible, IReadOnlyList<DocumentWhitespaceSpan> Spans);
 
+    public sealed record DocumentPart(
+        string Label, int Start, int End,
+        int CoreStart, int CoreEnd, string Core);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int DocumentPartsDelegate(
+        [In] byte[] source, nuint length, out NativeAstResult result);
+
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int DocumentWhitespaceDiffDelegate(
         [In] byte[] before, nuint beforeLength,
@@ -136,6 +144,7 @@ public static class NativeCodeVersionComparer
         public readonly AstFreeDelegate AstFree;
         public readonly CrossFileAstDelegate CrossFileAst;
         public readonly DocumentWhitespaceDiffDelegate? DocumentWhitespaceDiff;
+        public readonly DocumentPartsDelegate? DocumentParts;
 
         public Exports(IntPtr handle)
         {
@@ -164,6 +173,10 @@ public static class NativeCodeVersionComparer
                 "dc_compare_document_whitespace_utf8", out var whitespaceExport))
                 DocumentWhitespaceDiff = Marshal.GetDelegateForFunctionPointer<DocumentWhitespaceDiffDelegate>(
                     whitespaceExport);
+            if (NativeLibrary.TryGetExport(handle, "dc_parse_document_parts_utf8",
+                out var partsExport))
+                DocumentParts = Marshal.GetDelegateForFunctionPointer<DocumentPartsDelegate>(
+                    partsExport);
         }
     }
 
@@ -288,6 +301,58 @@ public static class NativeCodeVersionComparer
 
     private sealed record DocumentWhitespaceWire(
         bool Eligible, List<DocumentWhitespaceSpan> Spans);
+
+    /// <summary>
+    /// Optional Rust port of C# ParseParts. Coordinates are UTF-16 and refer
+    /// to newline-normalized input. Validation/mismatch never replaces C#
+    /// document structure judgment.
+    /// </summary>
+    public static IReadOnlyList<DocumentPart>? ParseDocumentParts(string source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        var exports = Native.Value;
+        if (exports?.DocumentParts is null || source.Length > 131_072)
+            return null;
+        var input = new UTF8Encoding(false, true).GetBytes(source);
+        var status = exports.DocumentParts(input, (nuint)input.Length, out var output);
+        try
+        {
+            if (status is 2 or 3) return null;
+            if (status != 0)
+                throw new InvalidDataException($"Rust 항·호 분석 실패 (상태 {status}).");
+            if (output.Data == IntPtr.Zero || output.Length == 0 ||
+                output.Length > 16UL * 1024 * 1024)
+                throw new InvalidDataException("Rust 항·호 구조 분석 결과가 올바르지 않습니다.");
+            var bytes = new byte[checked((int)output.Length)];
+            Marshal.Copy(output.Data, bytes, 0, bytes.Length);
+            var parsed = JsonSerializer.Deserialize<DocumentPartsWire>(bytes,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            if (parsed?.Parts is null || parsed.Parts.Count > 4097)
+                throw new InvalidDataException("Rust 항·호 구조 분석 결과 개수 오류");
+            var normalized = source.Replace("\r\n", "\n").Replace('\r', '\n');
+            var lastStart = 0;
+            foreach (var part in parsed.Parts)
+            {
+                if (string.IsNullOrEmpty(part.Label) || part.Start < lastStart ||
+                    part.Start < 0 || part.End < part.Start ||
+                    part.CoreStart < part.Start || part.CoreEnd < part.CoreStart ||
+                    part.CoreEnd > part.End || part.End > normalized.Length ||
+                    !string.Equals(part.Core,
+                        normalized[part.CoreStart..part.CoreEnd], StringComparison.Ordinal))
+                    throw new InvalidDataException("Rust 항·호 UTF-16 위치 오류");
+                lastStart = part.End;
+            }
+            return parsed.Parts;
+        }
+        finally
+        {
+            exports.AstFree(ref output);
+        }
+    }
+
+    private sealed record DocumentPartsWire(List<DocumentPart> Parts);
+
+
 
     /// <summary>
     /// Returns syntax-tree declaration changes only for Rust/C#. Unsupported

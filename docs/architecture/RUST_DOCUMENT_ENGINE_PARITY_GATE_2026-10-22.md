@@ -24,7 +24,8 @@ must not be inferred merely from matching current C# behavior.
 | Source-code LF/CRLF bounded LCS | CodeVersionComparer | diff_lines | 16,265 direct managed vs native cases matched in one-off audit; CLI vs FFI corpus 256/256 |
 | Document whitespace-only edits | C# TryWhitespaceBoundaryDiff | doc_whitespace::compare | Exact UTF-16 boundary match, 521/521 deterministic cases plus Rust unit/FFI checks; live call parity-shadowed |
 | Article/section/paragraph lineage | C# ParseLegalUnits, BuildRows etc. | Not ported | No replacement |
-| Item numbering, movement, Roman hierarchy | C# ParseParts, MatchParts etc. | Not ported | No replacement |
+| 항/호 label and boundary segmentation | C# ParsePartsCSharp | Rust doc_parts | 31 committed Golden cases plus 455 direct C#/Rust cases; live gated |
+| Item movement, Roman hierarchy matching | C# MatchParts, BuildPartHierarchy etc. | Not ported | No replacement |
 | DOCX table cell/merge/row matching | C# structured reader and matcher | Not ported | No replacement |
 | Word formatting and tracked revisions | C# NativeOfficeExporter | Not ported | No replacement |
 | Excel A/B/C and change narrative | C# exporter | Not ported | No replacement |
@@ -76,6 +77,49 @@ exports, A/B/C).
 4. Measure performance (five runs, identical inputs) before claiming Rust
    improves runtime or memory; maintain C# fallback until justified.
 
-STATUS: one narrow document rule is ported with guarded live execution.
+STATUS: two narrow document rules (whitespace changes and structural part
+segmentation) are ported with guarded live execution.
 This is NOT a claim that the complete C# legal/Word engine has migrated
 to Rust or equals any missing historical Python implementation.
+
+## Second narrow port: legal paragraph/항·호 structural segmentation
+
+The source-of-truth C# NativeComparisonEngine.ParsePartsCSharp has been
+retained unchanged, alongside a guarded wrapper ParseParts. The Rust module
+core-rust/src/doc_parts.rs ports the structural segmentation rules:
+
+- Explicit 항/호 labels ①..⑳, (1), (a), (ii), 1./1), 가./가) etc.
+- C#-style whitespace and format-character normalization without changing
+  logical character positions.
+- Inline enumerator recovery for flattened Word paragraphs: 2+ spaces
+  remain strong boundaries; single spaces require ascending sequences.
+- Contextual Roman numeral handling: (i) stays alpha by default, and becomes
+  Roman only beside matching multi-character sequence proof. Noncanonical
+  Roman numerals are never used as ordinal sequence proof.
+- Exact Label, Start, End, CoreStart, CoreEnd and Core contents, with
+  CRLF/LF normalization and UTF-16 offsets equivalent to C#.
+
+Native FFI dc_parse_document_parts_utf8 reuses the existing owned JSON/free
+contract and is an optional ABI v1 extension. Older DLLs retain their
+original behavior.
+
+Runtime gate: C# computes the original ParseParts result first; Rust output
+is used ONLY if every label, complete body and UTF-16 start/end boundary
+matches it exactly. Any mismatch, unsupported input, malformed encoding
+or native error retains C# unchanged. PartsRustParityMatches and
+PartsRustParityMismatches track parity. The shadow execution is restricted
+to 16,384 UTF-16 units per text fragment.
+
+Reproducible regression:
+- tests/DocumentCompare.Regression/Fixtures/document_parts_golden.json
+  stores 31 expected-outcome records frozen from the original C# parser;
+  current C# and Rust both must match these independent committed records.
+- 455 generated and explicit direct C# ↔ Rust comparisons cover inline
+  sequences, CJK/English numbering, Roman context, formatting and UTF-16.
+- All existing A/B/C, table, and tracked-change export regressions still
+  run as a gate.
+
+The new port is segmentation ONLY, not historical article/item matching:
+MatchParts, BuildPartHierarchy, MatchStructuredUnits, MatchUnitSequence,
+re-numbering, DOCX table/row/cell mapping and Word/Excel exports remain
+in C#. Full document-engine Rust equivalence is NOT yet demonstrated.

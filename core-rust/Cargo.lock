@@ -25,6 +25,7 @@ dependencies = [
 name = "documentcompare_core"
 version = "0.1.0"
 dependencies = [
+ "regex",
  "serde",
  "serde_json",
  "tree-sitter",

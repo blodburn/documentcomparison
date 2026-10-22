@@ -2061,7 +2061,49 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return new string(chars);
     }
 
+    private static long _partsRustParityMatches;
+    private static long _partsRustParityMismatches;
+    internal static long PartsRustParityMatches =>
+        System.Threading.Interlocked.Read(ref _partsRustParityMatches);
+    internal static long PartsRustParityMismatches =>
+        System.Threading.Interlocked.Read(ref _partsRustParityMismatches);
+
     private static List<NativePart> ParseParts(string text)
+    {
+        var canonical = ParsePartsCSharp(text);
+        if (text.Length > 16_384) return canonical;
+        try
+        {
+            var rust = NativeCodeVersionComparer.ParseDocumentParts(text);
+            if (rust is null) return canonical;
+            var same = rust.Count == canonical.Count;
+            if (same)
+                for (var i = 0; i < canonical.Count; i++)
+                {
+                    var a = canonical[i]; var b = rust[i];
+                    if (a.Label != b.Label || a.Start != b.Start || a.End != b.End ||
+                        a.CoreStart != b.CoreStart || a.CoreEnd != b.CoreEnd ||
+                        a.Core != b.Core)
+                    { same = false; break; }
+                }
+            if (!same)
+            {
+                System.Threading.Interlocked.Increment(ref _partsRustParityMismatches);
+                return canonical;
+            }
+            System.Threading.Interlocked.Increment(ref _partsRustParityMatches);
+            return rust.Select(p =>
+                new NativePart(p.Label, p.Start, p.End, p.CoreStart, p.CoreEnd, p.Core)).ToList();
+        }
+        catch (Exception e) when (e is InvalidDataException or
+            System.Text.EncoderFallbackException or OverflowException)
+        {
+            System.Threading.Interlocked.Increment(ref _partsRustParityMismatches);
+            return canonical;
+        }
+    }
+
+    private static List<NativePart> ParsePartsCSharp(string text)
     {
         text = NativeDocumentReader.NormalizeNewlines(text ?? string.Empty);
         var scanText = RecoverEmbeddedExplicitItemBoundaries(StructuralParseView(text));

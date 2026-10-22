@@ -1,0 +1,724 @@
+[
+  {
+    "input": "\uB3D9\uC758\uC5C6\uC774",
+    "parts": [
+      {
+        "label": "\uBCF8\uBB38",
+        "start": 0,
+        "end": 4,
+        "coreStart": 0,
+        "coreEnd": 4,
+        "core": "\uB3D9\uC758\uC5C6\uC774"
+      }
+    ]
+  },
+  {
+    "input": "\uB3D9\uC758 \uC5C6\uC774",
+    "parts": [
+      {
+        "label": "\uBCF8\uBB38",
+        "start": 0,
+        "end": 5,
+        "coreStart": 0,
+        "coreEnd": 5,
+        "core": "\uB3D9\uC758 \uC5C6\uC774"
+      }
+    ]
+  },
+  {
+    "input": "\u2460 \uB3D9\uC758\uC5C6\uC774 \uCC98\uB9AC\uD55C\uB2E4.\n\u2461 \uB3D9\uC758 \uC5C6\uC774 \uCC98\uB9AC\uD55C\uB2E4.",
+    "parts": [
+      {
+        "label": "\u2460",
+        "start": 0,
+        "end": 13,
+        "coreStart": 2,
+        "coreEnd": 12,
+        "core": "\uB3D9\uC758\uC5C6\uC774 \uCC98\uB9AC\uD55C\uB2E4."
+      },
+      {
+        "label": "\u2461",
+        "start": 13,
+        "end": 26,
+        "coreStart": 15,
+        "coreEnd": 26,
+        "core": "\uB3D9\uC758 \uC5C6\uC774 \uCC98\uB9AC\uD55C\uB2E4."
+      }
+    ]
+  },
+  {
+    "input": "\uC81C8\uC870(\uAC1C\uC778\uC815\uBCF4\uCC98\uB9AC)\n\u2460 \uC774\uC6A9\uC790\uC758 \uB3D9\uC758 \uC5C6\uC774 \uCC98\uB9AC\uD55C\uB2E4.\n\u2461 \uBCF4\uC720\uAE30\uAC04\uC740 3\uB144\uC774\uB2E4.",
+    "parts": [
+      {
+        "label": "\uBCF8\uBB38",
+        "start": 0,
+        "end": 11,
+        "coreStart": 0,
+        "coreEnd": 11,
+        "core": "\uC81C8\uC870(\uAC1C\uC778\uC815\uBCF4\uCC98\uB9AC)"
+      },
+      {
+        "label": "\u2460",
+        "start": 12,
+        "end": 31,
+        "coreStart": 14,
+        "coreEnd": 30,
+        "core": "\uC774\uC6A9\uC790\uC758 \uB3D9\uC758 \uC5C6\uC774 \uCC98\uB9AC\uD55C\uB2E4."
+      },
+      {
+        "label": "\u2461",
+        "start": 31,
+        "end": 44,
+        "coreStart": 33,
+        "coreEnd": 44,
+        "core": "\uBCF4\uC720\uAE30\uAC04\uC740 3\uB144\uC774\uB2E4."
+      }
+    ]
+  },
+  {
+    "input": "\u2460 \uBCF8\uBB38\n1. \uCCAB\uBC88\uC9F8 \uD638\n2. \uB450\uBC88\uC9F8 \uD638\n\uAC00. \uC138\uBD80\uC0AC\uD56D",
+    "parts": [
+      {
+        "label": "\u2460",
+        "start": 0,
+        "end": 5,
+        "coreStart": 2,
+        "coreEnd": 4,
+        "core": "\uBCF8\uBB38"
+      },
+      {
+        "label": "1.",
+        "start": 5,
+        "end": 14,
+        "coreStart": 8,
+        "coreEnd": 13,
+        "core": "\uCCAB\uBC88\uC9F8 \uD638"
+      },
+      {
+        "label": "2.",
+        "start": 14,
+        "end": 23,
+        "coreStart": 17,
+        "coreEnd": 22,
+        "core": "\uB450\uBC88\uC9F8 \uD638"
+      },
+      {
+        "label": "\uAC00.",
+        "start": 23,
+        "end": 30,
+        "coreStart": 26,
+        "coreEnd": 30,
+        "core": "\uC138\uBD80\uC0AC\uD56D"
+      }
+    ]
+  },
+  {
+    "input": "(1) Company\n(2) Member\n(3) Contractor",
+    "parts": [
+      {
+        "label": "(1)",
+        "start": 0,
+        "end": 12,
+        "coreStart": 4,
+        "coreEnd": 11,
+        "core": "Company"
+      },
+      {
+        "label": "(2)",
+        "start": 12,
+        "end": 23,
+        "coreStart": 16,
+        "coreEnd": 22,
+        "core": "Member"
+      },
+      {
+        "label": "(3)",
+        "start": 23,
+        "end": 37,
+        "coreStart": 27,
+        "coreEnd": 37,
+        "core": "Contractor"
+      }
+    ]
+  },
+  {
+    "input": "(1) Company A (2) Company B (3) Company C",
+    "parts": [
+      {
+        "label": "(1)",
+        "start": 0,
+        "end": 14,
+        "coreStart": 4,
+        "coreEnd": 13,
+        "core": "Company A"
+      },
+      {
+        "label": "(2)",
+        "start": 14,
+        "end": 28,
+        "coreStart": 18,
+        "coreEnd": 27,
+        "core": "Company B"
+      },
+      {
+        "label": "(3)",
+        "start": 28,
+        "end": 41,
+        "coreStart": 32,
+        "coreEnd": 41,
+        "core": "Company C"
+      }
+    ]
+  },
+  {
+    "input": "Article 5 (1) is merely a cross-reference.",
+    "parts": [
+      {
+        "label": "\uBCF8\uBB38",
+        "start": 0,
+        "end": 42,
+        "coreStart": 0,
+        "coreEnd": 42,
+        "core": "Article 5 (1) is merely a cross-reference."
+      }
+    ]
+  },
+  {
+    "input": "Items. (i) One (ii) Two (iii) Three",
+    "parts": [
+      {
+        "label": "\uBCF8\uBB38",
+        "start": 0,
+        "end": 6,
+        "coreStart": 0,
+        "coreEnd": 6,
+        "core": "Items."
+      },
+      {
+        "label": "(i)",
+        "start": 7,
+        "end": 15,
+        "coreStart": 11,
+        "coreEnd": 14,
+        "core": "One"
+      },
+      {
+        "label": "(ii)",
+        "start": 15,
+        "end": 24,
+        "coreStart": 20,
+        "coreEnd": 23,
+        "core": "Two"
+      },
+      {
+        "label": "(iii)",
+        "start": 24,
+        "end": 35,
+        "coreStart": 30,
+        "coreEnd": 35,
+        "core": "Three"
+      }
+    ]
+  },
+  {
+    "input": "(i) Apple\n(ii) Banana\n(iii) Carrot",
+    "parts": [
+      {
+        "label": "(i)",
+        "start": 0,
+        "end": 10,
+        "coreStart": 4,
+        "coreEnd": 9,
+        "core": "Apple"
+      },
+      {
+        "label": "(ii)",
+        "start": 10,
+        "end": 22,
+        "coreStart": 15,
+        "coreEnd": 21,
+        "core": "Banana"
+      },
+      {
+        "label": "(iii)",
+        "start": 22,
+        "end": 34,
+        "coreStart": 28,
+        "coreEnd": 34,
+        "core": "Carrot"
+      }
+    ]
+  },
+  {
+    "input": "\uAC00. \uAD8C\uB9AC\n\uB098. \uC758\uBB34\n\uB2E4. \uCC45\uC784",
+    "parts": [
+      {
+        "label": "\uAC00.",
+        "start": 0,
+        "end": 6,
+        "coreStart": 3,
+        "coreEnd": 5,
+        "core": "\uAD8C\uB9AC"
+      },
+      {
+        "label": "\uB098.",
+        "start": 6,
+        "end": 12,
+        "coreStart": 9,
+        "coreEnd": 11,
+        "core": "\uC758\uBB34"
+      },
+      {
+        "label": "\uB2E4.",
+        "start": 12,
+        "end": 17,
+        "coreStart": 15,
+        "coreEnd": 17,
+        "core": "\uCC45\uC784"
+      }
+    ]
+  },
+  {
+    "input": "\u2460 \uAC00\uB098\uB2E4\r\n\u2461 \uB77C\uB9C8\uBC14\r\n",
+    "parts": [
+      {
+        "label": "\u2460",
+        "start": 0,
+        "end": 6,
+        "coreStart": 2,
+        "coreEnd": 5,
+        "core": "\uAC00\uB098\uB2E4"
+      },
+      {
+        "label": "\u2461",
+        "start": 6,
+        "end": 12,
+        "coreStart": 8,
+        "coreEnd": 11,
+        "core": "\uB77C\uB9C8\uBC14"
+      }
+    ]
+  },
+  {
+    "input": "\uD83D\uDE00\uC11C\uBB38\n\u2460 \uB3D9\uC758 \uC5C6\uC774\n\u2461 \uB2E4\uB978 \uB0B4\uC6A9",
+    "parts": [
+      {
+        "label": "\uBCF8\uBB38",
+        "start": 0,
+        "end": 4,
+        "coreStart": 0,
+        "coreEnd": 4,
+        "core": "\uD83D\uDE00\uC11C\uBB38"
+      },
+      {
+        "label": "\u2460",
+        "start": 5,
+        "end": 13,
+        "coreStart": 7,
+        "coreEnd": 12,
+        "core": "\uB3D9\uC758 \uC5C6\uC774"
+      },
+      {
+        "label": "\u2461",
+        "start": 13,
+        "end": 20,
+        "coreStart": 15,
+        "coreEnd": 20,
+        "core": "\uB2E4\uB978 \uB0B4\uC6A9"
+      }
+    ]
+  },
+  {
+    "input": "\u200D\u2460 hidden\n\u200C\u2461 hidden",
+    "parts": [
+      {
+        "label": "\u2460",
+        "start": 1,
+        "end": 10,
+        "coreStart": 3,
+        "coreEnd": 9,
+        "core": "hidden"
+      },
+      {
+        "label": "\u2461",
+        "start": 11,
+        "end": 19,
+        "coreStart": 13,
+        "coreEnd": 19,
+        "core": "hidden"
+      }
+    ]
+  },
+  {
+    "input": "\uFEFF(1) \uCCAB\uC9F8\n\u2060(2) \uB458\uC9F8",
+    "parts": [
+      {
+        "label": "(1)",
+        "start": 1,
+        "end": 8,
+        "coreStart": 5,
+        "coreEnd": 7,
+        "core": "\uCCAB\uC9F8"
+      },
+      {
+        "label": "(2)",
+        "start": 9,
+        "end": 15,
+        "coreStart": 13,
+        "coreEnd": 15,
+        "core": "\uB458\uC9F8"
+      }
+    ]
+  },
+  {
+    "input": "\u2460\u00A0\uBCF8\uBB38\n\u2461\u3000\uB2E4\uC74C",
+    "parts": [
+      {
+        "label": "\u2460",
+        "start": 0,
+        "end": 5,
+        "coreStart": 2,
+        "coreEnd": 4,
+        "core": "\uBCF8\uBB38"
+      },
+      {
+        "label": "\u2461",
+        "start": 5,
+        "end": 9,
+        "coreStart": 7,
+        "coreEnd": 9,
+        "core": "\uB2E4\uC74C"
+      }
+    ]
+  },
+  {
+    "input": "1. \uCCAB\uC9F8\n2. \uB458\uC9F8",
+    "parts": [
+      {
+        "label": "1.",
+        "start": 0,
+        "end": 6,
+        "coreStart": 3,
+        "coreEnd": 5,
+        "core": "\uCCAB\uC9F8"
+      },
+      {
+        "label": "2.",
+        "start": 6,
+        "end": 11,
+        "coreStart": 9,
+        "coreEnd": 11,
+        "core": "\uB458\uC9F8"
+      }
+    ]
+  },
+  {
+    "input": "(IIX) wrong\n(III) valid\n(IV) valid",
+    "parts": [
+      {
+        "label": "(IIX)",
+        "start": 0,
+        "end": 12,
+        "coreStart": 6,
+        "coreEnd": 11,
+        "core": "wrong"
+      },
+      {
+        "label": "(III)",
+        "start": 12,
+        "end": 24,
+        "coreStart": 18,
+        "coreEnd": 23,
+        "core": "valid"
+      },
+      {
+        "label": "(IV)",
+        "start": 24,
+        "end": 34,
+        "coreStart": 29,
+        "coreEnd": 34,
+        "core": "valid"
+      }
+    ]
+  },
+  {
+    "input": "\uAC00) \uB0B4\uC6A9\n\uB098) \uB0B4\uC6A9",
+    "parts": [
+      {
+        "label": "\uAC00)",
+        "start": 0,
+        "end": 6,
+        "coreStart": 3,
+        "coreEnd": 5,
+        "core": "\uB0B4\uC6A9"
+      },
+      {
+        "label": "\uB098)",
+        "start": 6,
+        "end": 11,
+        "coreStart": 9,
+        "coreEnd": 11,
+        "core": "\uB0B4\uC6A9"
+      }
+    ]
+  },
+  {
+    "input": "\u2160. \uC870\uBB38 \u2460 \uB0B4\uBD80 \uCC38\uC870\n\u2461 \uB2E4\uC74C",
+    "parts": [
+      {
+        "label": "\uBCF8\uBB38",
+        "start": 0,
+        "end": 13,
+        "coreStart": 0,
+        "coreEnd": 13,
+        "core": "\u2160. \uC870\uBB38 \u2460 \uB0B4\uBD80 \uCC38\uC870"
+      },
+      {
+        "label": "\u2461",
+        "start": 14,
+        "end": 18,
+        "coreStart": 16,
+        "coreEnd": 18,
+        "core": "\uB2E4\uC74C"
+      }
+    ]
+  },
+  {
+    "input": "Section 7: text (1) cross-reference not a list",
+    "parts": [
+      {
+        "label": "\uBCF8\uBB38",
+        "start": 0,
+        "end": 46,
+        "coreStart": 0,
+        "coreEnd": 46,
+        "core": "Section 7: text (1) cross-reference not a list"
+      }
+    ]
+  },
+  {
+    "input": "\uBCF8\uBB38\n\n(1) \uCCAB\uC9F8\n(2) \uB458\uC9F8\n",
+    "parts": [
+      {
+        "label": "\uBCF8\uBB38",
+        "start": 0,
+        "end": 2,
+        "coreStart": 0,
+        "coreEnd": 2,
+        "core": "\uBCF8\uBB38"
+      },
+      {
+        "label": "(1)",
+        "start": 4,
+        "end": 11,
+        "coreStart": 8,
+        "coreEnd": 10,
+        "core": "\uCCAB\uC9F8"
+      },
+      {
+        "label": "(2)",
+        "start": 11,
+        "end": 18,
+        "coreStart": 15,
+        "coreEnd": 17,
+        "core": "\uB458\uC9F8"
+      }
+    ]
+  },
+  {
+    "input": "\u2460 \uD56D\uBAA91\n\u2460 \uC911\uBCF5\uBC88\uD638\n\u2461 \uD56D\uBAA92",
+    "parts": [
+      {
+        "label": "\u2460",
+        "start": 0,
+        "end": 6,
+        "coreStart": 2,
+        "coreEnd": 5,
+        "core": "\uD56D\uBAA91"
+      },
+      {
+        "label": "\u2460",
+        "start": 6,
+        "end": 13,
+        "coreStart": 8,
+        "coreEnd": 12,
+        "core": "\uC911\uBCF5\uBC88\uD638"
+      },
+      {
+        "label": "\u2461",
+        "start": 13,
+        "end": 18,
+        "coreStart": 15,
+        "coreEnd": 18,
+        "core": "\uD56D\uBAA92"
+      }
+    ]
+  },
+  {
+    "input": "\u2460 First.  \u2461 Second.  \u2462 Third",
+    "parts": [
+      {
+        "label": "\u2460",
+        "start": 0,
+        "end": 10,
+        "coreStart": 2,
+        "coreEnd": 8,
+        "core": "First."
+      },
+      {
+        "label": "\u2461",
+        "start": 10,
+        "end": 21,
+        "coreStart": 12,
+        "coreEnd": 19,
+        "core": "Second."
+      },
+      {
+        "label": "\u2462",
+        "start": 21,
+        "end": 28,
+        "coreStart": 23,
+        "coreEnd": 28,
+        "core": "Third"
+      }
+    ]
+  },
+  {
+    "input": "\u0967. Number\n\u0968. Number",
+    "parts": [
+      {
+        "label": "\u0967.",
+        "start": 0,
+        "end": 10,
+        "coreStart": 3,
+        "coreEnd": 9,
+        "core": "Number"
+      },
+      {
+        "label": "\u0968.",
+        "start": 10,
+        "end": 19,
+        "coreStart": 13,
+        "coreEnd": 19,
+        "core": "Number"
+      }
+    ]
+  },
+  {
+    "input": "\uFF11. Fullwidth number\n\uFF12. Fullwidth number",
+    "parts": [
+      {
+        "label": "\uFF11.",
+        "start": 0,
+        "end": 20,
+        "coreStart": 3,
+        "coreEnd": 19,
+        "core": "Fullwidth number"
+      },
+      {
+        "label": "\uFF12.",
+        "start": 20,
+        "end": 39,
+        "coreStart": 23,
+        "coreEnd": 39,
+        "core": "Fullwidth number"
+      }
+    ]
+  },
+  {
+    "input": "(A) Roman?/alpha (B) Following alpha",
+    "parts": [
+      {
+        "label": "(A)",
+        "start": 0,
+        "end": 17,
+        "coreStart": 4,
+        "coreEnd": 16,
+        "core": "Roman?/alpha"
+      },
+      {
+        "label": "(B)",
+        "start": 17,
+        "end": 36,
+        "coreStart": 21,
+        "coreEnd": 36,
+        "core": "Following alpha"
+      }
+    ]
+  },
+  {
+    "input": "   (1) Some text\n   (2) Other text",
+    "parts": [
+      {
+        "label": "(1)",
+        "start": 3,
+        "end": 17,
+        "coreStart": 7,
+        "coreEnd": 16,
+        "core": "Some text"
+      },
+      {
+        "label": "(2)",
+        "start": 20,
+        "end": 34,
+        "coreStart": 24,
+        "coreEnd": 34,
+        "core": "Other text"
+      }
+    ]
+  },
+  {
+    "input": "Example before. (1) One (2) Two (3) Three",
+    "parts": [
+      {
+        "label": "\uBCF8\uBB38",
+        "start": 0,
+        "end": 15,
+        "coreStart": 0,
+        "coreEnd": 15,
+        "core": "Example before."
+      },
+      {
+        "label": "(1)",
+        "start": 16,
+        "end": 24,
+        "coreStart": 20,
+        "coreEnd": 23,
+        "core": "One"
+      },
+      {
+        "label": "(2)",
+        "start": 24,
+        "end": 32,
+        "coreStart": 28,
+        "coreEnd": 31,
+        "core": "Two"
+      },
+      {
+        "label": "(3)",
+        "start": 32,
+        "end": 41,
+        "coreStart": 36,
+        "coreEnd": 41,
+        "core": "Three"
+      }
+    ]
+  },
+  {
+    "input": "\uC81C 1 \uC870 \uC77C\uBC18 \uC6D0\uCE59",
+    "parts": [
+      {
+        "label": "\uBCF8\uBB38",
+        "start": 0,
+        "end": 11,
+        "coreStart": 0,
+        "coreEnd": 11,
+        "core": "\uC81C 1 \uC870 \uC77C\uBC18 \uC6D0\uCE59"
+      }
+    ]
+  },
+  {
+    "input": "",
+    "parts": []
+  }
+]

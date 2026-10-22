@@ -30,6 +30,33 @@ if (args.Length==2 && args[0]=="--code-diff-corpus")
     return;
 }
 
+// Developer-only fixture generator. Its checked-in output is compared against
+// BOTH the canonical C# parser and the Rust native parser in normal regressions.
+if (args.Length==2 && args[0]=="--document-parts-golden")
+{
+    var method=typeof(NativeComparisonEngine).GetMethod(
+        "ParsePartsCSharp",BindingFlags.Static|BindingFlags.NonPublic)!;
+    var inputs=System.Text.Json.JsonSerializer.Deserialize<List<string>>(
+        File.ReadAllText(args[1]))!;
+    var records=new List<object>();
+    foreach(var input in inputs)
+    {
+        var parts=(System.Collections.IEnumerable)method.Invoke(null,new object[]{input})!;
+        var expected=parts.Cast<object>().Select(obj=>{
+            var type=obj.GetType();
+            object Get(string prop)=>type.GetProperty(prop)!.GetValue(obj)!;
+            return new {
+                label=Get("Label"),start=Get("Start"),end=Get("End"),
+                coreStart=Get("CoreStart"),coreEnd=Get("CoreEnd"),core=Get("Core")
+            };
+        }).ToArray();
+        records.Add(new {input,parts=expected});
+    }
+    Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(records,
+        new System.Text.Json.JsonSerializerOptions {WriteIndented=true}));
+    return;
+}
+
 const string W="http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 var dir=Path.Combine(Path.GetTempPath(), "DocumentCompareRegression", Guid.NewGuid().ToString("N"));Directory.CreateDirectory(dir); XNamespace w=W;
 static void Check(bool ok,string msg){if(!ok)throw new Exception(msg);}
@@ -2955,5 +2982,148 @@ if(NativeCodeVersionComparer.IsAvailable)
     Check(BeforeMismatch()==startingMismatches+1,
           "native-encoding parity fallback must be observable, not silently accepted");
     Console.WriteLine($"PASS RUST DOCUMENT WHITESPACE PARITY {corpus.Count}/{corpus.Count}, eligible={eligible}");
+}
+
+// 173. Structural 항/호 parsing parity against the *unmodified* C# parser.
+// Compare label, all UTF-16 boundaries and source core, not just part counts.
+if (NativeCodeVersionComparer.IsAvailable)
+{
+    var originalParser=typeof(NativeComparisonEngine).GetMethod(
+        "ParsePartsCSharp",BindingFlags.Static|BindingFlags.NonPublic)!;
+    var activeParser=typeof(NativeComparisonEngine).GetMethod(
+        "ParseParts",BindingFlags.Static|BindingFlags.NonPublic)!;
+    var matchProp=typeof(NativeComparisonEngine).GetProperty(
+        "PartsRustParityMatches",BindingFlags.Static|BindingFlags.NonPublic)!;
+    var mismatchProp=typeof(NativeComparisonEngine).GetProperty(
+        "PartsRustParityMismatches",BindingFlags.Static|BindingFlags.NonPublic)!;
+    long MatchCount()=>(long)matchProp.GetValue(null)!;
+    long MismatchCount()=>(long)mismatchProp.GetValue(null)!;
+    var startMatches=MatchCount();
+    var startMismatches=MismatchCount();
+    List<NativeCodeVersionComparer.DocumentPart> Canonical(string content,string parser)
+    {
+        var method=parser=="C#" ? originalParser : activeParser;
+        var objects=(System.Collections.IEnumerable)method.Invoke(null,new object[]{content})!;
+        var output=new List<NativeCodeVersionComparer.DocumentPart>();
+        foreach(var o in objects.Cast<object>())
+        {
+            var t=o.GetType();
+            T Prop<T>(string name)=>(T)t.GetProperty(name)!.GetValue(o)!;
+            output.Add(new NativeCodeVersionComparer.DocumentPart(
+                Prop<string>("Label"),Prop<int>("Start"),Prop<int>("End"),
+                Prop<int>("CoreStart"),Prop<int>("CoreEnd"),Prop<string>("Core")));
+        }
+        return output;
+    }
+    var samples=new List<string>
+    {
+        "", " ", "\n", "본문만 존재한다.", "😀이용자의 동의없이 제공하지 않는다.",
+        "제5조(개인정보 처리)\n① 동의 없이 처리할 수 없다.\n② 제공하면 안 된다.",
+        "제5조(개인정보 처리)\n① 동의 없이 처리할 수 없다.\n② 제공하면 안 된다.\n③ 파기한다.",
+        "① 첫 번째 항\n② 두 번째 항", "① 내용\r\n② 다음 항\r\n",
+        "(1) First item\n(2) Second item\n(3) Third item",
+        "(1) Company A (2) Company B (3) Company C",
+        "Article 5 (1) may require approval.",
+        "Company Policy (1) Section (2) Member",
+        "This is a sentence. (1) First (2) Second (3) Third",
+        "다음과 같다. (1) 하나 (2) 둘 (3) 셋",
+        "제1항에 의한다.  (1) 첫째  (2) 둘째",
+        "항을 열거한다.\n(가) 내용\n(나) 내용",
+        "가. 권리\n나. 의무\n다. 책임",
+        "1. 본문\n2. 본문\n3. 본문",
+        "a. ABC\nb. DEF\nc. GHI",
+        "(i) Roman a (ii) Roman b (iii) Roman c",
+        "(i) Apple\n(ii) Banana\n(iii) Carrot",
+        "(v) First\n(vi) Second\n(vii) Third",
+        "Ⅰ. 조문 ① a\n② b",
+        "\u200B① 숨은 문자 포함\n\u200C② 다음 문자 포함",
+        "\uFEFF(1) 첫째\n\u2060(2) 둘째",
+        "   (1) 가나다\n   (2) 라마바",
+        "\t① 내용\n\t② 내용",
+        "①\u00A0내용\n②\u3000내용",
+        "① 본문 앞에 😀\n② 별도\n③ 두 줄\n참조",
+        "① text   (2) something   (3) more",
+        "본문\n\n(1) 첫째\n(2) 둘째\n",
+        "① 가나다\n  ② 라마바\n    ③ 사아자",
+        "① 라벨에만\n① 같은 라벨 반복\n② 다음",
+        "① 제1호\n1. 항목\n가. 하위",
+        "① 내용\u2028② 새줄 아닌 구분자",
+        "① 내용\n⑳ 마지막",
+        "\r\n1. 아이템\r\n2. 아이템\r\n",
+        "①\t탭\n②\t탭2",
+        "(1) Follows. (2) Next. (3) Last",
+        "Text  (i) One  (ii) Two  (iii) Three",
+        "🙂안내문\n(1) 가나다\n(2) 나바사\n(3) 아자차",
+        " 0. 제로\n 1. 하나",
+        "가) 가나다\n나) 라마바",
+        "A) Apple\nB) Banana",
+        "(IV) Alpha\n(V) Beta",
+        "(IIX) invalid numeral (III) valid numeral (IV) valid numeral",
+        "Items. (I) One (II) Two (III) Three",
+        "Legal conditions: (I) Terms (II) Provisions (III) Remedies",
+        "① \u2063Hidden tag\n② Follow",
+        "\u200D① Item one\n\u200D② Item two",
+        "١. Arabic one\n٢. Arabic two",
+        "１. Fullwidth one\n２. Fullwidth two",
+        "① First.  ② Second.  ③ Third",
+        "Intro text\r\n\uFEFF① Part\r\n\u200C② Part",
+    };
+    var rand=new Random(20261022);
+    string[] structuralLabels={"①","②","③","(1)","(2)","(3)","가.","나.","다.","1.","2.","3.","(a)","(b)","(i)","(ii)","(iii)","a.","b.","c."};
+    string[] cores={"동의없이","동의 없이","개인정보 보호","Article 8 (1)","개인정보 처리","영업비밀","새로운 내용", "정기감사", "😀 개인정보","고객","제2조"};
+    string[] seps={"\n","\r\n"," ","  ","\t","\n  ","\n\u200b","\n\n","\u3000"};
+    for(int i=0;i<400;i++)
+    {
+        var count=rand.Next(1,7);
+        var input=rand.Next(2)==0?"서문 안내\n":"";
+        for(var j=0;j<count;j++)
+            input+=seps[rand.Next(seps.Length)]+structuralLabels[rand.Next(structuralLabels.Length)]+" "+
+                cores[rand.Next(cores.Length)];
+        samples.Add(input);
+    }
+    var goldenPath=Path.Combine(AppContext.BaseDirectory,"Fixtures","document_parts_golden.json");
+    using(var saved=System.Text.Json.JsonDocument.Parse(File.ReadAllText(goldenPath)))
+        foreach(var caseValue in saved.RootElement.EnumerateArray())
+        {
+            var input=caseValue.GetProperty("input").GetString() ?? "";
+            var json=caseValue.GetProperty("parts").GetRawText();
+            var expected=System.Text.Json.JsonSerializer.Deserialize<
+                List<NativeCodeVersionComparer.DocumentPart>>(json,
+                new System.Text.Json.JsonSerializerOptions {
+                    PropertyNameCaseInsensitive=true })!;
+            Check(expected.SequenceEqual(Canonical(input,"C#")),
+                "C# structural parser has regressed against committed Golden fixture: "+input);
+            Check(expected.SequenceEqual(NativeCodeVersionComparer.ParseDocumentParts(input)
+                    ?? Array.Empty<NativeCodeVersionComparer.DocumentPart>()),
+                "Rust structural parser differs from committed Golden fixture: "+input);
+        }
+    var mismatches=new List<string>();
+    foreach(var input in samples)
+    {
+        var expected=Canonical(input,"C#");
+        var actual=NativeCodeVersionComparer.ParseDocumentParts(input);
+        var live=Canonical(input,"live");
+        if(actual is null || !expected.SequenceEqual(actual) || !expected.SequenceEqual(live))
+        {
+            if(mismatches.Count<12)
+                mismatches.Add(System.Text.Json.JsonSerializer.Serialize(new {
+                    input,expected,actual,live}));
+        }
+    }
+    if(mismatches.Count!=0)
+        Console.WriteLine("DOCUMENT_PARTS_MISMATCH_DIAGNOSTIC "+
+            string.Join("\nDOCUMENT_PARTS_MISMATCH_DIAGNOSTIC ",mismatches));
+    Check(mismatches.Count==0,
+        "Rust document part parser must agree with original managed parser on all supported fixtures");
+    Check(MatchCount()-startMatches==samples.Count &&
+          MismatchCount()==startMismatches,
+        "live document parser must use Rust only after exact structural parity");
+    var invalid="\uD800① 동의없이\n② 다음";
+    var badCanonical=Canonical(invalid,"C#");
+    var badLive=Canonical(invalid,"live");
+    Check(badCanonical.SequenceEqual(badLive) &&
+          MismatchCount()==startMismatches+1,
+          "invalid UTF-16 in structure parser must preserve canonical C# behavior");
+    Console.WriteLine($"PASS RUST DOCUMENT PARTS CSHARP GOLDEN PARITY {samples.Count}/{samples.Count}");
 }
 Console.WriteLine("ALL REGRESSIONS PASSED");

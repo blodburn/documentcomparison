@@ -1,5 +1,6 @@
 pub mod ast;
 pub mod cross_file;
+pub mod doc_parts;
 pub mod doc_whitespace;
 pub mod ffi;
 pub mod folder;

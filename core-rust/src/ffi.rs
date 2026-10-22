@@ -856,3 +856,82 @@ mod document_whitespace_ffi_tests {
         assert!(output.data.is_null());
     }
 }
+
+/// Parse document 항/호 list segments using C#-compatible UTF-16 offsets.
+/// This is only a document structure segmentation parity slice: no pairing,
+/// re-numbering, structural movement or Word table matching is inferred.
+/// Free returned Rust-owned JSON with dc_free_ast_json_result.
+/// Status 0=ok, 1=invalid UTF-8, 2=invalid args, 3=budget, 4=JSON, 5=panic.
+///
+/// # Safety
+/// Non-null input byte pointers must remain readable for their lengths;
+/// output must point to one writable DcAstJsonResult.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dc_parse_document_parts_utf8(
+    input: *const u8,
+    input_len: usize,
+    output: *mut DcAstJsonResult,
+) -> i32 {
+    if output.is_null() {
+        return 2;
+    }
+    // SAFETY: writable result required by caller.
+    unsafe { ptr::write(output, DcAstJsonResult::empty()) };
+    if input_len > 3 * 131_072 || (input_len > 0 && input.is_null()) {
+        return 2;
+    }
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let bytes = if input_len == 0 {
+            &[][..]
+        } else {
+            // SAFETY: readable input required by caller.
+            unsafe { slice::from_raw_parts(input, input_len) }
+        };
+        let source = std::str::from_utf8(bytes).map_err(|_| 1)?;
+        let parsed = crate::doc_parts::parse_parts(source).map_err(|_| 3)?;
+        serde_json::to_vec(&parsed).map_err(|_| 4)
+    }));
+    match result {
+        Ok(Ok(json)) => {
+            let memory = json.into_boxed_slice();
+            let length = memory.len();
+            let data = Box::into_raw(memory) as *mut u8;
+            // SAFETY: writable result required by caller.
+            unsafe { ptr::write(output, DcAstJsonResult { data, length }) };
+            0
+        }
+        Ok(Err(code)) => code,
+        Err(_) => 5,
+    }
+}
+
+#[cfg(test)]
+mod document_parts_ffi_tests {
+    use super::*;
+    #[test]
+    fn ffi_utf16_offsets_and_free() {
+        let input = "😀설명\n① 동의 없이\n② 두 번째 내용";
+        let mut result = DcAstJsonResult::empty();
+        assert_eq!(
+            unsafe { dc_parse_document_parts_utf8(input.as_ptr(), input.len(), &mut result) },
+            0
+        );
+        let bytes = unsafe { slice::from_raw_parts(result.data, result.length) };
+        let json: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        assert_eq!(json["parts"][0]["label"], "본문");
+        assert_eq!(json["parts"][1]["label"], "①");
+        assert_eq!(json["parts"][1]["start"], 5);
+        unsafe { dc_free_ast_json_result(&mut result) };
+        assert!(result.data.is_null());
+    }
+    #[test]
+    fn ffi_invalid_utf8() {
+        let input = [0xff_u8];
+        let mut result = DcAstJsonResult::empty();
+        assert_eq!(
+            unsafe { dc_parse_document_parts_utf8(input.as_ptr(), input.len(), &mut result) },
+            1
+        );
+        assert!(result.data.is_null());
+    }
+}
