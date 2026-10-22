@@ -22,6 +22,7 @@ pub(crate) struct Symbol {
     pub(crate) parent: String,
     pub(crate) identity: String,
     pub(crate) source: String,
+    pub(crate) signature: String,
     pub(crate) body: String,
     pub(crate) start: usize,
     pub(crate) end: usize,
@@ -118,18 +119,22 @@ pub(crate) fn declarations(language: Language, source: &str) -> Result<Vec<Symbo
             && let Ok(name) = name_node.utf8_text(source.as_bytes())
         {
             let identity = format!("{kind}\0{parent}\0{name}");
-            let body = node
-                .child_by_field_name("body")
+            let body_node = node.child_by_field_name("body");
+            let body = body_node
                 .and_then(|n| n.utf8_text(source.as_bytes()).ok())
                 .unwrap_or("")
                 .to_owned();
             let span = node.byte_range();
+            let signature = body_node
+                .map(|n| source[span.start..n.start_byte()].trim_end().to_owned())
+                .unwrap_or_default();
             symbols.push(Symbol {
                 kind: kind.to_owned(),
                 name: name.to_owned(),
                 parent: parent.clone(),
                 identity,
                 source: source[span.clone()].to_owned(),
+                signature,
                 body,
                 start: span.start,
                 end: span.end,

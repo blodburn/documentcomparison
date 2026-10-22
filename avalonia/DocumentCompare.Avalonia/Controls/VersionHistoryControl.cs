@@ -215,7 +215,7 @@ public sealed class VersionHistoryControl : UserControl
             _changeTargets.Clear();
             _previewTitle.Text = "Rust 폴더 비교";
             _previewSubtitle.Text = $"{before} [전] → {after} [후] · " +
-                "파일 이동: 동일 바이트 · 선언 이동(AST): 고유한 동일 선언" +
+                "파일 이동: 동일 바이트 · 선언 이동(AST): 고유한 동일 선언 · 이동·수정 후보: 고유 시그니처와 높은 유사도" +
                 (compared.ast.Supported
                     ? $" · AST 분석 {compared.ast.AnalyzedFiles}개 / 제외 {compared.ast.SkippedFiles}개"
                     : $" · AST 분석 불가 ({compared.ast.Reason})");
@@ -227,7 +227,8 @@ public sealed class VersionHistoryControl : UserControl
                 RenderFolderBatch();
             _status.Text = $"Rust 폴더 비교 완료 · 파일 변경 {compared.fileChanges.Count:N0}건" +
                 (compared.ast.Supported
-                    ? $" · 파일 간 선언 이동 {compared.ast.Moves.Count:N0}건" +
+                    ? $" · 파일 간 선언 이동 {compared.ast.Moves.Count(m => !m.ContentChanged):N0}건" +
+                      $" · 이동·수정 후보 {compared.ast.Moves.Count(m => m.ContentChanged):N0}건" +
                       (compared.ast.SkippedFiles != 0
                           ? $" · AST 일부 미분석 {compared.ast.SkippedFiles:N0}파일" : "")
                     : $" · AST 미완료: {compared.ast.Reason}") +
@@ -252,7 +253,7 @@ public sealed class VersionHistoryControl : UserControl
         {
             var entry = _folderChanges[i];
             var marker = i + 1;
-            var summary = entry.Kind is "이동/이름 변경" or "선언 이동(AST)"
+            var summary = entry.Kind is "이동/이름 변경" or "선언 이동(AST)" or "이동·수정 후보(AST)"
                 ? $"{entry.BeforePath} → {entry.AfterPath}"
                 : entry.Kind == "삭제" ? entry.BeforePath : entry.AfterPath;
             var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };

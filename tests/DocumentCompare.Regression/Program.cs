@@ -2540,4 +2540,69 @@ if(NativeCodeVersionComparer.IsAvailable)
 }
 Console.WriteLine("PASS CROSS FILE RUST AST MOVE FFI AND PRESENTATION");
 
+
+// 167. Real modified-and-moved Rust/C# methods from the native Tree-sitter FFI.
+var editedFolderRoot=Path.Combine(dir,"modified-cross-file-ffi");
+var editedOld=Path.Combine(editedFolderRoot,"before");
+var editedNew=Path.Combine(editedFolderRoot,"after");
+Directory.CreateDirectory(editedOld);
+Directory.CreateDirectory(editedNew);
+File.WriteAllText(Path.Combine(editedOld,"left.rs"),
+    "fn compute(input: i32) -> i32 {\n let offset = 10;\n let doubled = input * 2;\n let result = doubled + offset;\n println!(\"result {}\", result);\n result\n}\nfn stay() { let unused=1; }");
+File.WriteAllText(Path.Combine(editedNew,"left.rs"),"fn stay() { let unused=1; }");
+File.WriteAllText(Path.Combine(editedNew,"dest.rs"),
+    "fn compute(input: i32) -> i32 {\n let offset = 11;\n let doubled = input * 2;\n let result = doubled + offset;\n println!(\"result {}\", result);\n result\n}\n");
+File.WriteAllText(Path.Combine(editedOld,"One.cs"),
+    "class One { int Work(int value) { var offset = 10; var doubled = value * 2; var answer = doubled + offset; System.Console.WriteLine(answer); return answer; } }");
+File.WriteAllText(Path.Combine(editedNew,"Two.cs"),
+    "class Two { int Work(int value) { var offset = 12; var doubled = value * 2; var answer = doubled + offset; System.Console.WriteLine(answer); return answer; } }");
+if(NativeCodeVersionComparer.IsAvailable)
+{
+    var report=NativeCodeVersionComparer.CompareCrossFileAst(editedOld,editedNew);
+    Check(report.Supported && report.Moves.Count==2 &&
+          report.Moves.All(m=>m.ContentChanged &&
+              m.SimilarityPermille is >= 880 and < 1000) &&
+          report.Moves.Any(m=>m is {SymbolName:"compute",BeforePath:"left.rs",AfterPath:"dest.rs"}) &&
+          report.Moves.Any(m=>m is {SymbolName:"Work",BeforePath:"One.cs",AfterPath:"Two.cs"}),
+          "Native FFI must detect moved-and-edited Rust and C# methods with guarded high similarity");
+    var fileChanges=NativeCodeVersionComparer.CompareFolders(editedOld,editedNew);
+    var rendered=FolderAstReviewMapper.Merge(fileChanges,report);
+    Check(rendered.Count==fileChanges.Count+2 &&
+          rendered.Skip(fileChanges.Count).All(c=>
+              c.Kind=="이동·수정 후보(AST)" &&
+              c.AfterPath.Contains("어휘 유사도") &&
+              !string.IsNullOrWhiteSpace(c.EventId)),
+          "Heuristic moved+edited candidates must be labeled as candidates, not exact moves");
+    var repeat=FolderAstReviewMapper.Merge(fileChanges,
+        NativeCodeVersionComparer.CompareCrossFileAst(editedOld,editedNew));
+    Check(repeat.SequenceEqual(rendered),
+          "Moved+edited candidate identity/order must remain deterministic");
+}
+Console.WriteLine("PASS MODIFIED CROSS FILE AST NATIVE FFI GUARDED CANDIDATES");
+
+
+// 168. Edited formatting can retain 100% lexical similarity without byte identity.
+var formattedRoot=Path.Combine(dir,"formatted-cross-file");
+var formattedBefore=Path.Combine(formattedRoot,"old");
+var formattedAfter=Path.Combine(formattedRoot,"new");
+Directory.CreateDirectory(formattedBefore);
+Directory.CreateDirectory(formattedAfter);
+File.WriteAllText(Path.Combine(formattedBefore,"old.rs"),
+    "fn process(value: i32) -> i32 { let doubled = value * 2; let offset = 10; let answer = doubled + offset; println!(\"answer {}\", answer); answer }");
+File.WriteAllText(Path.Combine(formattedAfter,"new.rs"),
+    "fn process(value: i32) -> i32 {\n let doubled = value * 2;\n let offset = 10;\n let answer = doubled + offset;\n println!(\"answer {}\", answer);\n answer\n}");
+if(NativeCodeVersionComparer.IsAvailable)
+{
+    var formattedMove=NativeCodeVersionComparer.CompareCrossFileAst(formattedBefore,formattedAfter);
+    Check(formattedMove.Supported && formattedMove.Moves.Count==1 &&
+          formattedMove.Moves[0].ContentChanged &&
+          formattedMove.Moves[0].SimilarityPermille==1000,
+          "whitespace-edited function may have exact lexical similarity but remains a candidate");
+    var combined=FolderAstReviewMapper.Merge(
+        NativeCodeVersionComparer.CompareFolders(formattedBefore,formattedAfter),formattedMove);
+    Check(combined[^1].Kind=="이동·수정 후보(AST)",
+          "format-only move must not be mislabeled as an exact-byte move");
+}
+Console.WriteLine("PASS FORMATTING ONLY MOVED METHOD CANDIDATE");
+
 Console.WriteLine("ALL REGRESSIONS PASSED");

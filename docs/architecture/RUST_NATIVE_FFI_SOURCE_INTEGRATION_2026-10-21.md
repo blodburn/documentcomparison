@@ -83,8 +83,20 @@ The C# document comparison engine and Word/Excel exporters are unchanged.
   Malformed, invalid-UTF-8 or oversized files increment skippedFiles and
   are disclosed in the UI. Files growing during analysis are capped at
   the byte-read boundary.
-  Git commit ancestry, signature-changing moves, cross-language moves
-  and modified-function moves are not yet inferred.
+  The source engine now additionally proposes **edited function/method
+  moves** with explicit "이동·수정 후보(AST)" labeling (not a proven rename):
+  Rust/C# only, unchanged declaration header/signature, one unmatched
+  candidate per side, nontrivial bodies (at least 12 lexical tokens and
+  eight distinct tokens), and lexical multiset Dice similarity >= 0.88.
+  Lexical similarity is displayed as a score, not a calibrated probability
+  of identity. Exact moves remain separate byte-identical events; the
+  original file changes remain visible. Changed signatures, renamed
+  functions whose bodies also changed, tiny boilerplate functions,
+  ambiguous duplicates, and unrelated implementations are intentionally
+  left unmatched. An unchanged token sequence with altered whitespace
+  gets similarity 1.00 but is still marked an edited candidate because
+  its bytes differ.
+  Git commit ancestry and cross-language moves are not yet inferred.
 - Folder ABI appends functions to ABI v1 and returns explicit length-delimited
   UTF-8 paths in Rust-owned buffers, released by dc_free_folder_result.
   C# validates count, buffer bounds, type codes, UTF-8, and layout.

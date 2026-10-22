@@ -83,7 +83,8 @@ public static class NativeCodeVersionComparer
     public sealed record CrossFileMove(
         string SymbolKind, string SymbolName,
         string BeforePath, string AfterPath,
-        int BeforeStart, int BeforeEnd, int AfterStart, int AfterEnd);
+        int BeforeStart, int BeforeEnd, int AfterStart, int AfterEnd,
+        bool ContentChanged = false, int SimilarityPermille = 1000);
 
     public sealed record CrossFileAstReport(
         IReadOnlyList<CrossFileMove> Moves,
@@ -308,7 +309,10 @@ public static class NativeCodeVersionComparer
                     !IsSafeRelativePath(move.AfterPath) ||
                     move.BeforePath == move.AfterPath ||
                     move.BeforeStart < 0 || move.BeforeEnd <= move.BeforeStart ||
-                    move.AfterStart < 0 || move.AfterEnd <= move.AfterStart)
+                    move.AfterStart < 0 || move.AfterEnd <= move.AfterStart ||
+                    move.SimilarityPermille is < 0 or > 1000 ||
+                    (move.ContentChanged && move.SimilarityPermille < 880) ||
+                    (!move.ContentChanged && move.SimilarityPermille != 1000))
                     throw new InvalidDataException("Rust 파일 간 AST 이동 정보가 올바르지 않습니다.");
             }
             return new CrossFileAstReport(report.Moves, report.AnalyzedFiles, report.SkippedFiles);

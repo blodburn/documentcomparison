@@ -26,13 +26,18 @@ public static class FolderAstReviewMapper
             var after = new UnifiedChangeLocation(
                 "folder-after", move.AfterPath, UnifiedLocationKind.CodeNode,
                 $"{move.SymbolKind}:{move.SymbolName}", move.AfterStart, move.AfterEnd);
+            var evidence = move.ContentChanged
+                ? $"tree-sitter matching signature + lexical Dice {move.SimilarityPermille}/1000 (candidate)"
+                : "tree-sitter exact full declaration unique match";
             var evt = UnifiedChangeEvents.Create(
-                UnifiedChangeKind.Move, before, after, "파일 간 선언 이동",
-                "tree-sitter exact full declaration unique match", i);
+                UnifiedChangeKind.Move, before, after,
+                move.ContentChanged ? "파일 간 선언 이동·수정 후보" : "파일 간 선언 이동",
+                evidence, i, move.ContentChanged ? null : 1.0);
             all.Add(new NativeCodeVersionComparer.FolderChange(
-                "선언 이동(AST)",
+                move.ContentChanged ? "이동·수정 후보(AST)" : "선언 이동(AST)",
                 $"{move.BeforePath} · {move.SymbolKind} {move.SymbolName} · byte {move.BeforeStart}~{move.BeforeEnd}",
-                $"{move.AfterPath} · {move.SymbolKind} {move.SymbolName} · byte {move.AfterStart}~{move.AfterEnd}",
+                $"{move.AfterPath} · {move.SymbolKind} {move.SymbolName} · byte {move.AfterStart}~{move.AfterEnd}" +
+                (move.ContentChanged ? $" · 어휘 유사도 {move.SimilarityPermille / 10.0:F1}%" : ""),
                 evt.EventId));
         }
         return all;

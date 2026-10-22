@@ -29,6 +29,10 @@ pub struct CrossFileMove {
     pub before_end: usize,
     pub after_start: usize,
     pub after_end: usize,
+    /// True only for a unique signature match with a high-scoring edited body.
+    pub content_changed: bool,
+    /// Deterministic lexical Dice score in 0..=1000; exact text = 1000.
+    pub similarity_permille: u16,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -113,6 +117,69 @@ fn collect(
         }));
     }
     Ok(())
+}
+
+// Only an unchanged declaration header can link an edited function reliably;
+// classes/interfaces, constructors and short stubs remain exact-only moves.
+fn eligible_modified_move(symbol: &Symbol) -> bool {
+    matches!(symbol.kind.as_str(), "function_item" | "method_declaration")
+        && !symbol.signature.is_empty()
+        && ast::has_meaningful_body(&symbol.body)
+}
+
+fn lexical_tokens(body: &str) -> Vec<String> {
+    // Keep punctuation operators: comparing only identifier words would
+    // consider e.g. == and != equivalent.
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut mode = 0_u8;
+    for ch in body.chars() {
+        let next_mode = if ch.is_alphanumeric() || ch == '_' {
+            1
+        } else if ch.is_whitespace() {
+            0
+        } else {
+            2
+        };
+        if next_mode != mode && !current.is_empty() {
+            tokens.push(std::mem::take(&mut current));
+        }
+        if next_mode != 0 {
+            current.push(ch);
+        }
+        mode = next_mode;
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
+fn body_similarity(before: &str, after: &str) -> u16 {
+    let left = lexical_tokens(before);
+    let right = lexical_tokens(after);
+    // Small generic functions are far too easy to correlate falsely.
+    if left.len() < 12 || right.len() < 12 {
+        return 0;
+    }
+    let mut counts = BTreeMap::<&str, usize>::new();
+    for token in &left {
+        *counts.entry(token).or_default() += 1;
+    }
+    let distinct = counts.len();
+    if distinct < 8 {
+        return 0;
+    }
+    let mut common = 0_usize;
+    for token in &right {
+        if let Some(count) = counts.get_mut(token.as_str())
+            && *count > 0
+        {
+            *count -= 1;
+            common += 1;
+        }
+    }
+    (common * 2000 / (left.len() + right.len())) as u16
 }
 
 pub fn compare_folders(before: &Path, after: &Path) -> io::Result<CrossFileReport> {
@@ -232,6 +299,7 @@ pub fn compare_folders(before: &Path, after: &Path) -> io::Result<CrossFileRepor
     }
 
     let mut moves = Vec::new();
+    let (mut paired_old, mut paired_new) = (BTreeSet::new(), BTreeSet::new());
     for (signature, left) in before_groups {
         let Some(right) = after_groups.get(&signature) else {
             continue;
@@ -244,6 +312,8 @@ pub fn compare_folders(before: &Path, after: &Path) -> io::Result<CrossFileRepor
         if a.path == b.path {
             continue;
         }
+        paired_old.insert(left[0]);
+        paired_new.insert(right[0]);
         moves.push(CrossFileMove {
             symbol_kind: a.symbol.kind.clone(),
             symbol_name: a.symbol.name.clone(),
@@ -253,8 +323,81 @@ pub fn compare_folders(before: &Path, after: &Path) -> io::Result<CrossFileRepor
             before_end: a.symbol.end,
             after_start: b.symbol.start,
             after_end: b.symbol.end,
+            content_changed: false,
+            similarity_permille: 1000,
         });
     }
+
+    // Edited moves are intentionally a separate, stricter pass: require
+    // exact declaration headers (name + arguments/modifiers), identical
+    // language/kind, and a unique candidate on *both* sides. Never guess a
+    // match by name or path alone, nor accept a short boilerplate body.
+    type SignatureKey<'a> = (u8, &'a str, &'a str);
+    fn signature_key(item: &Located) -> SignatureKey<'_> {
+        (
+            if item.language == Language::Rust {
+                1
+            } else {
+                2
+            },
+            &item.symbol.kind,
+            &item.symbol.signature,
+        )
+    }
+    let mut old_signatures: BTreeMap<SignatureKey<'_>, Vec<usize>> = BTreeMap::new();
+    let mut new_signatures: BTreeMap<SignatureKey<'_>, Vec<usize>> = BTreeMap::new();
+    for (i, item) in old.iter().enumerate() {
+        if !excluded_old.contains(&i)
+            && !paired_old.contains(&i)
+            && eligible_modified_move(&item.symbol)
+        {
+            old_signatures
+                .entry(signature_key(item))
+                .or_default()
+                .push(i);
+        }
+    }
+    for (i, item) in new.iter().enumerate() {
+        if !excluded_new.contains(&i)
+            && !paired_new.contains(&i)
+            && eligible_modified_move(&item.symbol)
+        {
+            new_signatures
+                .entry(signature_key(item))
+                .or_default()
+                .push(i);
+        }
+    }
+    for (signature, left) in old_signatures {
+        let Some(right) = new_signatures.get(&signature) else {
+            continue;
+        };
+        if left.len() != 1 || right.len() != 1 {
+            continue;
+        }
+        let a = &old[left[0]];
+        let b = &new[right[0]];
+        if a.path == b.path || a.symbol.source == b.symbol.source {
+            continue;
+        }
+        let score = body_similarity(&a.symbol.body, &b.symbol.body);
+        if score < 880 {
+            continue;
+        }
+        moves.push(CrossFileMove {
+            symbol_kind: a.symbol.kind.clone(),
+            symbol_name: a.symbol.name.clone(),
+            before_path: a.path.clone(),
+            after_path: b.path.clone(),
+            before_start: a.symbol.start,
+            before_end: a.symbol.end,
+            after_start: b.symbol.start,
+            after_end: b.symbol.end,
+            content_changed: true,
+            similarity_permille: score,
+        });
+    }
+
     // A moved class contains unchanged method declarations; report the outer
     // class move and suppress nested method moves inside its same pair of files.
     moves.sort_by_key(|m| {
@@ -451,6 +594,107 @@ mod tests {
         assert_eq!(report.skipped_files, 1);
         assert!(report.moves.is_empty());
         cleanup(&a);
+    }
+
+    #[test]
+    fn detects_unique_edited_function_moved_between_rust_files() {
+        let (a, b) = directories();
+        fs::write(a.join("src.rs"),
+            "fn calculate(input: i32) -> i32 {\n let offset = 10;\n let doubled = input * 2;\n let output = doubled + offset;\n println!(\"result: {}\", output);\n output\n}\nfn remain() { let z=3; }").unwrap();
+        fs::write(b.join("src.rs"), "fn remain() { let z=3; }").unwrap();
+        fs::write(b.join("dest.rs"),
+            "fn calculate(input: i32) -> i32 {\n let offset = 11;\n let doubled = input * 2;\n let output = doubled + offset;\n println!(\"result: {}\", output);\n output\n}\n").unwrap();
+        let report = compare_folders(&a, &b).unwrap();
+        assert_eq!(report.moves.len(), 1);
+        let change = &report.moves[0];
+        assert_eq!(change.symbol_name, "calculate");
+        assert_eq!(change.before_path, "src.rs");
+        assert_eq!(change.after_path, "dest.rs");
+        assert!(change.content_changed);
+        assert!((880..1000).contains(&change.similarity_permille));
+        cleanup(&a);
+    }
+
+    #[test]
+    fn detects_unique_edited_csharp_method_moved_between_files() {
+        let (a, b) = directories();
+        fs::write(a.join("a.cs"),
+            "class A { int Compute(int value) { var offset = 10; var doubled = value * 2; var answer = doubled + offset; System.Console.WriteLine(answer); return answer; } }").unwrap();
+        fs::write(b.join("b.cs"),
+            "class B { int Compute(int value) { var offset = 12; var doubled = value * 2; var answer = doubled + offset; System.Console.WriteLine(answer); return answer; } }").unwrap();
+        let report = compare_folders(&a, &b).unwrap();
+        assert_eq!(report.moves.len(), 1);
+        assert_eq!(report.moves[0].symbol_kind, "method_declaration");
+        assert_eq!(report.moves[0].symbol_name, "Compute");
+        assert!(report.moves[0].content_changed);
+        cleanup(&a);
+    }
+
+    #[test]
+    fn same_name_unrelated_body_is_not_edited_move() {
+        let (a, b) = directories();
+        fs::write(a.join("a.rs"),
+            "fn process(value: i32) -> i32 { let alpha = value * 2; let beta = alpha + 5; println!(\"old {}\", beta); beta }").unwrap();
+        fs::write(b.join("b.rs"),
+            "fn process(value: i32) -> i32 { let list = vec![2,3,4,5]; let largest = list.iter().max().unwrap(); println!(\"new {}\", largest); *largest }").unwrap();
+        assert!(compare_folders(&a, &b).unwrap().moves.is_empty());
+        cleanup(&a);
+    }
+
+    #[test]
+    fn duplicate_same_signature_does_not_claim_edited_move() {
+        let (a, b) = directories();
+        let original = "fn process(value: i32) -> i32 { let alpha = value * 2; let beta = alpha + 5; println!(\"old {}\", beta); beta }";
+        fs::write(a.join("a.rs"), original).unwrap();
+        fs::write(a.join("b.rs"), original).unwrap();
+        fs::write(b.join("c.rs"),
+            "fn process(value: i32) -> i32 { let alpha = value * 2; let beta = alpha + 6; println!(\"old {}\", beta); beta }").unwrap();
+        assert!(compare_folders(&a, &b).unwrap().moves.is_empty());
+        cleanup(&a);
+    }
+
+    #[test]
+    fn changed_function_signature_is_not_a_move() {
+        let (a, b) = directories();
+        fs::write(a.join("a.rs"), "fn compute(x: i32) -> i32 { let base = x * 2; let sum = base + 10; println!(\"sum {}\", sum); sum }").unwrap();
+        fs::write(b.join("b.rs"), "fn compute(x: u64) -> u64 { let base = x * 2; let sum = base + 11; println!(\"sum {}\", sum); sum }").unwrap();
+        assert!(compare_folders(&a, &b).unwrap().moves.is_empty());
+        cleanup(&a);
+    }
+
+    #[test]
+    fn short_generic_function_must_not_be_guessed_as_edited_move() {
+        let (a, b) = directories();
+        fs::write(a.join("a.rs"), "fn work() { let x = 1; }").unwrap();
+        fs::write(b.join("b.rs"), "fn work() { let x = 2; }").unwrap();
+        assert!(compare_folders(&a, &b).unwrap().moves.is_empty());
+        cleanup(&a);
+    }
+
+    #[test]
+    fn whitespace_only_change_is_still_a_modified_move_candidate() {
+        let (a, b) = directories();
+        fs::write(a.join("a.rs"),
+            "fn process(value: i32) -> i32 { let doubled = value * 2; let offset = 10; let answer = doubled + offset; println!(\"answer {}\", answer); answer }").unwrap();
+        fs::write(b.join("b.rs"),
+            "fn process(value: i32) -> i32 {\n  let doubled = value * 2;\n  let offset = 10;\n  let answer = doubled + offset;\n  println!(\"answer {}\", answer);\n  answer\n}").unwrap();
+        let report = compare_folders(&a, &b).unwrap();
+        assert_eq!(report.moves.len(), 1);
+        assert!(report.moves[0].content_changed);
+        assert_eq!(report.moves[0].similarity_permille, 1000);
+        cleanup(&a);
+    }
+
+    #[test]
+    fn lexical_similarity_preserves_operator_change() {
+        assert_ne!(
+            body_similarity(
+                "{ let a = x == y; let b = x != y; }",
+                "{ let a = x == y; let b = x == y; }"
+            ),
+            1000
+        );
+        assert_eq!(body_similarity("{ let x = 1; }", "{ let x = 2; }"), 0);
     }
 
     #[test]
