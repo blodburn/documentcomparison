@@ -100,8 +100,9 @@ public sealed class VersionHistoryControl : UserControl
         var open = Secondary("열기"); open.Click += OpenProject_Click;
         var save = Secondary("저장"); save.Click += SaveProject_Click;
         var folders = Secondary("폴더 비교"); folders.Click += CompareFolders_Click;
+        var git = Secondary("Git 커밋 비교"); git.Click += CompareGitCommits_Click;
         actions.Children.Add(add); actions.Children.Add(open); actions.Children.Add(save);
-        actions.Children.Add(folders);
+        actions.Children.Add(folders); actions.Children.Add(git);
         Grid.SetRow(actions, 1); leftRoot.Children.Add(actions);
         Grid.SetRow(_dropHint, 2); leftRoot.Children.Add(_dropHint);
 
@@ -164,6 +165,102 @@ public sealed class VersionHistoryControl : UserControl
         right.Child = rightRoot;
         Grid.SetColumn(right, 4); root.Children.Add(right);
         return root;
+    }
+
+    private async void CompareGitCommits_Click(object? sender, RoutedEventArgs e)
+    {
+        var top = TopLevel.GetTopLevel(this);
+        if (top?.StorageProvider is null || top is not Window owner) return;
+        try
+        {
+            var directories = await top.StorageProvider.OpenFolderPickerAsync(
+                new FolderPickerOpenOptions
+                {
+                    Title = "Git 저장소 선택 (읽기 전용 커밋 비교)",
+                    AllowMultiple = false
+                });
+            var root = directories.FirstOrDefault()?.TryGetLocalPath();
+            if (string.IsNullOrWhiteSpace(root)) return;
+            var refs = await SelectGitRevisionsAsync(owner);
+            if (refs is null) return;
+
+            _loadCts?.Cancel();
+            _loadCts = new CancellationTokenSource();
+            var token = _loadCts.Token;
+            _status.Text = "Git 커밋 트리·blob 계보 조회 중...";
+            var history = await Task.Run(
+                () => GitCommitLineageComparer.Compare(root, refs.Value.Before, refs.Value.After), token);
+            token.ThrowIfCancellationRequested();
+
+            _folderChanges = GitLineageReviewMapper.Map(history);
+            _folderRendered = 0;
+            _folderMore = null;
+            _preview.Children.Clear();
+            _changes.Children.Clear();
+            _previewTargets.Clear();
+            _changeTargets.Clear();
+            _previewTitle.Text = "Git 커밋 계보 비교";
+            _previewSubtitle.Text = $"{history.RepositoryRoot} · " +
+                $"{history.BeforeCommit[..12]} → {history.AfterCommit[..12]} · " +
+                "정확한 이동: 동일 Git blob · 이름 변경 후보: Git 유사도(비확정)";
+            _changeSummary.Text = $"전체 {_folderChanges.Count:N0}건 · " +
+                string.Join(" · ", _folderChanges.GroupBy(x => x.Kind)
+                    .Select(group => $"{group.Key} {group.Count():N0}"));
+            if (_folderChanges.Count == 0)
+                _changes.Children.Add(Message("커밋 사이에 파일 내용 변경이 없습니다.", "#64748B"));
+            else
+                RenderFolderBatch();
+            _status.Text = $"Git 계보 조회 완료 · {_folderChanges.Count:N0}건 · " +
+                "작업 트리는 수정하지 않았습니다. 현재 화면에만 표시됩니다.";
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            _status.Text = "Git 커밋 계보 조회 실패: " + ex.Message;
+        }
+    }
+
+    private static async Task<(string Before, string After)?> SelectGitRevisionsAsync(Window owner)
+    {
+        var previous = new TextBox { Text = "HEAD~1", PlaceholderText = "변경 전 (예: HEAD~1, commit SHA)" };
+        var next = new TextBox { Text = "HEAD", PlaceholderText = "변경 후 (예: HEAD, commit SHA)" };
+        var dialog = new Window
+        {
+            Width = 460, Height = 276,
+            MinWidth = 380, MinHeight = 276,
+            Title = "Git 커밋 비교 · 변경 전/후",
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            CanResize = false
+        };
+        var confirm = Primary("커밋 비교");
+        var cancel = Secondary("취소");
+        confirm.Click += (_, _) => dialog.Close(true);
+        cancel.Click += (_, _) => dialog.Close(false);
+        dialog.Content = new StackPanel
+        {
+            Margin = new Thickness(18), Spacing = 8,
+            Children =
+            {
+                new TextBlock { Text = "변경 전 커밋/브랜치", FontWeight = FontWeight.SemiBold },
+                previous,
+                new TextBlock { Text = "변경 후 커밋/브랜치", FontWeight = FontWeight.SemiBold },
+                next,
+                new TextBlock
+                {
+                    Text = "조상 → 후손 커밋을 비교합니다. Git 설치 필요 · checkout 없이 읽기 전용",
+                    TextWrapping = TextWrapping.Wrap, FontSize = 11, Foreground = Brushes.Gray
+                },
+                new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    HorizontalAlignment = HorizontalAlignment.Right, Spacing = 6,
+                    Children = { cancel, confirm }
+                }
+            }
+        };
+        if (!await dialog.ShowDialog<bool>(owner))
+            return null;
+        return (previous.Text?.Trim() ?? "", next.Text?.Trim() ?? "");
     }
 
     private async void CompareFolders_Click(object? sender, RoutedEventArgs e)
@@ -254,6 +351,7 @@ public sealed class VersionHistoryControl : UserControl
             var entry = _folderChanges[i];
             var marker = i + 1;
             var summary = entry.Kind is "이동/이름 변경" or "선언 이동(AST)" or "이동·수정 후보(AST)"
+                or "정확한 파일 이동(Git)" or "이름 변경 후보(Git)"
                 ? $"{entry.BeforePath} → {entry.AfterPath}"
                 : entry.Kind == "삭제" ? entry.BeforePath : entry.AfterPath;
             var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };

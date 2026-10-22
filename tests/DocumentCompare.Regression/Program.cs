@@ -2605,4 +2605,107 @@ if(NativeCodeVersionComparer.IsAvailable)
 }
 Console.WriteLine("PASS FORMATTING ONLY MOVED METHOD CANDIDATE");
 
+
+// 169. Real immutable Git commit/tree lineage; no checkout or working-tree writes.
+var gitFixture=Path.Combine(dir,"git-commit-lineage");
+Directory.CreateDirectory(gitFixture);
+static string GitExec(string root,params string[] arguments)
+{
+    using var process=new System.Diagnostics.Process();
+    process.StartInfo=new System.Diagnostics.ProcessStartInfo("git")
+    {
+        WorkingDirectory=root,
+        UseShellExecute=false, RedirectStandardOutput=true,
+        RedirectStandardError=true, CreateNoWindow=true
+    };
+    foreach(var argument in arguments) process.StartInfo.ArgumentList.Add(argument);
+    process.Start();
+    var output=process.StandardOutput.ReadToEnd();
+    var error=process.StandardError.ReadToEnd();
+    process.WaitForExit();
+    if(process.ExitCode!=0)throw new Exception("Git test command failed: "+string.Join(" ",arguments)+" : "+error);
+    return output.Trim();
+}
+GitExec(gitFixture,"init","-q");
+GitExec(gitFixture,"config","user.name","Regression Tester");
+GitExec(gitFixture,"config","user.email","test@example.invalid");
+Directory.CreateDirectory(Path.Combine(gitFixture,"한글"));
+File.WriteAllText(Path.Combine(gitFixture,"한글","원본.rs"),"fn original(){println!(\"가😀\");}\n");
+File.WriteAllText(Path.Combine(gitFixture,"modify.txt"),"before\n");
+File.WriteAllText(Path.Combine(gitFixture,"deleted.txt"),"gone\n");
+File.WriteAllText(Path.Combine(gitFixture,"ambiguous-a.txt"),"identical\n");
+File.WriteAllText(Path.Combine(gitFixture,"ambiguous-b.txt"),"identical\n");
+var historyLines=Enumerable.Range(0,35).Select(i=>$"line number {i:D2} has stable text\n").ToArray();
+File.WriteAllText(Path.Combine(gitFixture,"old-name.cs"),string.Concat(historyLines));
+GitExec(gitFixture,"add",".");
+GitExec(gitFixture,"commit","-q","-m","initial");
+var initialCommit=GitExec(gitFixture,"rev-parse","HEAD");
+Directory.CreateDirectory(Path.Combine(gitFixture,"new location"));
+File.Move(Path.Combine(gitFixture,"한글","원본.rs"),
+          Path.Combine(gitFixture,"new location","moved.rs"));
+File.Move(Path.Combine(gitFixture,"old-name.cs"),Path.Combine(gitFixture,"new-name.cs"));
+var editedHistory=(string[])historyLines.Clone();
+editedHistory[17]="line number 17 changed by rename update\n";
+File.WriteAllText(Path.Combine(gitFixture,"new-name.cs"),string.Concat(editedHistory));
+File.Delete(Path.Combine(gitFixture,"deleted.txt"));
+File.WriteAllText(Path.Combine(gitFixture,"modify.txt"),"after\n");
+File.WriteAllText(Path.Combine(gitFixture,"added.txt"),"new\n");
+GitExec(gitFixture,"add","-A");
+GitExec(gitFixture,"commit","-q","-m","rename and update");
+var finalCommit=GitExec(gitFixture,"rev-parse","HEAD");
+var gitLineage=GitCommitLineageComparer.Compare(gitFixture,initialCommit,finalCommit);
+Check(gitLineage.BeforeCommit==initialCommit &&
+      gitLineage.AfterCommit==finalCommit &&
+      gitLineage.Changes.Count==5 &&
+      gitLineage.Changes.Any(c=>c is {
+          Kind:"정확한 파일 이동(Git)",BeforePath:"한글/원본.rs",AfterPath:"new location/moved.rs"
+      } && c.BeforeBlob==c.AfterBlob) &&
+      gitLineage.Changes.Any(c=>c is {
+          Kind:"이름 변경 후보(Git)",BeforePath:"old-name.cs",AfterPath:"new-name.cs"
+      } && c.BeforeBlob!=c.AfterBlob && c.SimilarityPercent>=75) &&
+      gitLineage.Changes.Any(c=>c is {Kind:"수정(Git)",BeforePath:"modify.txt"}) &&
+      gitLineage.Changes.Any(c=>c is {Kind:"삭제(Git)",BeforePath:"deleted.txt"}) &&
+      gitLineage.Changes.Any(c=>c is {Kind:"추가(Git)",AfterPath:"added.txt"}),
+      "Git immutable tree comparison must distinguish modified/renamed/added/deleted and Unicode exact blob moves");
+var untracked=Path.Combine(gitFixture,"uncommitted-local.txt");
+File.WriteAllText(untracked,"local changes never influence historical tree");
+var sameLineage=GitCommitLineageComparer.Compare(gitFixture,"HEAD~1","HEAD");
+Check(sameLineage.Changes.SequenceEqual(gitLineage.Changes) &&
+      File.Exists(untracked) &&
+      GitExec(gitFixture,"status","--porcelain").Contains("uncommitted-local.txt"),
+      "Git lineage must use object database, ignore uncommitted files and not checkout or edit");
+var invertedRejected=false;
+try{GitCommitLineageComparer.Compare(gitFixture,"HEAD","HEAD~1");}
+catch(InvalidDataException){invertedRejected=true;}
+Check(invertedRejected,"Git history must reject reversed ancestry");
+var injectedRejected=false;
+try{GitCommitLineageComparer.Compare(gitFixture,"--help","HEAD");}
+catch(ArgumentException){injectedRejected=true;}
+Check(injectedRejected,"Git revision options must be rejected");
+var reviewGit=GitLineageReviewMapper.Map(gitLineage);
+Check(reviewGit.Count==gitLineage.Changes.Count &&
+      reviewGit.All(entry=>!string.IsNullOrWhiteSpace(entry.EventId)) &&
+      reviewGit.Any(entry=>entry.Kind=="이름 변경 후보(Git)" &&
+          entry.AfterPath.Contains("Git 유사도")) &&
+      reviewGit.SequenceEqual(GitLineageReviewMapper.Map(sameLineage)),
+      "Git commit-file events must have deterministic IDs and explicit similarity candidate labels");
+var sameCommitTree=GitCommitLineageComparer.Compare(gitFixture,"HEAD","HEAD");
+Check(sameCommitTree.Changes.Count==0,"identical Git commits must compare equal");
+var nestedGitResult=GitCommitLineageComparer.Compare(
+    Path.Combine(gitFixture,"new location"),"HEAD~1","HEAD");
+Check(nestedGitResult.Changes.SequenceEqual(gitLineage.Changes) &&
+      nestedGitResult.RepositoryRoot==gitFixture,
+      "selecting a nested path must compare the same repository root");
+File.Delete(untracked);
+File.Move(Path.Combine(gitFixture,"ambiguous-a.txt"),
+          Path.Combine(gitFixture,"ambiguous-moved.txt"));
+GitExec(gitFixture,"add","-A");
+GitExec(gitFixture,"commit","-q","-m","ambiguous duplicate blob move");
+var duplicatedTree=GitCommitLineageComparer.Compare(gitFixture,finalCommit,"HEAD");
+Check(duplicatedTree.Changes.Count==2 &&
+      duplicatedTree.Changes.All(c=>c.Kind is "삭제(Git)" or "추가(Git)") &&
+      !duplicatedTree.Changes.Any(c=>c.Kind=="정확한 파일 이동(Git)"),
+      "a duplicate blob also present in unchanged paths must not prove an exact rename");
+Console.WriteLine("PASS GIT COMMIT TREE LINEAGE AND READONLY SAFETY");
+
 Console.WriteLine("ALL REGRESSIONS PASSED");
