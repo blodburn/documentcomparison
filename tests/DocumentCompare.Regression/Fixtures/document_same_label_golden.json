@@ -1,0 +1,207 @@
+[
+  {
+    "oldCount": 3,
+    "newCount": 3,
+    "candidates": [
+      {
+        "old": 0,
+        "new": 0,
+        "similarity": 0.0,
+        "shape": true,
+        "edge": false
+      },
+      {
+        "old": 1,
+        "new": 1,
+        "similarity": 0.0,
+        "shape": true,
+        "edge": false
+      },
+      {
+        "old": 2,
+        "new": 2,
+        "similarity": 0.0,
+        "shape": true,
+        "edge": false
+      }
+    ],
+    "selected": [
+      {
+        "old": 0,
+        "new": 0,
+        "score": 0.52
+      },
+      {
+        "old": 1,
+        "new": 1,
+        "score": 0.52
+      },
+      {
+        "old": 2,
+        "new": 2,
+        "score": 0.52
+      }
+    ]
+  },
+  {
+    "oldCount": 1,
+    "newCount": 2,
+    "candidates": [
+      {
+        "old": 0,
+        "new": 0,
+        "similarity": 0.98,
+        "shape": false,
+        "edge": false
+      },
+      {
+        "old": 0,
+        "new": 1,
+        "similarity": 0.04,
+        "shape": true,
+        "edge": false
+      }
+    ],
+    "selected": [
+      {
+        "old": 0,
+        "new": 1,
+        "score": 0.52
+      }
+    ]
+  },
+  {
+    "oldCount": 2,
+    "newCount": 2,
+    "candidates": [
+      {
+        "old": 0,
+        "new": 0,
+        "similarity": 0.3,
+        "shape": false,
+        "edge": false
+      },
+      {
+        "old": 0,
+        "new": 1,
+        "similarity": 0.3,
+        "shape": false,
+        "edge": false
+      },
+      {
+        "old": 1,
+        "new": 0,
+        "similarity": 0.95,
+        "shape": false,
+        "edge": false
+      },
+      {
+        "old": 1,
+        "new": 1,
+        "similarity": 0.4,
+        "shape": false,
+        "edge": false
+      }
+    ],
+    "selected": [
+      {
+        "old": 0,
+        "new": 0,
+        "score": 0.52
+      },
+      {
+        "old": 1,
+        "new": 1,
+        "score": 0.52
+      }
+    ]
+  },
+  {
+    "oldCount": 1,
+    "newCount": 2,
+    "candidates": [
+      {
+        "old": 0,
+        "new": 0,
+        "similarity": 0.15,
+        "shape": false,
+        "edge": false
+      },
+      {
+        "old": 0,
+        "new": 1,
+        "similarity": 0.12,
+        "shape": false,
+        "edge": true
+      }
+    ],
+    "selected": []
+  },
+  {
+    "oldCount": 1,
+    "newCount": 1,
+    "candidates": [
+      {
+        "old": 0,
+        "new": 0,
+        "similarity": 0.0,
+        "shape": false,
+        "edge": true
+      }
+    ],
+    "selected": [
+      {
+        "old": 0,
+        "new": 0,
+        "score": 0.52
+      }
+    ]
+  },
+  {
+    "oldCount": 2,
+    "newCount": 1,
+    "candidates": [
+      {
+        "old": 0,
+        "new": 0,
+        "similarity": 0.18,
+        "shape": false,
+        "edge": false
+      },
+      {
+        "old": 1,
+        "new": 0,
+        "similarity": 0.92,
+        "shape": false,
+        "edge": false
+      }
+    ],
+    "selected": [
+      {
+        "old": 0,
+        "new": 0,
+        "score": 0.52
+      }
+    ]
+  },
+  {
+    "oldCount": 1,
+    "newCount": 1,
+    "candidates": [
+      {
+        "old": 0,
+        "new": 0,
+        "similarity": 0.1799,
+        "shape": false,
+        "edge": false
+      }
+    ],
+    "selected": []
+  },
+  {
+    "oldCount": 0,
+    "newCount": 0,
+    "candidates": [],
+    "selected": []
+  }
+]

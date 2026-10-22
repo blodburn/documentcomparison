@@ -28,6 +28,7 @@ must not be inferred merely from matching current C# behavior.
 | Item hierarchy and ordinal/parent relationships | C# BuildPartHierarchyCSharp, PartOrdinalAt | Rust hierarchy | 631 direct cases; live guarded |
 | Exact normalized item pairing (first pass) | C# MatchExactPartKeysCSharp | Rust doc_match_exact | 9 frozen Golden + 710 direct C#/Rust; live guarded |
 | Changed-label move candidate ranking and selection | C# SelectPartMoveCandidatesCSharp | Rust doc_move_candidates | 7 frozen Golden plus 900 direct cases; live gated |
+| Same-label sibling-shape fallback | C# SelectSameLabelCandidatesCSharp | Rust doc_same_label | 8 frozen Golden plus 850 direct cases; live guarded |
 | Full item fuzzy matching and movement | C# remaining MatchParts, CollapsedLevelParentsEquivalent etc. | Partially ported | No full replacement |
 | DOCX table cell/merge/row matching | C# structured reader and matcher | Not ported | No replacement |
 | Word formatting and tracked revisions | C# NativeOfficeExporter | Not ported | No replacement |
@@ -80,9 +81,10 @@ exports, A/B/C).
 4. Measure performance (five runs, identical inputs) before claiming Rust
    improves runtime or memory; maintain C# fallback until justified.
 
-STATUS: five narrow document rules (whitespace changes, structural part
-segmentation, parent/child hierarchy, exact-body pairing, and changed-label
-move candidate selection) are ported with guarded live execution.
+STATUS: six narrow document rules (whitespace changes, structural part
+segmentation, parent/child hierarchy, exact-body pairing, changed-label
+move selection, and same-label sibling-shape fallback) are ported with
+guarded live execution.
 This is NOT a claim that the complete C# legal/Word engine has migrated
 to Rust or equals any missing historical Python implementation.
 
@@ -219,3 +221,47 @@ This is only a candidate-selection stage. Definition-head matching,
 logical ordinal and sibling fallback, collapsed level parents,
 residual matching, article lineage, Word table alignment, tracked
 changes, and A/B/C output remain in C#.
+
+## Sixth narrow port: same-label sibling-shape fallback in MatchParts
+
+After exact bodies, definition heads, strong changed-label moves, and
+different-label same-ordinal candidates are consumed, the existing C#
+MatchParts matcher attempts to pair remaining items bearing the same
+enumerator label at the same hierarchy level and equivalent matched
+parents. It must preserve ①->①, ②->②, ③->③, etc. even for complete text
+rewrites when the sibling label sequence remains stable.
+
+Rust doc_same_label.rs now performs ONLY the candidate ranking and
+greedy selection for this stage. C# still generates candidate pairs,
+calculates PartSimilarity, SiblingShapeEquivalent, HasStableEdgeContext,
+and handles ParentsEquivalent and used pairs from earlier stages.
+For each unmatched old item in ascending order, the highest-ranked
+available new candidate is selected by Shape DESC then Similarity DESC
+(stable original new-index order on exact ties). If that best candidate
+has Shape, Similarity >= 0.18, or Edge, it is matched with score
+max(Similarity, 0.52). An insufficient best candidate does not trigger
+fallback to the second-ranked candidate. The selected new index is
+removed before processing the next old item.
+
+The optional ABI v1 FFI dc_select_document_same_label_parts_utf8 accepts
+bounded JSON (old/new <=256 items, <=8192 candidate pairs), returns
+index/score pairs freed with dc_free_ast_json_result. The canonical C#
+implementation computes this stage independently; Rust is used only
+if every ordered index and score agrees within 1e-12. Absent DLLs,
+limits, errors and discrepancies retain C# behavior. Parity counters:
+SameLabelRustParityMatches and SameLabelRustParityMismatches.
+
+document_same_label_golden.json freezes eight source-of-truth candidate
+contracts, including total word rewrites with stable sibling structure,
+shape precedence, a stable duplicate tie, a best-candidate threshold
+failure with no second chance, an edge-only match, and greedy ownership
+of the destination. 850 deterministic C# vs Rust matrices and an actual
+three-item Word-style legal paragraph comparison passed the same gate.
+All previous document, source-code, Windows EXE and export regressions
+remain mandatory.
+
+Still managed: candidate semantic metrics, same ordinal with different
+drafting convention, cross-level matching, residual matching, final
+move/add/delete/replace classification, article lineage, DOCX table-cell
+alignment and Word tracked-change export. This is NOT full MatchParts
+or full document-engine Rust equivalence.

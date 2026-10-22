@@ -2277,6 +2277,64 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         }
     }
 
+    private static long _sameLabelRustParityMatches;
+    private static long _sameLabelRustParityMismatches;
+    internal static long SameLabelRustParityMatches =>
+        System.Threading.Interlocked.Read(ref _sameLabelRustParityMatches);
+    internal static long SameLabelRustParityMismatches =>
+        System.Threading.Interlocked.Read(ref _sameLabelRustParityMismatches);
+
+    private static List<NativeCodeVersionComparer.DocumentMoveSelected>
+        SelectSameLabelCandidatesCSharp(int oldCount, int newCount,
+            IReadOnlyList<NativeCodeVersionComparer.DocumentSameLabelCandidate> candidates)
+    {
+        var result = new List<NativeCodeVersionComparer.DocumentMoveSelected>();
+        var usedNew = new HashSet<int>();
+        for (var i = 0; i < oldCount; i++)
+        {
+            var options = candidates.Where(x => x.Old == i && !usedNew.Contains(x.New))
+                .OrderByDescending(x => x.Shape).ThenByDescending(x => x.Similarity).ToList();
+            if (options.Count == 0) continue;
+            var best = options[0];
+            if (best.Shape || best.Similarity >= .18 || best.Edge)
+            {
+                usedNew.Add(best.New);
+                result.Add(new NativeCodeVersionComparer.DocumentMoveSelected(
+                    i, best.New, Math.Max(best.Similarity, .52)));
+            }
+        }
+        return result;
+    }
+
+    private static List<NativeCodeVersionComparer.DocumentMoveSelected>
+        SelectSameLabelCandidates(int oldCount, int newCount,
+            IReadOnlyList<NativeCodeVersionComparer.DocumentSameLabelCandidate> candidates)
+    {
+        var canonical = SelectSameLabelCandidatesCSharp(oldCount, newCount, candidates);
+        try
+        {
+            var native = NativeCodeVersionComparer.SelectSameLabelDocumentParts(
+                oldCount, newCount, candidates);
+            if (native is null) return canonical;
+            if (canonical.Count != native.Count ||
+                native.Where((pair, i) =>
+                    pair.Old != canonical[i].Old || pair.New != canonical[i].New ||
+                    Math.Abs(pair.Score - canonical[i].Score) > 1e-12).Any())
+            {
+                System.Threading.Interlocked.Increment(ref _sameLabelRustParityMismatches);
+                return canonical;
+            }
+            System.Threading.Interlocked.Increment(ref _sameLabelRustParityMatches);
+            return native.ToList();
+        }
+        catch (Exception ex) when (ex is InvalidDataException or
+            System.Text.EncoderFallbackException or OverflowException)
+        {
+            System.Threading.Interlocked.Increment(ref _sameLabelRustParityMismatches);
+            return canonical;
+        }
+    }
+
     private static List<PartMatch> MatchParts(IReadOnlyList<NativePart> a, IReadOnlyList<NativePart> b)
     {
         var nodesA = BuildPartHierarchy(a); var nodesB = BuildPartHierarchy(b);
@@ -2359,19 +2417,24 @@ public sealed class NativeComparisonEngine : IComparisonEngine
                     Take(i, cand.J, Math.Max(cand.S, cand.Shape ? .58 : .52));
             }
 
-            foreach (var i in Enumerable.Range(0, a.Count).Where(i => !usedA.Contains(i) && nodesA[i].Level == level))
-            {
-                if (!IsStructuralLabel(a[i].Label)) continue;
-                var candidates = Enumerable.Range(0, b.Count)
-                    .Where(j => !usedB.Contains(j) && nodesB[j].Level == level && b[j].Label == a[i].Label &&
-                                ParentsEquivalent(i, j, nodesA, nodesB, result))
-                    .Select(j => (J: j, S: PartSimilarity(a[i], b[j]), Shape: SiblingShapeEquivalent(i, j, a, b, nodesA, nodesB)))
-                    .OrderByDescending(x => x.Shape).ThenByDescending(x => x.S).ToList();
-                if (candidates.Count == 0) continue;
-                var cand = candidates[0];
-                if (cand.Shape || cand.S >= .18 || HasStableEdgeContext(a[i].Core, b[cand.J].Core))
-                    Take(i, cand.J, Math.Max(cand.S, .52));
-            }
+            // Keep canonical C# similarity, sibling-shape and parent logic;
+            // only greedy same-label candidate selection is mirrored in Rust.
+            var sameLabelCandidates = new List<
+                NativeCodeVersionComparer.DocumentSameLabelCandidate>();
+            foreach (var i in Enumerable.Range(0, a.Count).Where(i =>
+                !usedA.Contains(i) && nodesA[i].Level == level &&
+                IsStructuralLabel(a[i].Label)))
+            foreach (var j in Enumerable.Range(0, b.Count).Where(j =>
+                !usedB.Contains(j) && nodesB[j].Level == level &&
+                b[j].Label == a[i].Label &&
+                ParentsEquivalent(i, j, nodesA, nodesB, result)))
+                sameLabelCandidates.Add(new(i, j,
+                    PartSimilarity(a[i], b[j]),
+                    SiblingShapeEquivalent(i, j, a, b, nodesA, nodesB),
+                    HasStableEdgeContext(a[i].Core, b[j].Core)));
+            foreach (var pair in SelectSameLabelCandidates(
+                a.Count, b.Count, sameLabelCandidates))
+                Take(pair.Old, pair.New, pair.Score);
         }
         // If one document omits an intermediate 항/호 layer, compare adjacent hierarchy levels
         // only after normal same-level matching has been exhausted.  The skipped parent must be

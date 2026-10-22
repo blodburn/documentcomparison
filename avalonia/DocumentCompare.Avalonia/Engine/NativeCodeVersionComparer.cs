@@ -122,6 +122,12 @@ public static class NativeCodeVersionComparer
     public sealed record DocumentMoveCandidate(
         int Old, int New, double Similarity, double Containment, int ChildSupport);
     public sealed record DocumentMoveSelected(int Old, int New, double Score);
+    public sealed record DocumentSameLabelCandidate(
+        int Old, int New, double Similarity, bool Shape, bool Edge);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int DocumentSameLabelSelectionDelegate(
+        [In] byte[] input, nuint length, out NativeAstResult result);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int DocumentMoveSelectionDelegate(
@@ -168,6 +174,7 @@ public static class NativeCodeVersionComparer
         public readonly DocumentHierarchyDelegate? DocumentHierarchy;
         public readonly ExactDocumentPartsDelegate? ExactDocumentParts;
         public readonly DocumentMoveSelectionDelegate? DocumentMoveSelection;
+        public readonly DocumentSameLabelSelectionDelegate? DocumentSameLabelSelection;
 
         public Exports(IntPtr handle)
         {
@@ -212,6 +219,11 @@ public static class NativeCodeVersionComparer
                 "dc_select_document_part_move_candidates_utf8", out var moveExport))
                 DocumentMoveSelection = Marshal.GetDelegateForFunctionPointer<DocumentMoveSelectionDelegate>(
                     moveExport);
+            if (NativeLibrary.TryGetExport(handle,
+                "dc_select_document_same_label_parts_utf8", out var sameLabelExport))
+                DocumentSameLabelSelection =
+                    Marshal.GetDelegateForFunctionPointer<DocumentSameLabelSelectionDelegate>(
+                        sameLabelExport);
         }
     }
 
@@ -546,6 +558,64 @@ public static class NativeCodeVersionComparer
     }
 
     private sealed record DocumentMoveWire(List<DocumentMoveSelected> Selected);
+
+    /// <summary>
+    /// Parity-gated C# MatchParts same-label sibling-shape fallback.
+    /// Only score/rank/selection is delegated; candidate eligibility and
+    /// parent relation remain managed. Optional export for older Rust DLLs.
+    /// </summary>
+    public static IReadOnlyList<DocumentMoveSelected>? SelectSameLabelDocumentParts(
+        int oldCount, int newCount, IReadOnlyList<DocumentSameLabelCandidate> candidates)
+    {
+        ArgumentNullException.ThrowIfNull(candidates);
+        var exports = Native.Value;
+        if (exports?.DocumentSameLabelSelection is null ||
+            oldCount is < 0 or > 256 || newCount is < 0 or > 256 ||
+            candidates.Count > 8192 ||
+            candidates.Any(x => x.Old < 0 || x.New < 0 ||
+                x.Old >= oldCount || x.New >= newCount ||
+                !double.IsFinite(x.Similarity) || x.Similarity is < 0 or > 1))
+            return null;
+        var input = JsonSerializer.SerializeToUtf8Bytes(new { oldCount, newCount, candidates },
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+        if (input.Length > 1024 * 1024) return null;
+        var status = exports.DocumentSameLabelSelection(
+            input, (nuint)input.Length, out var output);
+        try
+        {
+            if (status is 2 or 3) return null;
+            if (status != 0)
+                throw new InvalidDataException($"Rust 동일 번호 항·호 대응 실패: {status}");
+            if (output.Data == IntPtr.Zero || output.Length == 0 ||
+                output.Length > 1024UL * 1024)
+                throw new InvalidDataException("Rust 동일 번호 대응 결과 크기 오류");
+            var bytes = new byte[checked((int)output.Length)];
+            Marshal.Copy(output.Data, bytes, 0, bytes.Length);
+            var parsed = JsonSerializer.Deserialize<DocumentMoveWire>(bytes,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            if (parsed?.Selected is null ||
+                parsed.Selected.Count > Math.Min(oldCount, newCount))
+                throw new InvalidDataException("Rust 동일 번호 대응 개수 오류");
+            var seenOld = new HashSet<int>();
+            var seenNew = new HashSet<int>();
+            foreach (var match in parsed.Selected)
+            {
+                if (match.Old < 0 || match.Old >= oldCount ||
+                    match.New < 0 || match.New >= newCount ||
+                    !seenOld.Add(match.Old) || !seenNew.Add(match.New) ||
+                    !double.IsFinite(match.Score) || match.Score is < .52 or > 1 ||
+                    !candidates.Any(x => x.Old == match.Old && x.New == match.New))
+                    throw new InvalidDataException("Rust 동일 번호 대응 위치·점수 오류");
+            }
+            return parsed.Selected;
+        }
+        finally
+        {
+            exports.AstFree(ref output);
+        }
+    }
+
+
 
 
 

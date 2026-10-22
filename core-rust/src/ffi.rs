@@ -1099,3 +1099,48 @@ pub unsafe extern "C" fn dc_select_document_part_move_candidates_utf8(
         Err(_) => 5,
     }
 }
+
+/// C#-gated same-label sibling-shape pairing, within a bounded set of
+/// C#-prepared same-label, same-level, parent-compatible candidates.
+/// # Safety
+/// Caller must provide readable input bytes and exclusive writable output.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dc_select_document_same_label_parts_utf8(
+    input: *const u8,
+    length: usize,
+    output: *mut DcAstJsonResult,
+) -> i32 {
+    if output.is_null() {
+        return 2;
+    }
+    // SAFETY: exclusive writable result guaranteed by the caller.
+    unsafe { ptr::write(output, DcAstJsonResult::empty()) };
+    if length > 1024 * 1024 || (length > 0 && input.is_null()) {
+        return 2;
+    }
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let bytes = if length == 0 {
+            &[][..]
+        } else {
+            // SAFETY: readable input guaranteed by the caller.
+            unsafe { slice::from_raw_parts(input, length) }
+        };
+        let data: crate::doc_same_label::Input = serde_json::from_slice(bytes).map_err(|_| 1)?;
+        let selection =
+            crate::doc_same_label::select(data.old_count, data.new_count, &data.candidates)
+                .map_err(|_| 3)?;
+        serde_json::to_vec(&selection).map_err(|_| 4)
+    }));
+    match result {
+        Ok(Ok(json)) => {
+            let allocated = json.into_boxed_slice();
+            let length = allocated.len();
+            let data = Box::into_raw(allocated) as *mut u8;
+            // SAFETY: exclusive writable result guaranteed by the caller.
+            unsafe { ptr::write(output, DcAstJsonResult { data, length }) };
+            0
+        }
+        Ok(Err(code)) => code,
+        Err(_) => 5,
+    }
+}

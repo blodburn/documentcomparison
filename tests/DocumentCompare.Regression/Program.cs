@@ -3445,4 +3445,121 @@ if (NativeCodeVersionComparer.IsAvailable)
         "real modified move must not create native-vs-managed parity divergence");
     Console.WriteLine($"PASS RUST MODIFIED MOVE CANDIDATE CSHARP PARITY {candidateCases}/{candidateCases}");
 }
+
+// 177. C#↔Rust same-label sibling-shape fallback, including complete
+// wording changes, greedy duplicate matches, tie ordering and thresholds.
+if (NativeCodeVersionComparer.IsAvailable)
+{
+    var sameOwner=typeof(NativeComparisonEngine);
+    var sameReference=sameOwner.GetMethod("SelectSameLabelCandidatesCSharp",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    var sameLive=sameOwner.GetMethod("SelectSameLabelCandidates",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    var sameParser=sameOwner.GetMethod("ParsePartsCSharp",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    var sameMatcher=sameOwner.GetMethod("MatchParts",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    var sameMatchCounter=sameOwner.GetProperty("SameLabelRustParityMatches",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    var sameMismatchCounter=sameOwner.GetProperty("SameLabelRustParityMismatches",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    long SameMatches()=>(long)sameMatchCounter.GetValue(null)!;
+    long SameMismatches()=>(long)sameMismatchCounter.GetValue(null)!;
+    var sameMatchStart=SameMatches();
+    var sameMismatchStart=SameMismatches();
+
+    List<NativeCodeVersionComparer.DocumentMoveSelected> SameRun(
+        System.Reflection.MethodInfo method,int oldCount,int newCount,
+        List<NativeCodeVersionComparer.DocumentSameLabelCandidate> candidates)=>
+        ((System.Collections.IEnumerable)method.Invoke(
+            null,new object[]{oldCount,newCount,candidates})!)
+        .Cast<NativeCodeVersionComparer.DocumentMoveSelected>().ToList();
+
+    using(var fixedCases=System.Text.Json.JsonDocument.Parse(File.ReadAllText(
+        Path.Combine(AppContext.BaseDirectory,"Fixtures","document_same_label_golden.json"))))
+        foreach(var item in fixedCases.RootElement.EnumerateArray())
+        {
+            var before=item.GetProperty("oldCount").GetInt32();
+            var after=item.GetProperty("newCount").GetInt32();
+            var candidates=System.Text.Json.JsonSerializer.Deserialize<
+                List<NativeCodeVersionComparer.DocumentSameLabelCandidate>>(
+                    item.GetProperty("candidates").GetRawText(),
+                    new System.Text.Json.JsonSerializerOptions{
+                        PropertyNameCaseInsensitive=true})!;
+            var gold=item.GetProperty("selected").EnumerateArray().Select(x=>
+                new NativeCodeVersionComparer.DocumentMoveSelected(
+                    x.GetProperty("old").GetInt32(),
+                    x.GetProperty("new").GetInt32(),
+                    x.GetProperty("score").GetDouble())).ToArray();
+            var cs=SameRun(sameReference,before,after,candidates);
+            var rust=NativeCodeVersionComparer.SelectSameLabelDocumentParts(
+                before,after,candidates);
+            Check(rust is not null && cs.SequenceEqual(gold) &&
+                  rust.SequenceEqual(gold),
+                "committed C# same-label Golden changed or differs in Rust: "+
+                item.GetRawText());
+        }
+
+    var sameRandom=new Random(20261023);
+    var sameCases=0;
+    for(var iteration=0;iteration<850;iteration++)
+    {
+        var oldCount=sameRandom.Next(0,31);
+        var newCount=sameRandom.Next(0,31);
+        var candidates=new List<NativeCodeVersionComparer.DocumentSameLabelCandidate>();
+        var values=new[]{0.0,.1,.1799,.18,.3,.51,.52,.8,1.0};
+        for(var old=0;old<oldCount;old++)
+            for(var next=0;next<newCount;next++)
+                if(sameRandom.NextDouble()<.14)
+                    candidates.Add(new(old,next,
+                        values[sameRandom.Next(values.Length)],
+                        sameRandom.NextDouble()<.22,
+                        sameRandom.NextDouble()<.17));
+        var canonical=SameRun(sameReference,oldCount,newCount,candidates);
+        var rust=NativeCodeVersionComparer.SelectSameLabelDocumentParts(
+            oldCount,newCount,candidates);
+        Check(rust is not null && canonical.Count==rust.Count &&
+              canonical.Zip(rust).All(pair=>
+                  pair.First.Old==pair.Second.Old &&
+                  pair.First.New==pair.Second.New &&
+                  Math.Abs(pair.First.Score-pair.Second.Score)<1e-12),
+              "same-label selection drift from C# baseline: "+iteration);
+        var active=SameRun(sameLive,oldCount,newCount,candidates);
+        Check(active.Count==canonical.Count &&
+              active.Zip(canonical).All(pair=>
+                  pair.First.Old==pair.Second.Old &&
+                  pair.First.New==pair.Second.New &&
+                  Math.Abs(pair.First.Score-pair.Second.Score)<1e-12),
+              "live same-label stage must be fully parity-gated: "+iteration);
+        sameCases++;
+    }
+    Check(SameMatches()-sameMatchStart==sameCases &&
+          SameMismatches()==sameMismatchStart,
+          "same-label parity gate must accept every deterministic paired input");
+
+    var unchangedLabelsOld="① 고객정보를 최초 수집하는 경우 이용목적과 보유기간을 명확하게 안내한다.\n"+
+        "② 사전 승인 절차를 완료한 처리자에게만 시스템 접근 권한을 부여한다.\n"+
+        "③ 이용자는 본인의 개인정보에 관한 열람과 정정을 언제든지 요청할 수 있다.";
+    var unchangedLabelsNew="① 연구개발팀은 제품을 월별 기준으로 테스트한다.\n"+
+        "② 경영진은 다음 분기 자산의 목표 실적을 수립한다.\n"+
+        "③ 영업팀은 해외 협력업체와 신규 공급 계약을 체결한다.";
+    var sourceParts=sameParser.Invoke(null,new object[]{unchangedLabelsOld})!;
+    var changedParts=sameParser.Invoke(null,new object[]{unchangedLabelsNew})!;
+    var beforeMatch=SameMatches();
+    var matched=((System.Collections.IEnumerable)sameMatcher.Invoke(
+        null,new[]{sourceParts,changedParts})!).Cast<object>().ToList();
+    var pairs=matched.Select(value=>(
+        Old:(int)value.GetType().GetProperty("Old")!.GetValue(value)!,
+        New:(int)value.GetType().GetProperty("New")!.GetValue(value)!)).ToArray();
+    Check(pairs.Contains((0,0)) && pairs.Contains((1,1)) && pairs.Contains((2,2)) &&
+          SameMatches()>beforeMatch && SameMismatches()==sameMismatchStart,
+          "rewritten ①②③ must stay aligned by stable sibling structure");
+    var maxSize=Enumerable.Range(0,257).Select(i=>
+        new NativeCodeVersionComparer.DocumentSameLabelCandidate(i,0,.8,true,false)).ToList();
+    Check(NativeCodeVersionComparer.SelectSameLabelDocumentParts(257,1,maxSize) is null &&
+          SameRun(sameLive,257,1,maxSize)
+              .SequenceEqual(SameRun(sameReference,257,1,maxSize)),
+          "same-label stage must fall back to C# beyond native item limit");
+    Console.WriteLine($"PASS RUST SAME-LABEL SIBLING SHAPE CSHARP PARITY {sameCases}/{sameCases}");
+}
 Console.WriteLine("ALL REGRESSIONS PASSED");
