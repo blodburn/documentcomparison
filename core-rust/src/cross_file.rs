@@ -17,12 +17,17 @@ const MAX_CANDIDATE_FILES: usize = 512;
 const MAX_AST_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_AST_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_SYMBOLS: usize = 15_000;
+const MAX_REFACTOR_CANDIDATES: usize = 256;
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct CrossFileMove {
     pub symbol_kind: String,
     pub symbol_name: String,
+    pub before_name: String,
+    pub after_name: String,
+    pub signature_changed: bool,
+    pub renamed: bool,
     pub before_path: String,
     pub after_path: String,
     pub before_start: usize,
@@ -41,6 +46,8 @@ pub struct CrossFileReport {
     pub moves: Vec<CrossFileMove>,
     pub analyzed_files: usize,
     pub skipped_files: usize,
+    /// Matching renamed+signature-changed methods was omitted due to cost.
+    pub refactor_stage_skipped: bool,
 }
 
 struct Located {
@@ -125,6 +132,13 @@ fn eligible_modified_move(symbol: &Symbol) -> bool {
     matches!(symbol.kind.as_str(), "function_item" | "method_declaration")
         && !symbol.signature.is_empty()
         && ast::has_meaningful_body(&symbol.body)
+}
+
+fn eligible_refactor_candidate(symbol: &Symbol) -> bool {
+    eligible_modified_move(symbol) && {
+        let tokens = lexical_tokens(&symbol.body);
+        tokens.len() >= 20 && tokens.iter().collect::<BTreeSet<_>>().len() >= 12
+    }
 }
 
 fn lexical_tokens(body: &str) -> Vec<String> {
@@ -218,6 +232,7 @@ pub fn compare_folders(before: &Path, after: &Path) -> io::Result<CrossFileRepor
             moves: Vec::new(),
             analyzed_files: 0,
             skipped_files: 0,
+            refactor_stage_skipped: false,
         });
     }
     let (old_files, new_files) = (folder::gather(before)?, folder::gather(after)?);
@@ -316,7 +331,11 @@ pub fn compare_folders(before: &Path, after: &Path) -> io::Result<CrossFileRepor
         paired_new.insert(right[0]);
         moves.push(CrossFileMove {
             symbol_kind: a.symbol.kind.clone(),
-            symbol_name: a.symbol.name.clone(),
+            symbol_name: b.symbol.name.clone(),
+            before_name: a.symbol.name.clone(),
+            after_name: b.symbol.name.clone(),
+            signature_changed: a.symbol.signature != b.symbol.signature,
+            renamed: a.symbol.name != b.symbol.name,
             before_path: a.path.clone(),
             after_path: b.path.clone(),
             before_start: a.symbol.start,
@@ -384,9 +403,15 @@ pub fn compare_folders(before: &Path, after: &Path) -> io::Result<CrossFileRepor
         if score < 880 {
             continue;
         }
+        paired_old.insert(left[0]);
+        paired_new.insert(right[0]);
         moves.push(CrossFileMove {
             symbol_kind: a.symbol.kind.clone(),
-            symbol_name: a.symbol.name.clone(),
+            symbol_name: b.symbol.name.clone(),
+            before_name: a.symbol.name.clone(),
+            after_name: b.symbol.name.clone(),
+            signature_changed: a.symbol.signature != b.symbol.signature,
+            renamed: a.symbol.name != b.symbol.name,
             before_path: a.path.clone(),
             after_path: b.path.clone(),
             before_start: a.symbol.start,
@@ -396,6 +421,99 @@ pub fn compare_folders(before: &Path, after: &Path) -> io::Result<CrossFileRepor
             content_changed: true,
             similarity_permille: score,
         });
+    }
+
+    // Stage three: simultaneous name/signature changes. Only the *full
+    // declaration body* may link these, and never an empty/boilerplate body.
+    // Require globally unique body matches to prevent identical copied code
+    // from being mistaken for a rename. For edited bodies use stricter lexical
+    // matching and reject any competing high-similarity partner.
+    let remaining_old: Vec<_> = old
+        .iter()
+        .enumerate()
+        .filter(|(i, item)| {
+            !excluded_old.contains(i)
+                && !paired_old.contains(i)
+                && eligible_refactor_candidate(&item.symbol)
+        })
+        .collect();
+    let remaining_new: Vec<_> = new
+        .iter()
+        .enumerate()
+        .filter(|(i, item)| {
+            !excluded_new.contains(i)
+                && !paired_new.contains(i)
+                && eligible_refactor_candidate(&item.symbol)
+        })
+        .collect();
+    let refactor_stage_skipped = !remaining_old.is_empty()
+        && !remaining_new.is_empty()
+        && (remaining_old.len() > MAX_REFACTOR_CANDIDATES
+            || remaining_new.len() > MAX_REFACTOR_CANDIDATES);
+    if !refactor_stage_skipped {
+        let mut proposals: Vec<(usize, usize, u16)> = Vec::new();
+        for &(i, a) in &remaining_old {
+            let mut candidates = Vec::new();
+            for &(j, b) in &remaining_new {
+                if a.path == b.path
+                    || a.language != b.language
+                    || a.symbol.kind != b.symbol.kind
+                    || (a.symbol.name == b.symbol.name && a.symbol.signature == b.symbol.signature)
+                {
+                    continue;
+                }
+                let score = body_similarity(&a.symbol.body, &b.symbol.body);
+                if score >= 950 {
+                    candidates.push((j, score));
+                }
+            }
+            // Any ambiguity on the before side means no claim.
+            if candidates.len() == 1 {
+                proposals.push((i, candidates[0].0, candidates[0].1));
+            }
+        }
+        let mut new_counts = BTreeMap::<usize, usize>::new();
+        for &(_, j, _) in &proposals {
+            *new_counts.entry(j).or_default() += 1;
+        }
+        for (i, j, score) in proposals {
+            if new_counts[&j] != 1 {
+                continue;
+            }
+            let a = &old[i];
+            let b = &new[j];
+            // Must also be the *only* strong contender for the new declaration.
+            let reverse_candidates = remaining_old
+                .iter()
+                .filter(|(_, candidate)| {
+                    candidate.path != b.path
+                        && candidate.language == b.language
+                        && candidate.symbol.kind == b.symbol.kind
+                        && candidate.symbol.name != b.symbol.name
+                        && candidate.symbol.signature != b.symbol.signature
+                        && body_similarity(&candidate.symbol.body, &b.symbol.body) >= 950
+                })
+                .count();
+            if reverse_candidates != 1 {
+                continue;
+            }
+            moves.push(CrossFileMove {
+                symbol_kind: a.symbol.kind.clone(),
+                symbol_name: b.symbol.name.clone(),
+                before_name: a.symbol.name.clone(),
+                after_name: b.symbol.name.clone(),
+                signature_changed: a.symbol.signature != b.symbol.signature,
+                renamed: a.symbol.name != b.symbol.name,
+                before_path: a.path.clone(),
+                after_path: b.path.clone(),
+                before_start: a.symbol.start,
+                before_end: a.symbol.end,
+                after_start: b.symbol.start,
+                after_end: b.symbol.end,
+                content_changed: true,
+                similarity_permille: score,
+            });
+        }
     }
 
     // A moved class contains unchanged method declarations; report the outer
@@ -442,6 +560,7 @@ pub fn compare_folders(before: &Path, after: &Path) -> io::Result<CrossFileRepor
         moves: filtered,
         analyzed_files,
         skipped_files,
+        refactor_stage_skipped,
     })
 }
 
@@ -465,6 +584,156 @@ mod tests {
     }
     fn cleanup(a: &Path) {
         fs::remove_dir_all(a.parent().unwrap()).unwrap();
+    }
+
+    const LONG_BODY: &str = "{ let offset = 10; let doubled = input * 2; let total = doubled + offset; println!(\"answer: {}\", total); let result = total + 42; println!(\"result: {}\", result); result }";
+
+    #[test]
+    fn renamed_and_signature_changed_rust_function_is_only_candidate() {
+        let (a, b) = directories();
+        fs::write(
+            a.join("legacy.rs"),
+            format!("fn calculate(input: i32) -> i32 {}\n", LONG_BODY),
+        )
+        .unwrap();
+        fs::write(
+            b.join("new.rs"),
+            format!("fn sum_value(input: i64) -> i64 {}\n", LONG_BODY),
+        )
+        .unwrap();
+        let result = compare_folders(&a, &b).unwrap();
+        assert_eq!(result.moves.len(), 1);
+        let m = &result.moves[0];
+        assert!(m.content_changed && m.renamed && m.signature_changed);
+        assert_eq!(m.before_name, "calculate");
+        assert_eq!(m.after_name, "sum_value");
+        assert_eq!(m.symbol_name, "sum_value");
+        assert_eq!(m.similarity_permille, 1000);
+        cleanup(&a);
+    }
+
+    #[test]
+    fn renamed_signature_and_edited_body_is_candidate_only_if_highly_similar() {
+        let (a, b) = directories();
+        fs::write(
+            a.join("old.rs"),
+            format!("fn calculate(input: i32) -> i32 {}\n", LONG_BODY),
+        )
+        .unwrap();
+        let updated = LONG_BODY.replace("offset = 10", "offset = 11");
+        fs::write(
+            b.join("new.rs"),
+            format!("fn new_calculation(input: i64) -> i64 {}\n", updated),
+        )
+        .unwrap();
+        let result = compare_folders(&a, &b).unwrap();
+        assert_eq!(result.moves.len(), 1);
+        assert!(
+            result.moves[0].content_changed
+                && result.moves[0].renamed
+                && result.moves[0].signature_changed
+                && result.moves[0].similarity_permille >= 950
+        );
+        cleanup(&a);
+    }
+
+    #[test]
+    fn ambiguous_renamed_duplicate_bodies_do_not_get_claimed() {
+        let (a, b) = directories();
+        fs::write(
+            a.join("one.rs"),
+            format!("fn original(x: i32) -> i32 {}", LONG_BODY),
+        )
+        .unwrap();
+        fs::write(
+            a.join("two.rs"),
+            format!("fn original2(x: i32) -> i32 {}", LONG_BODY),
+        )
+        .unwrap();
+        fs::write(
+            b.join("dest.rs"),
+            format!("fn replaced(x: i64) -> i64 {}", LONG_BODY),
+        )
+        .unwrap();
+        assert!(compare_folders(&a, &b).unwrap().moves.is_empty());
+        cleanup(&a);
+    }
+
+    #[test]
+    fn csharp_renamed_and_parameter_type_changed_method_is_candidate() {
+        let (a, b) = directories();
+        let body = "{ var offset = 10; var doubled = input * 2; var total = doubled + offset; System.Console.WriteLine(total); var output = total + 42; System.Console.WriteLine(output); return output; }";
+        fs::write(
+            a.join("Original.cs"),
+            format!("class Original {{ int Calculate(int input) {} }}", body),
+        )
+        .unwrap();
+        fs::write(
+            b.join("After.cs"),
+            format!("class After {{ long Sum(long input) {} }}", body),
+        )
+        .unwrap();
+        let report = compare_folders(&a, &b).unwrap();
+        assert_eq!(report.moves.len(), 1);
+        let m = &report.moves[0];
+        assert!(m.renamed && m.signature_changed && m.content_changed);
+        assert_eq!(m.before_name, "Calculate");
+        assert_eq!(m.after_name, "Sum");
+        cleanup(&a);
+    }
+
+    #[test]
+    fn competing_new_body_candidates_do_not_prove_refactor() {
+        let (a, b) = directories();
+        fs::write(
+            a.join("old.rs"),
+            format!("fn first(input: i32) -> i32 {}", LONG_BODY),
+        )
+        .unwrap();
+        fs::write(
+            b.join("new.rs"),
+            format!("fn second(input: i64) -> i64 {}", LONG_BODY),
+        )
+        .unwrap();
+        fs::write(
+            b.join("other.rs"),
+            format!("fn third(input: u64) -> u64 {}", LONG_BODY),
+        )
+        .unwrap();
+        let report = compare_folders(&a, &b).unwrap();
+        assert!(report.moves.is_empty());
+        cleanup(&a);
+    }
+
+    #[test]
+    fn too_many_refactor_candidates_skip_only_heuristic_stage() {
+        let (a, b) = directories();
+        for i in 0..258 {
+            fs::write(
+                a.join(format!("source_{i}.rs")),
+                format!("fn before_{i}(input: i32) -> i32 {}", LONG_BODY),
+            )
+            .unwrap();
+        }
+        fs::write(
+            b.join("destination.rs"),
+            format!("fn after(input: i64) -> i64 {}", LONG_BODY),
+        )
+        .unwrap();
+        let report = compare_folders(&a, &b).unwrap();
+        assert!(report.moves.is_empty());
+        assert!(report.refactor_stage_skipped);
+        assert_eq!(report.analyzed_files, 259);
+        cleanup(&a);
+    }
+
+    #[test]
+    fn tiny_identical_function_body_cannot_prove_simultaneous_refactor() {
+        let (a, b) = directories();
+        fs::write(a.join("old.rs"), "fn old(x: i32) -> i32 { x + 1 }").unwrap();
+        fs::write(b.join("new.rs"), "fn changed(x: i64) -> i64 { x + 1 }").unwrap();
+        assert!(compare_folders(&a, &b).unwrap().moves.is_empty());
+        cleanup(&a);
     }
 
     #[test]

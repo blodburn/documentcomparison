@@ -56,6 +56,21 @@ and bounded, timeout-protected raw subprocess output.
   Intermediate files are cleaned after analysis. A failure in AST analysis
   never discards the original Git file changes. This is not a full semantic
   call-graph or dependency lineage analysis.
+  For Rust and C# functions/methods moved across files with both their
+  names and signatures changed, an additional *candidate-only* matching
+  stage checks the Tree-sitter method bodies. Candidates require at least
+  20 body tokens and 12 distinct tokens, similarity at least 95% (lexical
+  multiset Dice), unique strong match on both sides, and a changed name
+  AND declaration signature. This is not proof of semantic identity;
+  changed method signatures alone without renaming are not inferred.
+  The UI renders old/new symbol names under the corresponding commit
+  and labels them "이름·서명 변경 후보(AST)". Chronological commits appear
+  in grouped sections separate from the endpoint comparison, with stable
+  event IDs and no change to the original file ledger.
+  Above 256 unmatched refactor candidates on either side, this expensive
+  heuristic alone is omitted (refactorStageSkipped is shown in UI); exact
+  file/AST and signature-preserving movement logic continue unchanged.
+
 
 ## Limits and safeguards
 

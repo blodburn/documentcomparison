@@ -50,7 +50,8 @@ public static class NativeCodeVersionComparer
         public uint AfterLength;
     }
 
-    public sealed record FolderChange(string Kind, string BeforePath, string AfterPath, string? EventId = null);
+    public sealed record FolderChange(string Kind, string BeforePath, string AfterPath,
+        string? EventId = null, string? Section = null);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int FolderDiffDelegate(
@@ -84,12 +85,15 @@ public static class NativeCodeVersionComparer
         string SymbolKind, string SymbolName,
         string BeforePath, string AfterPath,
         int BeforeStart, int BeforeEnd, int AfterStart, int AfterEnd,
-        bool ContentChanged = false, int SimilarityPermille = 1000);
+        bool ContentChanged = false, int SimilarityPermille = 1000,
+        string? BeforeName = null, string? AfterName = null,
+        bool Renamed = false, bool SignatureChanged = false);
 
     public sealed record CrossFileAstReport(
         IReadOnlyList<CrossFileMove> Moves,
         int AnalyzedFiles, int SkippedFiles,
-        bool Supported = true, string? Reason = null);
+        bool Supported = true, string? Reason = null,
+        bool RefactorStageSkipped = false);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int CrossFileAstDelegate(
@@ -312,10 +316,16 @@ public static class NativeCodeVersionComparer
                     move.AfterStart < 0 || move.AfterEnd <= move.AfterStart ||
                     move.SimilarityPermille is < 0 or > 1000 ||
                     (move.ContentChanged && move.SimilarityPermille < 880) ||
-                    (!move.ContentChanged && move.SimilarityPermille != 1000))
+                    (!move.ContentChanged && move.SimilarityPermille != 1000) ||
+                    (move.Renamed && (string.IsNullOrWhiteSpace(move.BeforeName) ||
+                        string.IsNullOrWhiteSpace(move.AfterName) ||
+                        move.BeforeName == move.AfterName)) ||
+                    ((move.Renamed || move.SignatureChanged) &&
+                        (!move.ContentChanged || move.SimilarityPermille < 950)))
                     throw new InvalidDataException("Rust 파일 간 AST 이동 정보가 올바르지 않습니다.");
             }
-            return new CrossFileAstReport(report.Moves, report.AnalyzedFiles, report.SkippedFiles);
+            return new CrossFileAstReport(report.Moves, report.AnalyzedFiles, report.SkippedFiles,
+                RefactorStageSkipped: report.RefactorStageSkipped);
         }
         finally
         {
@@ -324,7 +334,8 @@ public static class NativeCodeVersionComparer
     }
 
     private sealed record CrossFileAstWire(
-        List<CrossFileMove> Moves, int AnalyzedFiles, int SkippedFiles);
+        List<CrossFileMove> Moves, int AnalyzedFiles, int SkippedFiles,
+        bool RefactorStageSkipped = false);
 
     private static bool IsSafeRelativePath(string? path) =>
         !string.IsNullOrWhiteSpace(path) &&

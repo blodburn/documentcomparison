@@ -2765,8 +2765,8 @@ if(NativeCodeVersionComparer.IsAvailable)
     var timelineReview=GitLineageReviewMapper.WithTimeline(allHistory,timeline);
     Check(timelineReview.Count==allHistory.Changes.Count+1 &&
           timelineReview[^1].Kind=="커밋별 선언 이동(AST)" &&
-          timelineReview[^1].BeforePath.Contains(symbolBase[..12]) &&
-          timelineReview[^1].AfterPath.Contains(symbolMiddle[..12]) &&
+          timelineReview[^1].Section?.Contains(symbolBase[..12])==true &&
+          timelineReview[^1].Section?.Contains(symbolMiddle[..12])==true &&
           !string.IsNullOrWhiteSpace(timelineReview[^1].EventId),
           "Git timeline review must identify the precise adjacent commit edge");
     var allAst=GitAstLineageComparer.Compare(allHistory);
@@ -2813,5 +2813,51 @@ if(NativeCodeVersionComparer.IsAvailable)
           "malformed committed source must be counted as skipped while Git file evidence stays intact");
 }
 Console.WriteLine("PASS IMMUTABLE GIT COMMIT AST SYMBOL MOVE AND MODIFIED MOVE");
+
+
+// 171. Rename+signature change across committed files is always a candidate,
+// never an asserted exact identity; grouped chronological section is stable.
+var refactorRoot=Path.Combine(dir,"git-refactor-lineage");
+Directory.CreateDirectory(refactorRoot);
+GitExec(refactorRoot,"init","-q");
+GitExec(refactorRoot,"config","user.name","Regression Tester");
+GitExec(refactorRoot,"config","user.email","test@example.invalid");
+var bodyRefactor="{ let offset = 10; let doubled = input * 2; let total = doubled + offset; println!(\"answer: {}\", total); let result = total + 42; println!(\"result: {}\", result); result }";
+File.WriteAllText(Path.Combine(refactorRoot,"original.rs"),
+    "fn calculate(input: i32) -> i32 "+bodyRefactor);
+GitExec(refactorRoot,"add",".");
+GitExec(refactorRoot,"commit","-q","-m","before refactor");
+var refactorBefore=GitExec(refactorRoot,"rev-parse","HEAD");
+File.Delete(Path.Combine(refactorRoot,"original.rs"));
+File.WriteAllText(Path.Combine(refactorRoot,"refactored.rs"),
+    "fn sum_value(input: i64) -> i64 "+bodyRefactor.Replace("offset = 10","offset = 11"));
+GitExec(refactorRoot,"add","-A");
+GitExec(refactorRoot,"commit","-q","-m","rename signature and move");
+var refactorHistory=GitCommitLineageComparer.Compare(refactorRoot,refactorBefore,"HEAD");
+if(NativeCodeVersionComparer.IsAvailable)
+{
+    var proposal=GitAstLineageComparer.Compare(refactorHistory);
+    Check(proposal.Supported && proposal.Moves.Count==1 &&
+          proposal.Moves[0] is
+          {Renamed:true,SignatureChanged:true,ContentChanged:true,
+           BeforeName:"calculate",AfterName:"sum_value"} &&
+          proposal.Moves[0].SimilarityPermille>=950,
+          "Native Rust Tree-sitter must report renamed+signature-changed move only as high-confidence candidate");
+    var lineageView=GitLineageReviewMapper.WithAst(refactorHistory,proposal);
+    Check(lineageView[^1].Kind=="Git 이름·서명 변경 후보(AST)" &&
+          lineageView[^1].BeforePath.Contains("calculate") &&
+          lineageView[^1].AfterPath.Contains("sum_value") &&
+          lineageView[^1].Section=="양끝 커밋의 구조 비교",
+          "Git refactor candidate must include both names and grouped endpoint provenance");
+    var series=GitAstHistoryComparer.Compare(refactorHistory);
+    var timelineView=GitLineageReviewMapper.WithTimeline(refactorHistory,series);
+    Check(series.Supported && series.Steps.Count==1 &&
+          timelineView[^1].Kind=="커밋별 이름·서명 변경 후보(AST)" &&
+          timelineView[^1].Section?.Contains(refactorBefore[..12])==true &&
+          timelineView[^1].Section?.Contains(series.Steps[0].AfterCommit[..12])==true &&
+          !string.IsNullOrWhiteSpace(timelineView[^1].EventId),
+          "Git timeline must retain commit-by-commit identity for refactor candidates");
+}
+Console.WriteLine("PASS GIT AST RENAMED SIGNATURE MOVE AND COMMIT TIMELINE SECTIONS");
 
 Console.WriteLine("ALL REGRESSIONS PASSED");

@@ -28,14 +28,16 @@ public static class GitLineageReviewMapper
                     : "Git step Tree-sitter identical unique declaration";
                 var evt = UnifiedChangeEvents.Create(UnifiedChangeKind.Move, before, after,
                     "커밋별 선언 이동", evidence, i);
-                var kind = move.ContentChanged
-                    ? "커밋별 이동·수정 후보(AST)" : "커밋별 선언 이동(AST)";
+                var kind = move.Renamed && move.SignatureChanged
+                    ? "커밋별 이름·서명 변경 후보(AST)"
+                    : move.ContentChanged ? "커밋별 이동·수정 후보(AST)" : "커밋별 선언 이동(AST)";
                 combined.Add(new NativeCodeVersionComparer.FolderChange(
                     kind,
-                    $"{step.BeforeCommit[..12]} · {move.BeforePath} · {move.SymbolKind} {move.SymbolName}",
-                    $"{step.AfterCommit[..12]} · {move.AfterPath}" +
+                    $"{move.BeforePath} · {move.SymbolKind} {move.BeforeName ?? move.SymbolName}",
+                    $"{move.AfterPath} · {move.SymbolKind} {move.AfterName ?? move.SymbolName}" +
                         (move.ContentChanged ? $" · 유사도 {move.SimilarityPermille / 10.0:F1}% (후보)" : ""),
-                    evt.EventId));
+                    evt.EventId,
+                    $"커밋 {step.BeforeCommit[..12]} → {step.AfterCommit[..12]}"));
             }
         }
         return combined;
@@ -56,8 +58,9 @@ public static class GitLineageReviewMapper
             var after = new UnifiedChangeLocation(lineage.AfterCommit,
                 move.AfterPath, UnifiedLocationKind.CodeNode,
                 $"{move.SymbolKind}:{move.SymbolName}", move.AfterStart, move.AfterEnd);
-            var kind = move.ContentChanged
-                ? "Git 함수 이동·수정 후보(AST)" : "Git 선언 이동(AST)";
+            var kind = move.Renamed && move.SignatureChanged
+                ? "Git 이름·서명 변경 후보(AST)"
+                : move.ContentChanged ? "Git 함수 이동·수정 후보(AST)" : "Git 선언 이동(AST)";
             var evidence = move.ContentChanged
                 ? $"Tree-sitter Git blob lexical Dice {move.SimilarityPermille}/1000; not proven"
                 : "Tree-sitter unique identical declaration from immutable Git blobs";
@@ -65,10 +68,10 @@ public static class GitLineageReviewMapper
                 kind, evidence, i);
             changes.Add(new NativeCodeVersionComparer.FolderChange(
                 kind,
-                $"{move.BeforePath} · {move.SymbolKind} {move.SymbolName} · byte {move.BeforeStart}~{move.BeforeEnd}",
-                $"{move.AfterPath} · {move.SymbolKind} {move.SymbolName} · byte {move.AfterStart}~{move.AfterEnd}" +
+                $"{move.BeforePath} · {move.SymbolKind} {move.BeforeName ?? move.SymbolName} · byte {move.BeforeStart}~{move.BeforeEnd}",
+                $"{move.AfterPath} · {move.SymbolKind} {move.AfterName ?? move.SymbolName} · byte {move.AfterStart}~{move.AfterEnd}" +
                 (move.ContentChanged ? $" · 유사도 {move.SimilarityPermille / 10.0:F1}% (후보)" : ""),
-                evt.EventId));
+                evt.EventId, "양끝 커밋의 구조 비교"));
         }
         return changes;
     }
@@ -105,7 +108,7 @@ public static class GitLineageReviewMapper
                 change.Kind, change.BeforePath,
                 change.AfterPath + (change.Kind == "이름 변경 후보(Git)"
                     ? $" · Git 유사도 {change.SimilarityPercent}% (후보)" : ""),
-                evt.EventId));
+                evt.EventId, "양끝 커밋의 파일 변경"));
         }
         return results;
     }

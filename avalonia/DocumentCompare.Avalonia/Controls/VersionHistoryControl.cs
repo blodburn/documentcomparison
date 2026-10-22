@@ -213,12 +213,14 @@ public sealed class VersionHistoryControl : UserControl
                 "정확한 파일 이동: 동일 blob · 선언 이동: AST · 수정된 이동: 후보" +
                 (compared.ast.Supported
                     ? $" · AST {compared.ast.Moves.Count}건, 분석 {compared.ast.AnalyzedFiles}파일" +
-                        (compared.ast.SkippedFiles == 0 ? "" : $", 제외 {compared.ast.SkippedFiles}파일")
+                        (compared.ast.SkippedFiles == 0 ? "" : $", 제외 {compared.ast.SkippedFiles}파일") +
+                        (compared.ast.RefactorStageSkipped ? " · 이름·서명 후보 비교 생략(제한 초과)" : "")
                     : $" · AST 제외({compared.ast.Reason})") +
                 (compared.timeline.Supported
                     ? $" · 커밋 단계 {compared.timeline.Steps.Count}개" +
                       (compared.timeline.Steps.Any(step => !step.Ast.Supported ||
-                          step.Ast.SkippedFiles > 0) ? " (일부 AST 미분석)" : "")
+                          step.Ast.SkippedFiles > 0 || step.Ast.RefactorStageSkipped)
+                          ? " (일부 AST 미분석)" : "")
                     : $" · 커밋별 추적 제외({compared.timeline.Reason})");
             _changeSummary.Text = $"전체 {_folderChanges.Count:N0}건 · " +
                 string.Join(" · ", _folderChanges.GroupBy(x => x.Kind)
@@ -351,7 +353,9 @@ public sealed class VersionHistoryControl : UserControl
                     ? $" · 파일 간 선언 이동 {compared.ast.Moves.Count(m => !m.ContentChanged):N0}건" +
                       $" · 이동·수정 후보 {compared.ast.Moves.Count(m => m.ContentChanged):N0}건" +
                       (compared.ast.SkippedFiles != 0
-                          ? $" · AST 일부 미분석 {compared.ast.SkippedFiles:N0}파일" : "")
+                          ? $" · AST 일부 미분석 {compared.ast.SkippedFiles:N0}파일" : "") +
+                      (compared.ast.RefactorStageSkipped
+                          ? " · 이름·서명 후보 비교 생략(제한 초과)" : "")
                     : $" · AST 미완료: {compared.ast.Reason}") +
                 " · 현재 화면에만 표시됩니다.";
         }
@@ -373,11 +377,38 @@ public sealed class VersionHistoryControl : UserControl
         for (var i = _folderRendered; i < end; i++)
         {
             var entry = _folderChanges[i];
+            // A chronological section heading makes intermediate commit
+            // movements distinguishable from endpoint-only inference.
+            if (!string.IsNullOrEmpty(entry.Section) &&
+                (i == 0 || _folderChanges[i - 1].Section != entry.Section))
+            {
+                var headingText = new TextBlock
+                {
+                    Text = entry.Section,
+                    FontWeight = FontWeight.SemiBold,
+                    FontSize = 13,
+                    Margin = new Thickness(0, 10, 0, 4)
+                };
+                _preview.Children.Add(new Border
+                {
+                    Background = new SolidColorBrush(Color.Parse("#E7EDF5")),
+                    Padding = new Thickness(10, 5),
+                    Child = headingText
+                });
+                _changes.Children.Add(new TextBlock
+                {
+                    Text = entry.Section, FontWeight = FontWeight.SemiBold,
+                    FontSize = 12, Margin = new Thickness(2, 8, 0, 2),
+                    TextWrapping = TextWrapping.Wrap
+                });
+            }
             var marker = i + 1;
             var summary = entry.Kind is "이동/이름 변경" or "선언 이동(AST)" or "이동·수정 후보(AST)"
                 or "정확한 파일 이동(Git)" or "이름 변경 후보(Git)"
                 or "Git 선언 이동(AST)" or "Git 함수 이동·수정 후보(AST)"
                 or "커밋별 선언 이동(AST)" or "커밋별 이동·수정 후보(AST)"
+                or "이름·서명 변경 후보(AST)" or "Git 이름·서명 변경 후보(AST)"
+                or "커밋별 이름·서명 변경 후보(AST)"
                 ? $"{entry.BeforePath} → {entry.AfterPath}"
                 : entry.Kind == "삭제" ? entry.BeforePath : entry.AfterPath;
             var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };

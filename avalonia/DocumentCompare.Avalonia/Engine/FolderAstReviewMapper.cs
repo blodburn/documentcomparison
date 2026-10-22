@@ -27,16 +27,18 @@ public static class FolderAstReviewMapper
                 "folder-after", move.AfterPath, UnifiedLocationKind.CodeNode,
                 $"{move.SymbolKind}:{move.SymbolName}", move.AfterStart, move.AfterEnd);
             var evidence = move.ContentChanged
-                ? $"tree-sitter matching signature + lexical Dice {move.SimilarityPermille}/1000 (candidate)"
+                ? $"tree-sitter lexical Dice {move.SimilarityPermille}/1000 (candidate)"
                 : "tree-sitter exact full declaration unique match";
             var evt = UnifiedChangeEvents.Create(
                 UnifiedChangeKind.Move, before, after,
-                move.ContentChanged ? "파일 간 선언 이동·수정 후보" : "파일 간 선언 이동",
+                move.Renamed && move.SignatureChanged ? "이름·시그니처 변경 이동 후보" :
+                    move.ContentChanged ? "파일 간 선언 이동·수정 후보" : "파일 간 선언 이동",
                 evidence, i, move.ContentChanged ? null : 1.0);
             all.Add(new NativeCodeVersionComparer.FolderChange(
-                move.ContentChanged ? "이동·수정 후보(AST)" : "선언 이동(AST)",
-                $"{move.BeforePath} · {move.SymbolKind} {move.SymbolName} · byte {move.BeforeStart}~{move.BeforeEnd}",
-                $"{move.AfterPath} · {move.SymbolKind} {move.SymbolName} · byte {move.AfterStart}~{move.AfterEnd}" +
+                move.Renamed && move.SignatureChanged ? "이름·서명 변경 후보(AST)" :
+                    move.ContentChanged ? "이동·수정 후보(AST)" : "선언 이동(AST)",
+                $"{move.BeforePath} · {move.SymbolKind} {move.BeforeName ?? move.SymbolName} · byte {move.BeforeStart}~{move.BeforeEnd}",
+                $"{move.AfterPath} · {move.SymbolKind} {move.AfterName ?? move.SymbolName} · byte {move.AfterStart}~{move.AfterEnd}" +
                 (move.ContentChanged ? $" · 어휘 유사도 {move.SimilarityPermille / 10.0:F1}%" : ""),
                 evt.EventId));
         }
