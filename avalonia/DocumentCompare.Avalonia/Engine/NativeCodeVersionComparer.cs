@@ -118,6 +118,12 @@ public static class NativeCodeVersionComparer
     private delegate int DocumentHierarchyDelegate(
         [In] byte[] input, nuint length, out NativeAstResult result);
 
+    public sealed record ExactDocumentPartPair(int Old, int New);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int ExactDocumentPartsDelegate(
+        [In] byte[] input, nuint length, out NativeAstResult result);
+
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int DocumentPartsDelegate(
         [In] byte[] source, nuint length, out NativeAstResult result);
@@ -153,6 +159,7 @@ public static class NativeCodeVersionComparer
         public readonly DocumentWhitespaceDiffDelegate? DocumentWhitespaceDiff;
         public readonly DocumentPartsDelegate? DocumentParts;
         public readonly DocumentHierarchyDelegate? DocumentHierarchy;
+        public readonly ExactDocumentPartsDelegate? ExactDocumentParts;
 
         public Exports(IntPtr handle)
         {
@@ -189,6 +196,10 @@ public static class NativeCodeVersionComparer
                 "dc_document_part_hierarchy_json_utf8", out var hierarchyExport))
                 DocumentHierarchy = Marshal.GetDelegateForFunctionPointer<DocumentHierarchyDelegate>(
                     hierarchyExport);
+            if (NativeLibrary.TryGetExport(handle,
+                "dc_match_exact_document_part_keys_utf8", out var exactExport))
+                ExactDocumentParts = Marshal.GetDelegateForFunctionPointer<ExactDocumentPartsDelegate>(
+                    exactExport);
         }
     }
 
@@ -407,6 +418,63 @@ public static class NativeCodeVersionComparer
     }
 
     private sealed record DocumentHierarchyWire(List<DocumentHierarchyNode> Nodes);
+
+    /// <summary>
+    /// C# prepares canonical LineageNormalize keys, then Rust applies the
+    /// exact-match greedy nearest-index stage of MatchParts. The caller
+    /// must independently compare the results with C# before accepting.
+    /// </summary>
+    public static IReadOnlyList<ExactDocumentPartPair>? MatchExactDocumentParts(
+        IReadOnlyList<string> oldKeys, IReadOnlyList<string> newKeys)
+    {
+        ArgumentNullException.ThrowIfNull(oldKeys);
+        ArgumentNullException.ThrowIfNull(newKeys);
+        var exports = Native.Value;
+        if (exports?.ExactDocumentParts is null ||
+            oldKeys.Count > 256 || newKeys.Count > 256 ||
+            oldKeys.Any(x => x is null || x.Length > 16384) ||
+            newKeys.Any(x => x is null || x.Length > 16384))
+            return null;
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(new { oldKeys, newKeys });
+        if (bytes.Length > 512 * 1024) return null;
+        var status = exports.ExactDocumentParts(bytes, (nuint)bytes.Length, out var output);
+        try
+        {
+            if (status is 2 or 3) return null;
+            if (status != 0)
+                throw new InvalidDataException($"Rust 항·호 정확한 내용 대응 실패: {status}");
+            if (output.Data == IntPtr.Zero || output.Length == 0 ||
+                output.Length > 256UL * 1024)
+                throw new InvalidDataException("Rust 항·호 대응 결과 크기 오류");
+            var raw = new byte[checked((int)output.Length)];
+            Marshal.Copy(output.Data, raw, 0, raw.Length);
+            var parsed = JsonSerializer.Deserialize<ExactDocumentPartsWire>(raw,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            if (parsed?.Pairs is null || parsed.Pairs.Count > Math.Min(oldKeys.Count, newKeys.Count))
+                throw new InvalidDataException("Rust 항·호 대응 개수 오류");
+            var lastOld = -1;
+            var usedNew = new HashSet<int>();
+            foreach (var pair in parsed.Pairs)
+            {
+                if (pair.Old <= lastOld || pair.Old < 0 || pair.Old >= oldKeys.Count ||
+                    pair.New < 0 || pair.New >= newKeys.Count ||
+                    !usedNew.Add(pair.New) ||
+                    string.IsNullOrEmpty(oldKeys[pair.Old]) ||
+                    !string.Equals(oldKeys[pair.Old], newKeys[pair.New], StringComparison.Ordinal))
+                    throw new InvalidDataException("Rust 항·호 대응 인덱스가 올바르지 않습니다.");
+                lastOld = pair.Old;
+            }
+            return parsed.Pairs;
+        }
+        finally
+        {
+            exports.AstFree(ref output);
+        }
+    }
+
+    private sealed record ExactDocumentPartsWire(List<ExactDocumentPartPair> Pairs);
+
+
 
 
 

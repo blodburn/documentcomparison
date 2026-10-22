@@ -3199,4 +3199,124 @@ if(NativeCodeVersionComparer.IsAvailable)
           "live hierarchy path must only accept exactly equivalent Rust nodes");
     Console.WriteLine($"PASS RUST DOCUMENT HIERARCHY CSHARP PARITY {hierarchyCases.Count}/{hierarchyCases.Count}");
 }
+
+// 175. MatchParts first pass: exact normalized body pairing, including
+// insertion-before-renumbering and nearest unused duplicate candidate.
+if (NativeCodeVersionComparer.IsAvailable)
+{
+    var owner=typeof(NativeComparisonEngine);
+    var reference=owner.GetMethod("MatchExactPartKeysCSharp",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    var liveStage=owner.GetMethod("MatchExactPartKeys",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    var parseOriginal=owner.GetMethod("ParsePartsCSharp",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    var matchWhole=owner.GetMethod("MatchParts",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    var normalize=owner.GetMethod("LineageNormalize",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    var countMatch=owner.GetProperty("ExactPartsRustParityMatches",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    var countMismatch=owner.GetProperty("ExactPartsRustParityMismatches",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    long M()=>(long)countMatch.GetValue(null)!;
+    long E()=>(long)countMismatch.GetValue(null)!;
+    var initialMatch=M();
+    var initialMismatch=E();
+    List<NativeCodeVersionComparer.ExactDocumentPartPair> Ref(string[] oldKeys,string[] newKeys,
+        System.Reflection.MethodInfo method) =>
+        ((System.Collections.IEnumerable)method.Invoke(null,new object[]{oldKeys,newKeys})!)
+        .Cast<NativeCodeVersionComparer.ExactDocumentPartPair>().ToList();
+
+    var handCases=new List<(string[],string[])>
+    {
+        (new[]{"가","나","다"},new[]{"가","새항목","나","다"}),
+        (new[]{"공통","공통","공통"},new[]{"공통","교체","공통","공통"}),
+        (new[]{"",""},new[]{"",""}),
+        (new[]{"한글😀","동의없이",""},new[]{"","동의없이","한글😀"}),
+        (new[]{"same","same",""},new[]{"same","same"}),
+        (new[]{"a","b","c"},new[]{"c","b","a"}),
+        (Array.Empty<string>(),Array.Empty<string>()),
+        (new[]{"abc"},Array.Empty<string>()),
+        (Array.Empty<string>(),new[]{"abc"}),
+        (new[]{"same","other","same","other"},
+            new[]{"other","same","other","same"})
+    };
+    // Exact C# stage tie/greedy contracts are fixed in the fixture, not
+    // inferred from coincidental similarity of the final heuristic matcher.
+    var exactMovedPairs = new[]{
+        new NativeCodeVersionComparer.ExactDocumentPartPair(0,0),
+        new NativeCodeVersionComparer.ExactDocumentPartPair(1,2),
+        new NativeCodeVersionComparer.ExactDocumentPartPair(2,3)
+    };
+    Check(Ref(handCases[0].Item1,handCases[0].Item2,reference).SequenceEqual(exactMovedPairs),
+        "C# Golden contract: inserted new 2. moves old 2. and 3. to 3. and 4.");
+    using (var frozen=System.Text.Json.JsonDocument.Parse(File.ReadAllText(
+        Path.Combine(AppContext.BaseDirectory,"Fixtures","document_match_exact_golden.json"))))
+    {
+        foreach (var fixture in frozen.RootElement.EnumerateArray())
+        {
+            var before=fixture.GetProperty("before").EnumerateArray()
+                .Select(x=>x.GetString()!).ToArray();
+            var after=fixture.GetProperty("after").EnumerateArray()
+                .Select(x=>x.GetString()!).ToArray();
+            var expected=fixture.GetProperty("pairs").EnumerateArray()
+                .Select(x=>new NativeCodeVersionComparer.ExactDocumentPartPair(
+                    x.GetProperty("old").GetInt32(),x.GetProperty("new").GetInt32())).ToArray();
+            Check(Ref(before,after,reference).SequenceEqual(expected),
+                "Golden fixture vs original C# exact MatchParts stage drift");
+            Check(expected.SequenceEqual(
+                    NativeCodeVersionComparer.MatchExactDocumentParts(before,after)
+                    ?? Array.Empty<NativeCodeVersionComparer.ExactDocumentPartPair>()),
+                "Golden fixture vs Rust exact MatchParts stage drift");
+        }
+    }
+    var exactRandom=new Random(20261023);
+    string[] words={"","동의없이","동의 없이","personaldata","한글","😀","☃",
+        "조항A","서문","본문","배상책임","같은본문","Aa","aA","Ａ",
+        "abc","x","y","123","§","<문자>"};
+    for(var turn=0;turn<700;turn++)
+    {
+        var before=Enumerable.Range(0,exactRandom.Next(0,42))
+            .Select(_=>words[exactRandom.Next(words.Length)]).ToArray();
+        var after=Enumerable.Range(0,exactRandom.Next(0,42))
+            .Select(_=>words[exactRandom.Next(words.Length)]).ToArray();
+        handCases.Add((before,after));
+    }
+    foreach(var (before,after) in handCases)
+    {
+        var expected=Ref(before,after,reference);
+        var actual=NativeCodeVersionComparer.MatchExactDocumentParts(before,after);
+        Check(actual is not null && expected.SequenceEqual(actual),
+            "Rust and C# MatchParts exact stage changed index/duplicate matching: "+
+            System.Text.Json.JsonSerializer.Serialize(new{before,after,expected,actual}));
+        Check(Ref(before,after,liveStage).SequenceEqual(expected),
+            "live MatchParts exact stage should use only fully matched Rust output");
+    }
+    Check(M()-initialMatch==handCases.Count && E()==initialMismatch,
+        "live exact-stage match counter must cover all direct cases without fallback");
+
+    var tooMany=Enumerable.Repeat("a",257).ToArray();
+    Check(NativeCodeVersionComparer.MatchExactDocumentParts(tooMany,tooMany) is null &&
+          Ref(tooMany,tooMany,liveStage).SequenceEqual(Ref(tooMany,tooMany,reference)),
+          "oversized document item list must retain C# fallback");
+
+    var baseline=M();
+    var oldText="① 개인정보 수집 목적 안내\n② 개인정보 이용 범위 안내\n③ 개인정보 파기 기준 안내";
+    var newText="① 개인정보 수집 목적 안내\n② 신규 개인정보 보관 기준 안내\n③ 개인정보 이용 범위 안내\n④ 개인정보 파기 기준 안내";
+    var oldParts=parseOriginal.Invoke(null,new object[]{oldText})!;
+    var newParts=parseOriginal.Invoke(null,new object[]{newText})!;
+    var oldNormalized=((System.Collections.IEnumerable)oldParts).Cast<object>()
+        .Select(x=>(string)normalize.Invoke(null,new object[]{
+            (string)x.GetType().GetProperty("Core")!.GetValue(x)!})!).ToArray();
+    var newNormalized=((System.Collections.IEnumerable)newParts).Cast<object>()
+        .Select(x=>(string)normalize.Invoke(null,new object[]{
+            (string)x.GetType().GetProperty("Core")!.GetValue(x)!})!).ToArray();
+    Check(Ref(oldNormalized,newNormalized,reference).SequenceEqual(exactMovedPairs),
+        "real legal items must match old ②→new ③, old ③→new ④ before heuristic fallback");
+    _=matchWhole.Invoke(null,new[]{oldParts,newParts});
+    Check(M()>baseline && E()==initialMismatch,
+        "real MatchParts must use parity-gated Rust exact-body stage");
+    Console.WriteLine($"PASS RUST MATCHPARTS EXACT BODY CSHARP PARITY {handCases.Count}/{handCases.Count}");
+}
 Console.WriteLine("ALL REGRESSIONS PASSED");

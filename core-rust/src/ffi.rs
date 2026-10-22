@@ -982,3 +982,74 @@ pub unsafe extern "C" fn dc_document_part_hierarchy_json_utf8(
         Err(_) => 5,
     }
 }
+
+/// The exact-normalized-content first pass of the C# MatchParts matcher.
+/// JSON Input {"oldKeys":[...],"newKeys":[...]} contains keys normalized
+/// by the original C# engine, not untrusted claimed raw legal equivalence.
+/// The returned Rust-owned JSON uses dc_free_ast_json_result.
+///
+/// # Safety
+/// input points to readable bytes for length, and output is writable and
+/// exclusively owned by the caller for the duration of this function.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dc_match_exact_document_part_keys_utf8(
+    input: *const u8,
+    length: usize,
+    output: *mut DcAstJsonResult,
+) -> i32 {
+    if output.is_null() {
+        return 2;
+    }
+    // SAFETY: guaranteed writable pointer under the contract above.
+    unsafe { ptr::write(output, DcAstJsonResult::empty()) };
+    if length > 512 * 1024 || (length > 0 && input.is_null()) {
+        return 2;
+    }
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let bytes = if length == 0 {
+            &[][..]
+        } else {
+            // SAFETY: guaranteed readable pointer under the contract above.
+            unsafe { slice::from_raw_parts(input, length) }
+        };
+        let payload: crate::doc_match_exact::Input =
+            serde_json::from_slice(bytes).map_err(|_| 1)?;
+        let pairs =
+            crate::doc_match_exact::pair(&payload.old_keys, &payload.new_keys).map_err(|_| 3)?;
+        serde_json::to_vec(&pairs).map_err(|_| 4)
+    }));
+    match result {
+        Ok(Ok(json)) => {
+            let bytes = json.into_boxed_slice();
+            let length = bytes.len();
+            let data = Box::into_raw(bytes) as *mut u8;
+            // SAFETY: guaranteed writable pointer under the contract above.
+            unsafe { ptr::write(output, DcAstJsonResult { data, length }) };
+            0
+        }
+        Ok(Err(code)) => code,
+        Err(_) => 5,
+    }
+}
+
+#[cfg(test)]
+mod exact_document_part_ffi_tests {
+    use super::*;
+    #[test]
+    fn exact_part_ffi_and_free() {
+        let input = br#"{"oldKeys":["first","second"],"newKeys":["extra","first","second"]}"#;
+        let mut output = DcAstJsonResult::empty();
+        assert_eq!(
+            unsafe {
+                dc_match_exact_document_part_keys_utf8(input.as_ptr(), input.len(), &mut output)
+            },
+            0
+        );
+        let raw = unsafe { slice::from_raw_parts(output.data, output.length) };
+        let result: serde_json::Value = serde_json::from_slice(raw).unwrap();
+        assert_eq!(result["pairs"][0]["old"], 0);
+        assert_eq!(result["pairs"][0]["new"], 1);
+        unsafe { dc_free_ast_json_result(&mut output) };
+        assert!(output.data.is_null());
+    }
+}

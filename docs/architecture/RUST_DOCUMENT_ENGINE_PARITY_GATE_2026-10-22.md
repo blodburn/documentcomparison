@@ -26,7 +26,8 @@ must not be inferred merely from matching current C# behavior.
 | Article/section/paragraph lineage | C# ParseLegalUnits, BuildRows etc. | Not ported | No replacement |
 | 항/호 label and boundary segmentation | C# ParsePartsCSharp | Rust doc_parts | 31 committed Golden cases plus 455 direct C#/Rust cases; live gated |
 | Item hierarchy and ordinal/parent relationships | C# BuildPartHierarchyCSharp, PartOrdinalAt | Rust hierarchy | 631 direct cases; live guarded |
-| Item old/new matching and movement | C# MatchParts, CollapsedLevelParentsEquivalent etc. | Not ported | No replacement |
+| Exact normalized item pairing (first pass) | C# MatchExactPartKeysCSharp | Rust doc_match_exact | 9 frozen Golden + 710 direct C#/Rust; live guarded |
+| Item fuzzy matching and movement | C# remaining MatchParts, CollapsedLevelParentsEquivalent etc. | Not ported | No replacement |
 | DOCX table cell/merge/row matching | C# structured reader and matcher | Not ported | No replacement |
 | Word formatting and tracked revisions | C# NativeOfficeExporter | Not ported | No replacement |
 | Excel A/B/C and change narrative | C# exporter | Not ported | No replacement |
@@ -78,8 +79,9 @@ exports, A/B/C).
 4. Measure performance (five runs, identical inputs) before claiming Rust
    improves runtime or memory; maintain C# fallback until justified.
 
-STATUS: three narrow document rules (whitespace changes, structural part
-segmentation, and parent/child hierarchy) are ported with guarded live execution.
+STATUS: four narrow document rules (whitespace changes, structural part
+segmentation, parent/child hierarchy, and exact-body pairing) are ported
+with guarded live execution.
 This is NOT a claim that the complete C# legal/Word engine has migrated
 to Rust or equals any missing historical Python implementation.
 
@@ -151,3 +153,34 @@ This is the PART HIERARCHY leaf of MatchParts ONLY. The heuristic
 alignment MatchParts itself, old->new item movement/renumbering,
 collapsed-level parent equivalence, unit lineage, table matching,
 and output generators have NOT been ported to Rust.
+
+## Fourth narrow port: exact-normalized-content pairing in MatchParts
+
+The new Rust module core-rust/src/doc_match_exact.rs implements only the
+FIRST NativeComparisonEngine.MatchParts pairing pass. Existing C#
+LineageNormalize prepares old/new content keys. Rust performs the original
+greedy old-index traversal: skip empty keys, choose nearest unused new
+item with exactly the same normalized body, and break ties by lowest index.
+
+The Rust FFI symbol dc_match_exact_document_part_keys_utf8 accepts bounded
+JSON arrays and returns index pairs freed via dc_free_ast_json_result.
+This is an OPTIONAL export, so older DLLs remain usable; 256 parts per
+side is the analysis limit.
+
+The runtime computes MatchExactPartKeysCSharp first as canonical.
+Only completely identical lists of old/new index pairs can be passed
+from Rust to the rest of the C# MatchParts matcher. Mismatch/failure
+keeps the canonical C# result. ExactPartsRustParityMatches/Mismatches
+counters track rollout. This protects old ② -> new ③, old ③ -> new ④
+when a new ② is inserted and exact content survives.
+
+The committed document_match_exact_golden.json stores 9 independent
+original C# contracts: insertion, deletion, reordering, duplicates,
+nearest-unused/tie, empty keys and Unicode. A further 710 deterministic
+C# vs Rust index-pair cases check all outputs, and the real MatchParts
+execution path verifies guarded integration.
+
+Definition-head pairing, fuzzy similarity, parent-first shape matching,
+collapsed parent levels, residual matching, article lineage, table matching,
+and A/B/C tracked-change output remain managed in C#. Key normalization
+also remains C#; this is NOT full MatchParts equivalence.

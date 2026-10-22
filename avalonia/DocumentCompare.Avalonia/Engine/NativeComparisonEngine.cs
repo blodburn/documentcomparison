@@ -2148,6 +2148,62 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return parts;
     }
 
+    private static long _exactPartsRustParityMatches;
+    private static long _exactPartsRustParityMismatches;
+    internal static long ExactPartsRustParityMatches =>
+        System.Threading.Interlocked.Read(ref _exactPartsRustParityMatches);
+    internal static long ExactPartsRustParityMismatches =>
+        System.Threading.Interlocked.Read(ref _exactPartsRustParityMismatches);
+
+    // Original exact-body matching contract: old-index traversal,
+    // nearest unused new index, and lower new index on equal distances.
+    private static List<NativeCodeVersionComparer.ExactDocumentPartPair>
+        MatchExactPartKeysCSharp(IReadOnlyList<string> oldKeys, IReadOnlyList<string> newKeys)
+    {
+        var usedNew = new HashSet<int>();
+        var pairs = new List<NativeCodeVersionComparer.ExactDocumentPartPair>();
+        for (var i = 0; i < oldKeys.Count; i++)
+        {
+            var key = oldKeys[i];
+            if (key.Length == 0) continue;
+            var match = Enumerable.Range(0, newKeys.Count)
+                .Where(j => !usedNew.Contains(j) && newKeys[j] == key)
+                .OrderBy(j => Math.Abs(i - j)).FirstOrDefault(-1);
+            if (match >= 0)
+            {
+                usedNew.Add(match);
+                pairs.Add(new NativeCodeVersionComparer.ExactDocumentPartPair(i, match));
+            }
+        }
+        return pairs;
+    }
+
+    private static List<NativeCodeVersionComparer.ExactDocumentPartPair>
+        MatchExactPartKeys(IReadOnlyList<string> oldKeys, IReadOnlyList<string> newKeys)
+    {
+        var canonical = MatchExactPartKeysCSharp(oldKeys, newKeys);
+        if (oldKeys.Count > 256 || newKeys.Count > 256)
+            return canonical;
+        try
+        {
+            var native = NativeCodeVersionComparer.MatchExactDocumentParts(oldKeys, newKeys);
+            if (native is null) return canonical;
+            if (!canonical.SequenceEqual(native))
+            {
+                System.Threading.Interlocked.Increment(ref _exactPartsRustParityMismatches);
+                return canonical;
+            }
+            System.Threading.Interlocked.Increment(ref _exactPartsRustParityMatches);
+            return native.ToList();
+        }
+        catch (Exception ex) when (ex is InvalidDataException or
+            System.Text.EncoderFallbackException or OverflowException)
+        {
+            System.Threading.Interlocked.Increment(ref _exactPartsRustParityMismatches);
+            return canonical;
+        }
+    }
+
     private static List<PartMatch> MatchParts(IReadOnlyList<NativePart> a, IReadOnlyList<NativePart> b)
     {
         var nodesA = BuildPartHierarchy(a); var nodesB = BuildPartHierarchy(b);
@@ -2175,12 +2231,12 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         }
         var result = new List<PartMatch>(); var usedA = new HashSet<int>(); var usedB = new HashSet<int>();
         void Take(int i,int j,double score){ if(usedA.Add(i)&&usedB.Add(j)) result.Add(new PartMatch(i,j,score)); }
-        for (var i=0;i<a.Count;i++)
-        {
-            var norm=LineageNormalize(a[i].Core); if(norm.Length==0) continue;
-            var cand=Enumerable.Range(0,b.Count).Where(j=>!usedB.Contains(j)&&LineageNormalize(b[j].Core)==norm).OrderBy(j=>Math.Abs(i-j)).FirstOrDefault(-1);
-            if(cand>=0) Take(i,cand,1.0);
-        }
+        // The exact-body pairing stage is the first high-certainty part of
+        // MatchParts migrated to Rust. Keep C# as the golden reference.
+        var keysA = a.Select(p => LineageNormalize(p.Core)).ToArray();
+        var keysB = b.Select(p => LineageNormalize(p.Core)).ToArray();
+        foreach (var match in MatchExactPartKeys(keysA, keysB))
+            Take(match.Old, match.New, 1.0);
         for (var i=0;i<a.Count;i++)
         {
             if(usedA.Contains(i)) continue; var head=DefinitionHead(a[i].Core); if(head.Length==0) continue;
