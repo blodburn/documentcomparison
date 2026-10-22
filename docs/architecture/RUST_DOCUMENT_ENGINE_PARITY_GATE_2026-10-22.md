@@ -25,7 +25,8 @@ must not be inferred merely from matching current C# behavior.
 | Document whitespace-only edits | C# TryWhitespaceBoundaryDiff | doc_whitespace::compare | Exact UTF-16 boundary match, 521/521 deterministic cases plus Rust unit/FFI checks; live call parity-shadowed |
 | Article/section/paragraph lineage | C# ParseLegalUnits, BuildRows etc. | Not ported | No replacement |
 | 항/호 label and boundary segmentation | C# ParsePartsCSharp | Rust doc_parts | 31 committed Golden cases plus 455 direct C#/Rust cases; live gated |
-| Item movement, Roman hierarchy matching | C# MatchParts, BuildPartHierarchy etc. | Not ported | No replacement |
+| Item hierarchy and ordinal/parent relationships | C# BuildPartHierarchyCSharp, PartOrdinalAt | Rust hierarchy | 631 direct cases; live guarded |
+| Item old/new matching and movement | C# MatchParts, CollapsedLevelParentsEquivalent etc. | Not ported | No replacement |
 | DOCX table cell/merge/row matching | C# structured reader and matcher | Not ported | No replacement |
 | Word formatting and tracked revisions | C# NativeOfficeExporter | Not ported | No replacement |
 | Excel A/B/C and change narrative | C# exporter | Not ported | No replacement |
@@ -77,8 +78,8 @@ exports, A/B/C).
 4. Measure performance (five runs, identical inputs) before claiming Rust
    improves runtime or memory; maintain C# fallback until justified.
 
-STATUS: two narrow document rules (whitespace changes and structural part
-segmentation) are ported with guarded live execution.
+STATUS: three narrow document rules (whitespace changes, structural part
+segmentation, and parent/child hierarchy) are ported with guarded live execution.
 This is NOT a claim that the complete C# legal/Word engine has migrated
 to Rust or equals any missing historical Python implementation.
 
@@ -123,3 +124,30 @@ The new port is segmentation ONLY, not historical article/item matching:
 MatchParts, BuildPartHierarchy, MatchStructuredUnits, MatchUnitSequence,
 re-numbering, DOCX table/row/cell mapping and Word/Excel exports remain
 in C#. Full document-engine Rust equivalence is NOT yet demonstrated.
+
+## Third narrow port: structural parent/child hierarchy for MatchParts
+
+The Rust doc_parts module now provides hierarchy(labels), including
+part family, contextual Roman numeral interpretation, ordinal, nesting
+level and parent index. The new optional Rust ABI v1 function is
+dc_document_part_hierarchy_json_utf8, using owned JSON results and the
+existing free function.
+
+NativeComparisonEngine.BuildPartHierarchyCSharp remains the unchanged
+source of truth. In the actual document comparison flow the C# result
+is computed first, then Rust is considered only when all nodes have the
+same Index, Level, Parent, Family and logical PartOrdinalAt. If ANY
+element differs, the C# result is retained; parity counters expose
+matching/mismatching cases. The shadow limit is 256 parts per fragment.
+
+The regression checks all 31 committed document-part Golden fixture
+inputs and 600 deterministic randomized label sequences: 631/631
+direct C# vs Rust parent/child and ordinal parity cases. The Rust test
+suite also exercises nested circled, number, Korean and contextual Roman
+levels. Original A/B/C, document table matching, legal item move,
+and tracked-revision export regressions must continue passing.
+
+This is the PART HIERARCHY leaf of MatchParts ONLY. The heuristic
+alignment MatchParts itself, old->new item movement/renumbering,
+collapsed-level parent equivalence, unit lineage, table matching,
+and output generators have NOT been ported to Rust.

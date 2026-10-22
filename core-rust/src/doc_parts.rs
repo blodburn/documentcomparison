@@ -392,3 +392,276 @@ mod tests {
         assert_eq!(r.parts[1].start, 5);
     }
 }
+
+/// C# BuildPartHierarchy parity slice: output family/ordinal/parent topology.
+/// It is not a cross-version MatchParts operation.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct HierarchyInput {
+    pub labels: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HierarchyNode {
+    pub index: usize,
+    pub level: usize,
+    pub parent: i32,
+    pub family: String,
+    pub ordinal: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct HierarchyResult {
+    pub nodes: Vec<HierarchyNode>,
+}
+
+fn part_family(label: &str) -> &'static str {
+    if label == "본문" || label.is_empty() {
+        return "body";
+    }
+    if label.chars().count() == 1 && CIRCLED.contains(label) {
+        return "circled";
+    }
+    if label.starts_with('(') && label.ends_with(')') {
+        let inner = &label[1..label.len() - 1];
+        if !inner.is_empty()
+            && inner
+                .chars()
+                .all(|c| get_general_category(c) == Category::DecimalNumber)
+        {
+            return "paren-number";
+        }
+        if inner.len() == 1 && inner.as_bytes()[0].is_ascii_alphabetic() {
+            return "paren-alpha";
+        }
+        if inner.len() >= 2 && inner.chars().all(|c| "IVXLCDMivxlcdm".contains(c)) {
+            return if roman_value(inner).is_some() {
+                "paren-roman"
+            } else {
+                "other"
+            };
+        }
+    }
+    if label.len() > 1 && matches!(label.as_bytes().last(), Some(b'.' | b')')) {
+        let inner = &label[..label.len() - 1];
+        if !inner.is_empty()
+            && inner
+                .chars()
+                .all(|c| get_general_category(c) == Category::DecimalNumber)
+        {
+            return "number";
+        }
+        if inner.len() == 1 && inner.as_bytes()[0].is_ascii_alphabetic() {
+            return "alpha";
+        }
+        if inner.chars().count() == 1
+            && inner
+                .chars()
+                .next()
+                .is_some_and(|c| ('가'..='하').contains(&c))
+        {
+            return "korean";
+        }
+    }
+    "other"
+}
+
+fn number_ordinal(label: &str) -> Option<usize> {
+    if label.is_empty() || label == "본문" {
+        return None;
+    }
+    if label.chars().count() == 1
+        && let Some(i) = CIRCLED.chars().position(|c| label.starts_with(c))
+    {
+        return Some(i + 1);
+    }
+    if label.starts_with('(') && label.ends_with(')') {
+        let inner = &label[1..label.len() - 1];
+        if !inner.is_empty() && inner.bytes().all(|b| b.is_ascii_digit()) {
+            return inner
+                .parse::<usize>()
+                .ok()
+                .filter(|&n| n <= i32::MAX as usize);
+        }
+        if inner.len() == 1 && inner.as_bytes()[0].is_ascii_alphabetic() {
+            return Some((inner.as_bytes()[0].to_ascii_uppercase() - b'A' + 1) as usize);
+        }
+        if inner.len() >= 2 && inner.chars().all(|c| "IVXLCDMivxlcdm".contains(c)) {
+            return roman_value(inner);
+        }
+        return None;
+    }
+    if label.len() > 1 && matches!(label.as_bytes().last(), Some(b'.' | b')')) {
+        let inner = &label[..label.len() - 1];
+        if !inner.is_empty() && inner.bytes().all(|b| b.is_ascii_digit()) {
+            return inner
+                .parse::<usize>()
+                .ok()
+                .filter(|&n| n <= i32::MAX as usize);
+        }
+        if inner.len() == 1 && inner.as_bytes()[0].is_ascii_alphabetic() {
+            return Some((inner.as_bytes()[0].to_ascii_uppercase() - b'A' + 1) as usize);
+        }
+        if let Some(i) = KOREAN.find(inner) {
+            return Some(KOREAN[..i].chars().count() + 1);
+        }
+    }
+    None
+}
+
+pub fn hierarchy(labels: &[String]) -> std::result::Result<HierarchyResult, &'static str> {
+    if labels.len() > 4096 || labels.iter().any(|s| s.encode_utf16().count() > 128) {
+        return Err("too many labels");
+    }
+    let mut nodes: Vec<HierarchyNode> = Vec::with_capacity(labels.len());
+    let mut l1: Option<usize> = None;
+    let mut l2: Option<usize> = None;
+    let mut l3: Option<usize> = None;
+    for (i, label) in labels.iter().enumerate() {
+        let mut fam = part_family(label).to_owned();
+        if fam == "paren-alpha"
+            && label.len() == 3
+            && label
+                .as_bytes()
+                .get(1)
+                .is_some_and(|c| b"ivxIVX".contains(c))
+        {
+            let val = roman_value(&label[1..2]);
+            let neighbor = |j: Option<usize>| {
+                j.is_some_and(|index| {
+                    let other = &labels[index];
+                    other.starts_with('(')
+                        && other.ends_with(')')
+                        && other.len() >= 4
+                        && other[1..other.len() - 1]
+                            .chars()
+                            .all(|c| "IVXLCDMivxlcdm".contains(c))
+                        && roman_value(&other[1..other.len() - 1])
+                            .is_some_and(|r| val.is_some_and(|v| r.abs_diff(v) == 1))
+                })
+            };
+            if neighbor(i.checked_sub(1)) || neighbor((i + 1 < labels.len()).then_some(i + 1)) {
+                fam = "paren-roman".into();
+            }
+        }
+        let ordinal = if fam == "paren-roman" {
+            roman_value(&label[1..label.len() - 1])
+        } else {
+            number_ordinal(label)
+        };
+        if fam == "body" {
+            nodes.push(HierarchyNode {
+                index: i,
+                level: 0,
+                parent: -1,
+                family: fam,
+                ordinal,
+            });
+            continue;
+        }
+        let mut level = 1;
+        let mut parent = -1_i32;
+        match fam.as_str() {
+            "circled" => {
+                l1 = Some(i);
+                l2 = None;
+                l3 = None;
+            }
+            "number" => {
+                if l1.is_some_and(|j| nodes[j].family == "circled") {
+                    level = 2;
+                    parent = l1.unwrap() as i32;
+                    l2 = Some(i);
+                    l3 = None;
+                } else {
+                    l1 = Some(i);
+                    l2 = None;
+                    l3 = None;
+                }
+            }
+            "paren-number" => {
+                if l1.is_some_and(|j| matches!(nodes[j].family.as_str(), "number" | "circled")) {
+                    level = 2;
+                    parent = l1.unwrap() as i32;
+                    l2 = Some(i);
+                    l3 = None;
+                } else {
+                    l1 = Some(i);
+                    l2 = None;
+                    l3 = None;
+                }
+            }
+            "alpha" | "korean" | "paren-alpha" => {
+                if l2.is_some_and(|j| matches!(nodes[j].family.as_str(), "number" | "paren-number"))
+                {
+                    level = 3;
+                    parent = l2.unwrap() as i32;
+                    l3 = Some(i);
+                } else if l1.is_some_and(|j| nodes[j].family != fam) {
+                    level = 2;
+                    parent = l1.unwrap() as i32;
+                    l2 = Some(i);
+                    l3 = None;
+                } else {
+                    l1 = Some(i);
+                    l2 = None;
+                    l3 = None;
+                }
+            }
+            "paren-roman" => {
+                if let Some(j) = l3 {
+                    level = 4;
+                    parent = j as i32;
+                } else if let Some(j) = l2 {
+                    level = 3;
+                    parent = j as i32;
+                } else if let Some(j) = l1 {
+                    level = 2;
+                    parent = j as i32;
+                } else {
+                    l1 = Some(i);
+                    l2 = None;
+                    l3 = None;
+                }
+            }
+            _ => {
+                if let Some(j) = l1 {
+                    level = 2;
+                    parent = j as i32;
+                } else {
+                    l1 = Some(i);
+                }
+            }
+        }
+        nodes.push(HierarchyNode {
+            index: i,
+            level,
+            parent,
+            family: fam,
+            ordinal,
+        });
+    }
+    Ok(HierarchyResult { nodes })
+}
+
+#[cfg(test)]
+mod hierarchy_tests {
+    use super::*;
+    #[test]
+    fn canonical_hierarchy() {
+        let labels = ["①", "1.", "가.", "(i)", "(ii)", "②"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>();
+        let nodes = hierarchy(&labels).unwrap().nodes;
+        assert_eq!(
+            nodes
+                .iter()
+                .map(|n| (n.level, n.parent))
+                .collect::<Vec<_>>(),
+            vec![(1, -1), (2, 0), (3, 1), (4, 2), (4, 2), (1, -1)]
+        );
+        assert_eq!(nodes[3].family, "paren-roman");
+        assert_eq!(nodes[3].ordinal, Some(1));
+    }
+}

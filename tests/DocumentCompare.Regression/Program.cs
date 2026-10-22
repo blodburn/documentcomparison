@@ -3126,4 +3126,77 @@ if (NativeCodeVersionComparer.IsAvailable)
           "invalid UTF-16 in structure parser must preserve canonical C# behavior");
     Console.WriteLine($"PASS RUST DOCUMENT PARTS CSHARP GOLDEN PARITY {samples.Count}/{samples.Count}");
 }
+
+// 174. Rust parity for hierarchy topology, contextual Roman classification,
+// and logical ordinal values, derived from the original C# parser's parts.
+if(NativeCodeVersionComparer.IsAvailable)
+{
+    var parser=typeof(NativeComparisonEngine).GetMethod(
+        "ParsePartsCSharp",BindingFlags.Static|BindingFlags.NonPublic)!;
+    var csharpHierarchy=typeof(NativeComparisonEngine).GetMethod(
+        "BuildPartHierarchyCSharp",BindingFlags.Static|BindingFlags.NonPublic)!;
+    var liveHierarchy=typeof(NativeComparisonEngine).GetMethod(
+        "BuildPartHierarchy",BindingFlags.Static|BindingFlags.NonPublic)!;
+    var ordinalMethod=typeof(NativeComparisonEngine).GetMethod(
+        "PartOrdinalAt",BindingFlags.Static|BindingFlags.NonPublic)!;
+    var matchProperty=typeof(NativeComparisonEngine).GetProperty(
+        "HierarchyRustParityMatches",BindingFlags.Static|BindingFlags.NonPublic)!;
+    var mismatchProperty=typeof(NativeComparisonEngine).GetProperty(
+        "HierarchyRustParityMismatches",BindingFlags.Static|BindingFlags.NonPublic)!;
+    var startingMatches=(long)matchProperty.GetValue(null)!;
+    var startingMismatches=(long)mismatchProperty.GetValue(null)!;
+    var hierarchyCases=new List<string>();
+    using(var goldenFile=System.Text.Json.JsonDocument.Parse(File.ReadAllText(
+        Path.Combine(AppContext.BaseDirectory,"Fixtures","document_parts_golden.json"))))
+    {
+        hierarchyCases.AddRange(goldenFile.RootElement.EnumerateArray()
+            .Select(x=>x.GetProperty("input").GetString() ?? ""));
+    }
+    var hierarchyRandom=new Random(20261022);
+    string[] labelsForHierarchy = {"①","②","③","④","⑤","1.","2.","3.","(1)","(2)","(3)",
+        "가.","나.","다.","(a)","(b)","(i)","(ii)","(iii)","(iv)","(v)",
+        "(IIX)","(III)","A.","B.","c.","가)","나)","1)","2)","⑳","본문"};
+    for(var round=0;round<600;round++)
+    {
+        var count=hierarchyRandom.Next(1,36);
+        var content=string.Join("\n",Enumerable.Range(0,count).Select(_=>
+            labelsForHierarchy[hierarchyRandom.Next(labelsForHierarchy.Length)]+" "+
+            "개인정보 처리에 관한 내용"));
+        hierarchyCases.Add(content);
+    }
+    foreach(var content in hierarchyCases)
+    {
+        var parts=parser.Invoke(null,new object[]{content})!;
+        var structuralCaseLabels=((System.Collections.IEnumerable)parts).Cast<object>()
+            .Select(p=>(string)p.GetType().GetProperty("Label")!.GetValue(p)!).ToArray();
+        var actual=NativeCodeVersionComparer.AnalyzeDocumentHierarchy(structuralCaseLabels);
+        Check(actual is not null && actual.Count==structuralCaseLabels.Length,
+            "Rust hierarchy must return one node per part");
+        var expected=((System.Collections.IEnumerable)csharpHierarchy.Invoke(null,new[]{parts})!)
+            .Cast<object>().ToList();
+        var live=((System.Collections.IEnumerable)liveHierarchy.Invoke(null,new[]{parts})!)
+            .Cast<object>().ToList();
+        Check(expected.Count==actual!.Count && live.Count==actual.Count,
+            "C# and Rust structural hierarchy node counts differ");
+        for(var i=0;i<expected.Count;i++)
+        {
+            var left=expected[i];var right=actual[i];
+            var t=left.GetType();
+            var idx=(int)t.GetProperty("Index")!.GetValue(left)!;
+            var level=(int)t.GetProperty("Level")!.GetValue(left)!;
+            var parent=(int)t.GetProperty("Parent")!.GetValue(left)!;
+            var family=(string)t.GetProperty("Family")!.GetValue(left)!;
+            var ordinal=(int?)ordinalMethod.Invoke(null,new object[]{parts,i});
+            Check(idx==right.Index && level==right.Level &&
+                  parent==right.Parent && family==right.Family &&
+                  ordinal==right.Ordinal && left.Equals(live[i]),
+                "Rust hierarchy differs from C#: "+System.Text.Json.JsonSerializer.Serialize(
+                    new{content,structuralCaseLabels,index=i,idx,level,parent,family,ordinal,rust=right}));
+        }
+    }
+    Check((long)matchProperty.GetValue(null)!-startingMatches==hierarchyCases.Count &&
+          (long)mismatchProperty.GetValue(null)! == startingMismatches,
+          "live hierarchy path must only accept exactly equivalent Rust nodes");
+    Console.WriteLine($"PASS RUST DOCUMENT HIERARCHY CSHARP PARITY {hierarchyCases.Count}/{hierarchyCases.Count}");
+}
 Console.WriteLine("ALL REGRESSIONS PASSED");

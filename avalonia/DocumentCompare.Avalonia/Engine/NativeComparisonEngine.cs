@@ -2372,7 +2372,49 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return PartOrdinal(parts[index].Label);
     }
 
+    private static long _hierarchyRustParityMatches;
+    private static long _hierarchyRustParityMismatches;
+    internal static long HierarchyRustParityMatches =>
+        System.Threading.Interlocked.Read(ref _hierarchyRustParityMatches);
+    internal static long HierarchyRustParityMismatches =>
+        System.Threading.Interlocked.Read(ref _hierarchyRustParityMismatches);
+
     private static List<PartNode> BuildPartHierarchy(IReadOnlyList<NativePart> parts)
+    {
+        var canonical = BuildPartHierarchyCSharp(parts);
+        if (parts.Count > 256) return canonical;
+        try
+        {
+            var native = NativeCodeVersionComparer.AnalyzeDocumentHierarchy(
+                parts.Select(x => x.Label).ToArray());
+            if (native is null) return canonical;
+            var same = native.Count == canonical.Count;
+            if (same)
+                for (var i = 0; i < canonical.Count; i++)
+                {
+                    var left = canonical[i]; var right = native[i];
+                    if (left.Index != right.Index || left.Level != right.Level ||
+                        left.Parent != right.Parent || left.Family != right.Family ||
+                        PartOrdinalAt(parts, i) != right.Ordinal)
+                    { same = false; break; }
+                }
+            if (!same)
+            {
+                System.Threading.Interlocked.Increment(ref _hierarchyRustParityMismatches);
+                return canonical;
+            }
+            System.Threading.Interlocked.Increment(ref _hierarchyRustParityMatches);
+            return native.Select(x => new PartNode(x.Index, x.Level, x.Parent, x.Family)).ToList();
+        }
+        catch (Exception ex) when (ex is InvalidDataException or
+            System.Text.EncoderFallbackException or OverflowException)
+        {
+            System.Threading.Interlocked.Increment(ref _hierarchyRustParityMismatches);
+            return canonical;
+        }
+    }
+
+    private static List<PartNode> BuildPartHierarchyCSharp(IReadOnlyList<NativePart> parts)
     {
         var nodes=new List<PartNode>(parts.Count); var currentL1=-1; var currentL2=-1; var currentL3=-1;
         for(var i=0;i<parts.Count;i++)

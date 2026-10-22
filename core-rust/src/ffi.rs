@@ -935,3 +935,50 @@ mod document_parts_ffi_tests {
         assert!(result.data.is_null());
     }
 }
+
+/// Compute the hierarchy topology of a bounded collection of document
+/// enumerator labels; the result is an optional C# parity slice.
+/// Input is a UTF-8 JSON object containing a labels array.
+/// Free with dc_free_ast_json_result.
+///
+/// # Safety
+/// Non-null input must point to readable bytes; output must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dc_document_part_hierarchy_json_utf8(
+    input: *const u8,
+    length: usize,
+    output: *mut DcAstJsonResult,
+) -> i32 {
+    if output.is_null() {
+        return 2;
+    }
+    // SAFETY: caller supplies exclusive writable output.
+    unsafe { ptr::write(output, DcAstJsonResult::empty()) };
+    if length > 131_072 || (length > 0 && input.is_null()) {
+        return 2;
+    }
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let bytes = if length == 0 {
+            &[][..]
+        } else {
+            // SAFETY: caller supplies readable input bytes.
+            unsafe { slice::from_raw_parts(input, length) }
+        };
+        let json: crate::doc_parts::HierarchyInput =
+            serde_json::from_slice(bytes).map_err(|_| 1)?;
+        let hierarchy = crate::doc_parts::hierarchy(&json.labels).map_err(|_| 3)?;
+        serde_json::to_vec(&hierarchy).map_err(|_| 4)
+    }));
+    match result {
+        Ok(Ok(json)) => {
+            let memory = json.into_boxed_slice();
+            let length = memory.len();
+            let data = Box::into_raw(memory) as *mut u8;
+            // SAFETY: caller supplies exclusive writable output.
+            unsafe { ptr::write(output, DcAstJsonResult { data, length }) };
+            0
+        }
+        Ok(Err(code)) => code,
+        Err(_) => 5,
+    }
+}

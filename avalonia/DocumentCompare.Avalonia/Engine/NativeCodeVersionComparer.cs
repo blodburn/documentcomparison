@@ -111,6 +111,13 @@ public static class NativeCodeVersionComparer
         string Label, int Start, int End,
         int CoreStart, int CoreEnd, string Core);
 
+    public sealed record DocumentHierarchyNode(
+        int Index, int Level, int Parent, string Family, int? Ordinal);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int DocumentHierarchyDelegate(
+        [In] byte[] input, nuint length, out NativeAstResult result);
+
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int DocumentPartsDelegate(
         [In] byte[] source, nuint length, out NativeAstResult result);
@@ -145,6 +152,7 @@ public static class NativeCodeVersionComparer
         public readonly CrossFileAstDelegate CrossFileAst;
         public readonly DocumentWhitespaceDiffDelegate? DocumentWhitespaceDiff;
         public readonly DocumentPartsDelegate? DocumentParts;
+        public readonly DocumentHierarchyDelegate? DocumentHierarchy;
 
         public Exports(IntPtr handle)
         {
@@ -177,6 +185,10 @@ public static class NativeCodeVersionComparer
                 out var partsExport))
                 DocumentParts = Marshal.GetDelegateForFunctionPointer<DocumentPartsDelegate>(
                     partsExport);
+            if (NativeLibrary.TryGetExport(handle,
+                "dc_document_part_hierarchy_json_utf8", out var hierarchyExport))
+                DocumentHierarchy = Marshal.GetDelegateForFunctionPointer<DocumentHierarchyDelegate>(
+                    hierarchyExport);
         }
     }
 
@@ -351,6 +363,52 @@ public static class NativeCodeVersionComparer
     }
 
     private sealed record DocumentPartsWire(List<DocumentPart> Parts);
+
+    public static IReadOnlyList<DocumentHierarchyNode>? AnalyzeDocumentHierarchy(
+        IReadOnlyList<string> labels)
+    {
+        ArgumentNullException.ThrowIfNull(labels);
+        var exports = Native.Value;
+        if (exports?.DocumentHierarchy is null || labels.Count > 4096 ||
+            labels.Any(l => l is null || l.Length > 128))
+            return null;
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(new { labels });
+        if (bytes.Length > 131_072) return null;
+        var status = exports.DocumentHierarchy(bytes, (nuint)bytes.Length, out var output);
+        try
+        {
+            if (status is 2 or 3) return null;
+            if (status != 0)
+                throw new InvalidDataException($"Rust 항·호 계층 분석 실패: {status}");
+            if (output.Data == IntPtr.Zero || output.Length == 0 ||
+                output.Length > 1024UL * 1024)
+                throw new InvalidDataException("Rust 항·호 계층 결과 크기 오류");
+            var data = new byte[checked((int)output.Length)];
+            Marshal.Copy(output.Data, data, 0, data.Length);
+            var parsed = JsonSerializer.Deserialize<DocumentHierarchyWire>(data,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            if (parsed?.Nodes is null || parsed.Nodes.Count != labels.Count)
+                throw new InvalidDataException("Rust 항·호 계층 개수 불일치");
+            for (var i = 0; i < parsed.Nodes.Count; i++)
+            {
+                var node = parsed.Nodes[i];
+                if (node.Index != i || node.Level is < 0 or > 4 ||
+                    node.Parent < -1 || node.Parent >= i ||
+                    string.IsNullOrWhiteSpace(node.Family) ||
+                    node.Ordinal is < 0)
+                    throw new InvalidDataException("Rust 항·호 계층 노드가 올바르지 않습니다");
+            }
+            return parsed.Nodes;
+        }
+        finally
+        {
+            exports.AstFree(ref output);
+        }
+    }
+
+    private sealed record DocumentHierarchyWire(List<DocumentHierarchyNode> Nodes);
+
+
 
 
 
