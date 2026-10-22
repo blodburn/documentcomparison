@@ -2204,6 +2204,79 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         }
     }
 
+    private static long _moveCandidatesRustParityMatches;
+    private static long _moveCandidatesRustParityMismatches;
+    internal static long MoveCandidatesRustParityMatches =>
+        System.Threading.Interlocked.Read(ref _moveCandidatesRustParityMatches);
+    internal static long MoveCandidatesRustParityMismatches =>
+        System.Threading.Interlocked.Read(ref _moveCandidatesRustParityMismatches);
+
+    private static List<NativeCodeVersionComparer.DocumentMoveSelected>
+        SelectPartMoveCandidatesCSharp(
+            int oldCount, int newCount,
+            IReadOnlyList<NativeCodeVersionComparer.DocumentMoveCandidate> candidates)
+    {
+        var ranked = new List<(double Rank, int Old, int New, double Score)>();
+        foreach (var candidate in candidates)
+        {
+            var s = candidate.Similarity;
+            var c = candidate.Containment;
+            var children = candidate.ChildSupport;
+            if (s >= .74 || c >= .88 || children >= 2 ||
+                (children >= 1 && s >= .55))
+            {
+                var rank = Math.Max(s, .94 * c) + Math.Min(.12, children * .06);
+                ranked.Add((rank, candidate.Old, candidate.New, s));
+            }
+        }
+        var result = new List<NativeCodeVersionComparer.DocumentMoveSelected>();
+        var usedOld = new HashSet<int>();
+        var usedNew = new HashSet<int>();
+        foreach (var item in ranked.OrderByDescending(x => x.Rank)
+            .ThenBy(x => Math.Abs(x.Old - x.New)))
+            if (usedOld.Add(item.Old))
+            {
+                if (!usedNew.Add(item.New))
+                {
+                    usedOld.Remove(item.Old);
+                    continue;
+                }
+                result.Add(new NativeCodeVersionComparer.DocumentMoveSelected(
+                    item.Old, item.New, Math.Max(item.Score, item.Rank)));
+            }
+        return result;
+    }
+
+    private static List<NativeCodeVersionComparer.DocumentMoveSelected>
+        SelectPartMoveCandidates(int oldCount, int newCount,
+            IReadOnlyList<NativeCodeVersionComparer.DocumentMoveCandidate> candidates)
+    {
+        var canonical = SelectPartMoveCandidatesCSharp(oldCount, newCount, candidates);
+        try
+        {
+            var rust = NativeCodeVersionComparer.SelectDocumentPartMoves(
+                oldCount, newCount, candidates);
+            if (rust is null) return canonical;
+            if (rust.Count != canonical.Count ||
+                rust.Where((selected, i) =>
+                    selected.Old != canonical[i].Old ||
+                    selected.New != canonical[i].New ||
+                    Math.Abs(selected.Score - canonical[i].Score) > 1e-12).Any())
+            {
+                System.Threading.Interlocked.Increment(ref _moveCandidatesRustParityMismatches);
+                return canonical;
+            }
+            System.Threading.Interlocked.Increment(ref _moveCandidatesRustParityMatches);
+            return rust.ToList();
+        }
+        catch (Exception ex) when (ex is InvalidDataException or
+            System.Text.EncoderFallbackException or OverflowException)
+        {
+            System.Threading.Interlocked.Increment(ref _moveCandidatesRustParityMismatches);
+            return canonical;
+        }
+    }
+
     private static List<PartMatch> MatchParts(IReadOnlyList<NativePart> a, IReadOnlyList<NativePart> b)
     {
         var nodesA = BuildPartHierarchy(a); var nodesB = BuildPartHierarchy(b);
@@ -2250,25 +2323,22 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         // still guarantee 1->1 ... 5->5 even for a complete wording rewrite.
         for (var level = 1; level <= 4; level++)
         {
-            var moveCandidates = new List<(double Rank, int A, int B, double Score)>();
-            foreach (var i in Enumerable.Range(0, a.Count).Where(i => !usedA.Contains(i) && nodesA[i].Level == level && IsStructuralLabel(a[i].Label)))
-            foreach (var j in Enumerable.Range(0, b.Count).Where(j => !usedB.Contains(j) && nodesB[j].Level == level && IsStructuralLabel(b[j].Label)))
+            var moveCandidates =
+                new List<NativeCodeVersionComparer.DocumentMoveCandidate>();
+            foreach (var i in Enumerable.Range(0, a.Count).Where(i =>
+                !usedA.Contains(i) && nodesA[i].Level == level && IsStructuralLabel(a[i].Label)))
+            foreach (var j in Enumerable.Range(0, b.Count).Where(j =>
+                !usedB.Contains(j) && nodesB[j].Level == level && IsStructuralLabel(b[j].Label)))
             {
                 if (a[i].Label == b[j].Label) continue;
                 if (!ParentsEquivalent(i, j, nodesA, nodesB, result)) continue;
-                var score = PartSimilarity(a[i], b[j]);
-                var contain = Containment(a[i].Core, b[j].Core);
+                var similarity = PartSimilarity(a[i], b[j]);
+                var containment = Containment(a[i].Core, b[j].Core);
                 var childSupport = MatchedChildSupport(i, j, nodesA, nodesB, result);
-                if (score >= .74 || contain >= .88 ||
-                    childSupport >= 2 ||
-                    (childSupport >= 1 && score >= .55))
-                {
-                    var rank = Math.Max(score, .94 * contain) + Math.Min(.12, childSupport * .06);
-                    moveCandidates.Add((rank, i, j, score));
-                }
+                moveCandidates.Add(new(i, j, similarity, containment, childSupport));
             }
-            foreach (var x in moveCandidates.OrderByDescending(x => x.Rank).ThenBy(x => Math.Abs(x.A - x.B)))
-                if (!usedA.Contains(x.A) && !usedB.Contains(x.B)) Take(x.A, x.B, Math.Max(x.Score, x.Rank));
+            foreach (var match in SelectPartMoveCandidates(a.Count, b.Count, moveCandidates))
+                Take(match.Old, match.New, match.Score);
 
             // Same logical ordinal with a different drafting convention (① ↔ 1., (1) ↔ 1., etc.).
             // Treat the sibling sequence as stronger structure evidence than the glyph family.

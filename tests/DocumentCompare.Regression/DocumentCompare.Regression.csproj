@@ -13,5 +13,6 @@
     <PackageReference Include="DocumentFormat.OpenXml" Version="3.3.0" />
     <None Include="Fixtures/document_parts_golden.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="Fixtures/document_match_exact_golden.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Fixtures/document_move_candidates_golden.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

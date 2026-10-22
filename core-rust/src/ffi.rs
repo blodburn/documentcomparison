@@ -1053,3 +1053,49 @@ mod exact_document_part_ffi_tests {
         assert!(output.data.is_null());
     }
 }
+
+/// Select high-similarity changed-enumerator move candidates from C#-prepared
+/// legal part similarities, containment scores and child support.
+/// # Safety
+/// Caller must supply readable input bytes and writable exclusive output.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dc_select_document_part_move_candidates_utf8(
+    input: *const u8,
+    length: usize,
+    output: *mut DcAstJsonResult,
+) -> i32 {
+    if output.is_null() {
+        return 2;
+    }
+    // SAFETY: exclusive writable output guaranteed by the caller.
+    unsafe { ptr::write(output, DcAstJsonResult::empty()) };
+    if length > 1024 * 1024 || (length > 0 && input.is_null()) {
+        return 2;
+    }
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let bytes = if length == 0 {
+            &[][..]
+        } else {
+            // SAFETY: readable input guaranteed by the caller.
+            unsafe { slice::from_raw_parts(input, length) }
+        };
+        let data: crate::doc_move_candidates::Input =
+            serde_json::from_slice(bytes).map_err(|_| 1)?;
+        let moves =
+            crate::doc_move_candidates::select(data.old_count, data.new_count, &data.candidates)
+                .map_err(|_| 3)?;
+        serde_json::to_vec(&moves).map_err(|_| 4)
+    }));
+    match result {
+        Ok(Ok(json)) => {
+            let allocation = json.into_boxed_slice();
+            let length = allocation.len();
+            let data = Box::into_raw(allocation) as *mut u8;
+            // SAFETY: exclusive writable output guaranteed by the caller.
+            unsafe { ptr::write(output, DcAstJsonResult { data, length }) };
+            0
+        }
+        Ok(Err(code)) => code,
+        Err(_) => 5,
+    }
+}

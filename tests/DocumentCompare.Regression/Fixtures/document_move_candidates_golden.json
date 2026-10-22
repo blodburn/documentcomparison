@@ -1,0 +1,208 @@
+[
+  {
+    "oldCount": 3,
+    "newCount": 4,
+    "candidates": [
+      {
+        "old": 2,
+        "new": 2,
+        "similarity": 0.1,
+        "containment": 0.1,
+        "childSupport": 0
+      },
+      {
+        "old": 2,
+        "new": 3,
+        "similarity": 0.93,
+        "containment": 0.95,
+        "childSupport": 0
+      },
+      {
+        "old": 1,
+        "new": 1,
+        "similarity": 0.1,
+        "containment": 0.1,
+        "childSupport": 0
+      },
+      {
+        "old": 1,
+        "new": 2,
+        "similarity": 0.9,
+        "containment": 0.9,
+        "childSupport": 0
+      }
+    ],
+    "selected": [
+      {
+        "old": 2,
+        "new": 3
+      },
+      {
+        "old": 1,
+        "new": 2
+      }
+    ]
+  },
+  {
+    "oldCount": 1,
+    "newCount": 3,
+    "candidates": [
+      {
+        "old": 0,
+        "new": 1,
+        "similarity": 0.7399,
+        "containment": 0.0,
+        "childSupport": 0
+      },
+      {
+        "old": 0,
+        "new": 2,
+        "similarity": 0.74,
+        "containment": 0.0,
+        "childSupport": 0
+      }
+    ],
+    "selected": [
+      {
+        "old": 0,
+        "new": 2
+      }
+    ]
+  },
+  {
+    "oldCount": 1,
+    "newCount": 3,
+    "candidates": [
+      {
+        "old": 0,
+        "new": 2,
+        "similarity": 0.2,
+        "containment": 0.88,
+        "childSupport": 0
+      },
+      {
+        "old": 0,
+        "new": 1,
+        "similarity": 0.2,
+        "containment": 0.8799,
+        "childSupport": 0
+      }
+    ],
+    "selected": [
+      {
+        "old": 0,
+        "new": 2
+      }
+    ]
+  },
+  {
+    "oldCount": 2,
+    "newCount": 2,
+    "candidates": [
+      {
+        "old": 0,
+        "new": 1,
+        "similarity": 0.55,
+        "containment": 0,
+        "childSupport": 1
+      },
+      {
+        "old": 1,
+        "new": 0,
+        "similarity": 0.1,
+        "containment": 0,
+        "childSupport": 2
+      }
+    ],
+    "selected": [
+      {
+        "old": 0,
+        "new": 1
+      },
+      {
+        "old": 1,
+        "new": 0
+      }
+    ]
+  },
+  {
+    "oldCount": 2,
+    "newCount": 2,
+    "candidates": [
+      {
+        "old": 0,
+        "new": 1,
+        "similarity": 0.8,
+        "containment": 0,
+        "childSupport": 0
+      },
+      {
+        "old": 1,
+        "new": 0,
+        "similarity": 0.8,
+        "containment": 0,
+        "childSupport": 0
+      }
+    ],
+    "selected": [
+      {
+        "old": 0,
+        "new": 1
+      },
+      {
+        "old": 1,
+        "new": 0
+      }
+    ]
+  },
+  {
+    "oldCount": 2,
+    "newCount": 2,
+    "candidates": [
+      {
+        "old": 0,
+        "new": 1,
+        "similarity": 0.87,
+        "containment": 0,
+        "childSupport": 0
+      },
+      {
+        "old": 1,
+        "new": 1,
+        "similarity": 0.95,
+        "containment": 0,
+        "childSupport": 0
+      },
+      {
+        "old": 0,
+        "new": 0,
+        "similarity": 0.75,
+        "containment": 0,
+        "childSupport": 0
+      },
+      {
+        "old": 1,
+        "new": 0,
+        "similarity": 0.8,
+        "containment": 0,
+        "childSupport": 0
+      }
+    ],
+    "selected": [
+      {
+        "old": 1,
+        "new": 1
+      },
+      {
+        "old": 0,
+        "new": 0
+      }
+    ]
+  },
+  {
+    "oldCount": 0,
+    "newCount": 0,
+    "candidates": [],
+    "selected": []
+  }
+]

@@ -27,7 +27,8 @@ must not be inferred merely from matching current C# behavior.
 | 항/호 label and boundary segmentation | C# ParsePartsCSharp | Rust doc_parts | 31 committed Golden cases plus 455 direct C#/Rust cases; live gated |
 | Item hierarchy and ordinal/parent relationships | C# BuildPartHierarchyCSharp, PartOrdinalAt | Rust hierarchy | 631 direct cases; live guarded |
 | Exact normalized item pairing (first pass) | C# MatchExactPartKeysCSharp | Rust doc_match_exact | 9 frozen Golden + 710 direct C#/Rust; live guarded |
-| Item fuzzy matching and movement | C# remaining MatchParts, CollapsedLevelParentsEquivalent etc. | Not ported | No replacement |
+| Changed-label move candidate ranking and selection | C# SelectPartMoveCandidatesCSharp | Rust doc_move_candidates | 7 frozen Golden plus 900 direct cases; live gated |
+| Full item fuzzy matching and movement | C# remaining MatchParts, CollapsedLevelParentsEquivalent etc. | Partially ported | No full replacement |
 | DOCX table cell/merge/row matching | C# structured reader and matcher | Not ported | No replacement |
 | Word formatting and tracked revisions | C# NativeOfficeExporter | Not ported | No replacement |
 | Excel A/B/C and change narrative | C# exporter | Not ported | No replacement |
@@ -79,9 +80,9 @@ exports, A/B/C).
 4. Measure performance (five runs, identical inputs) before claiming Rust
    improves runtime or memory; maintain C# fallback until justified.
 
-STATUS: four narrow document rules (whitespace changes, structural part
-segmentation, parent/child hierarchy, and exact-body pairing) are ported
-with guarded live execution.
+STATUS: five narrow document rules (whitespace changes, structural part
+segmentation, parent/child hierarchy, exact-body pairing, and changed-label
+move candidate selection) are ported with guarded live execution.
 This is NOT a claim that the complete C# legal/Word engine has migrated
 to Rust or equals any missing historical Python implementation.
 
@@ -184,3 +185,37 @@ Definition-head pairing, fuzzy similarity, parent-first shape matching,
 collapsed parent levels, residual matching, article lineage, table matching,
 and A/B/C tracked-change output remain managed in C#. Key normalization
 also remains C#; this is NOT full MatchParts equivalence.
+
+## Fifth narrow port: changed-content moves with different enumerators
+
+Rust doc_move_candidates.rs implements the high-similarity move candidate
+scoring, threshold, rank ordering, and greedy one-to-one selection
+previously inside the level-by-level MatchParts loop.
+
+C# remains responsible for PartSimilarity, Containment,
+MatchedChildSupport, parent equivalence, hierarchy filtering, same-label
+exclusion and all later matching decisions. Rust reproduces the original
+C# thresholds: similarity >= .74, containment >= .88, child support >= 2,
+or child support >= 1 AND similarity >= .55. The rank is
+max(similarity, .94 * containment) + min(.12, childSupport * .06),
+ordered descending by rank, by nearest old/new indices on ties,
+then by original candidate order. A 1:1 greedy match preserves
+C# PartMatch scoring exactly. Similarity is not proof of identity.
+
+The optional ABI v1 FFI symbol dc_select_document_part_move_candidates_utf8
+is bounded to 8192 pairs and at most 256 items per side. The C# engine
+independently computes the original ordered pair selection and every score.
+Rust output is accepted ONLY when each index and score matches (absolute
+score tolerance 1e-12); a mismatch or missing DLL falls back to C#.
+MoveCandidatesRustParityMatches/Mismatches provide counters.
+
+The new document_move_candidates_golden.json freezes seven cases including
+rank thresholds, insertion/moved/edited item numbering, competing and
+tied candidates, child-support and containment edge cases. The regression
+also verifies 900 seeded direct C#-Rust candidate matrices and a real
+edited old ③ -> new ④ legal paragraph example.
+
+This is only a candidate-selection stage. Definition-head matching,
+logical ordinal and sibling fallback, collapsed level parents,
+residual matching, article lineage, Word table alignment, tracked
+changes, and A/B/C output remain in C#.

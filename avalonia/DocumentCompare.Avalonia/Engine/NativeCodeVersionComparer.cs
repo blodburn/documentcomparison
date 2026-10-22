@@ -119,6 +119,13 @@ public static class NativeCodeVersionComparer
         [In] byte[] input, nuint length, out NativeAstResult result);
 
     public sealed record ExactDocumentPartPair(int Old, int New);
+    public sealed record DocumentMoveCandidate(
+        int Old, int New, double Similarity, double Containment, int ChildSupport);
+    public sealed record DocumentMoveSelected(int Old, int New, double Score);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int DocumentMoveSelectionDelegate(
+        [In] byte[] input, nuint length, out NativeAstResult result);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int ExactDocumentPartsDelegate(
@@ -160,6 +167,7 @@ public static class NativeCodeVersionComparer
         public readonly DocumentPartsDelegate? DocumentParts;
         public readonly DocumentHierarchyDelegate? DocumentHierarchy;
         public readonly ExactDocumentPartsDelegate? ExactDocumentParts;
+        public readonly DocumentMoveSelectionDelegate? DocumentMoveSelection;
 
         public Exports(IntPtr handle)
         {
@@ -200,6 +208,10 @@ public static class NativeCodeVersionComparer
                 "dc_match_exact_document_part_keys_utf8", out var exactExport))
                 ExactDocumentParts = Marshal.GetDelegateForFunctionPointer<ExactDocumentPartsDelegate>(
                     exactExport);
+            if (NativeLibrary.TryGetExport(handle,
+                "dc_select_document_part_move_candidates_utf8", out var moveExport))
+                DocumentMoveSelection = Marshal.GetDelegateForFunctionPointer<DocumentMoveSelectionDelegate>(
+                    moveExport);
         }
     }
 
@@ -473,6 +485,69 @@ public static class NativeCodeVersionComparer
     }
 
     private sealed record ExactDocumentPartsWire(List<ExactDocumentPartPair> Pairs);
+
+    /// <summary>
+    /// Rust applies unchanged C# MatchParts thresholds/ranking to C#-computed
+    /// scores and parent-filtered candidate pairs. The caller still verifies
+    /// exact selected ordered pairs and floating scores against managed code.
+    /// </summary>
+    public static IReadOnlyList<DocumentMoveSelected>? SelectDocumentPartMoves(
+        int oldCount, int newCount, IReadOnlyList<DocumentMoveCandidate> candidates)
+    {
+        ArgumentNullException.ThrowIfNull(candidates);
+        var exports = Native.Value;
+        if (exports?.DocumentMoveSelection is null ||
+            oldCount is < 0 or > 256 || newCount is < 0 or > 256 ||
+            candidates.Count > 8192 ||
+            candidates.Any(x => x.Old < 0 || x.New < 0 ||
+                x.Old >= oldCount || x.New >= newCount ||
+                !double.IsFinite(x.Similarity) || !double.IsFinite(x.Containment) ||
+                x.Similarity is < 0 or > 1 || x.Containment is < 0 or > 1 ||
+                x.ChildSupport is < 0 or > 256))
+            return null;
+        var input = JsonSerializer.SerializeToUtf8Bytes(
+            new {oldCount, newCount, candidates},
+            new JsonSerializerOptions {PropertyNamingPolicy = JsonNamingPolicy.CamelCase});
+        if (input.Length > 1024 * 1024) return null;
+        var status = exports.DocumentMoveSelection(input, (nuint)input.Length, out var output);
+        try
+        {
+            if (status is 2 or 3) return null;
+            if (status != 0)
+                throw new InvalidDataException($"Rust 항·호 이동 후보 판정 실패: {status}");
+            if (output.Data == IntPtr.Zero || output.Length == 0 ||
+                output.Length > 1024UL * 1024)
+                throw new InvalidDataException("Rust 항·호 이동 후보 결과 크기 오류");
+            var raw = new byte[checked((int)output.Length)];
+            Marshal.Copy(output.Data, raw, 0, raw.Length);
+            var parsed = JsonSerializer.Deserialize<DocumentMoveWire>(raw,
+                new JsonSerializerOptions {PropertyNameCaseInsensitive = true});
+            if (parsed?.Selected is null ||
+                parsed.Selected.Count > Math.Min(oldCount, newCount))
+                throw new InvalidDataException("Rust 항·호 이동 후보 결과 개수 오류");
+            var oldUsed = new HashSet<int>();
+            var newUsed = new HashSet<int>();
+            foreach (var selected in parsed.Selected)
+            {
+                if (selected.Old < 0 || selected.Old >= oldCount ||
+                    selected.New < 0 || selected.New >= newCount ||
+                    !double.IsFinite(selected.Score) ||
+                    selected.Score is < 0 or > 1.12 ||
+                    !oldUsed.Add(selected.Old) || !newUsed.Add(selected.New) ||
+                    !candidates.Any(x => x.Old == selected.Old && x.New == selected.New))
+                    throw new InvalidDataException("Rust 항·호 이동 후보 선택 인덱스 오류");
+            }
+            return parsed.Selected;
+        }
+        finally
+        {
+            exports.AstFree(ref output);
+        }
+    }
+
+    private sealed record DocumentMoveWire(List<DocumentMoveSelected> Selected);
+
+
 
 
 

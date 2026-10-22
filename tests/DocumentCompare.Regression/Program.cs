@@ -3319,4 +3319,130 @@ if (NativeCodeVersionComparer.IsAvailable)
         "real MatchParts must use parity-gated Rust exact-body stage");
     Console.WriteLine($"PASS RUST MATCHPARTS EXACT BODY CSHARP PARITY {handCases.Count}/{handCases.Count}");
 }
+
+// 176. Modified document item moving to a different number: same C# score,
+// C# rank/priority ordering, and Rust FFI greedy candidate pairing.
+if (NativeCodeVersionComparer.IsAvailable)
+{
+    var type=typeof(NativeComparisonEngine);
+    var reference=type.GetMethod("SelectPartMoveCandidatesCSharp",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var liveSelector=type.GetMethod("SelectPartMoveCandidates",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var originalParser=type.GetMethod("ParsePartsCSharp",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var actualMatch=type.GetMethod("MatchParts",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var matchCount=type.GetProperty("MoveCandidatesRustParityMatches",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var mismatchCount=type.GetProperty("MoveCandidatesRustParityMismatches",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    long Matches()=>(long)matchCount.GetValue(null)!;
+    long Mismatches()=>(long)mismatchCount.GetValue(null)!;
+    var baseMatches=Matches();
+    var baseMismatches=Mismatches();
+    List<NativeCodeVersionComparer.DocumentMoveSelected> Invoke(
+        System.Reflection.MethodInfo method, int oldCount,int newCount,
+        List<NativeCodeVersionComparer.DocumentMoveCandidate> candidates) =>
+        ((System.Collections.IEnumerable)method.Invoke(
+            null,new object[]{oldCount,newCount,candidates})!)
+            .Cast<NativeCodeVersionComparer.DocumentMoveSelected>().ToList();
+
+    var insertedModified=new List<NativeCodeVersionComparer.DocumentMoveCandidate> {
+        new(2,2,.10,.10,0), new(2,3,.93,.95,0),
+        new(1,1,.10,.10,0), new(1,2,.90,.90,0),
+    };
+    var golden=Invoke(reference,3,4,insertedModified);
+    Check(golden.Select(p=>(p.Old,p.New)).SequenceEqual(
+        new[]{(2,3),(1,2)}),
+        "original C# modified-move Golden must prefer content over matching enumerator");
+    using (var frozen=System.Text.Json.JsonDocument.Parse(File.ReadAllText(
+        Path.Combine(AppContext.BaseDirectory,"Fixtures","document_move_candidates_golden.json"))))
+    {
+        foreach (var fixture in frozen.RootElement.EnumerateArray())
+        {
+            var oldCount=fixture.GetProperty("oldCount").GetInt32();
+            var newCount=fixture.GetProperty("newCount").GetInt32();
+            var source=fixture.GetProperty("candidates").GetRawText();
+            var candidates=System.Text.Json.JsonSerializer.Deserialize<
+                List<NativeCodeVersionComparer.DocumentMoveCandidate>>(source,
+                new System.Text.Json.JsonSerializerOptions {
+                    PropertyNameCaseInsensitive=true })!;
+            var pairs=fixture.GetProperty("selected").EnumerateArray()
+                .Select(x=>(Old:x.GetProperty("old").GetInt32(),
+                    New:x.GetProperty("new").GetInt32())).ToArray();
+            var csharp=Invoke(reference,oldCount,newCount,candidates);
+            var rust=NativeCodeVersionComparer.SelectDocumentPartMoves(
+                oldCount,newCount,candidates)!;
+            Check(csharp.Select(x=>(x.Old,x.New)).SequenceEqual(pairs) &&
+                rust.Select(x=>(x.Old,x.New)).SequenceEqual(pairs) &&
+                csharp.Count==rust.Count &&
+                csharp.Zip(rust).All(x=>Math.Abs(x.First.Score-x.Second.Score)<1e-12),
+                "Modified-move Golden candidate ranking regression: "+
+                fixture.GetRawText());
+        }
+    }
+    var random=new Random(20261023);
+    var candidateCases=0;
+    for(var round=0;round<900;round++)
+    {
+        var oldCount=random.Next(0,34);
+        var newCount=random.Next(0,34);
+        var candidates=new List<NativeCodeVersionComparer.DocumentMoveCandidate>();
+        for(var i=0;i<oldCount;i++)
+            for(var j=0;j<newCount;j++)
+                if(random.NextDouble()<.12)
+                {
+                    var similarities=new[]{0.0,.2,.5499,.55,.7399,.74,.85,1.0};
+                    var contains=new[]{0.0,.3,.8799,.88,1.0};
+                    candidates.Add(new(i,j,
+                        similarities[random.Next(similarities.Length)],
+                        contains[random.Next(contains.Length)],
+                        random.Next(0,4)));
+                }
+        if(round==0) candidates=insertedModified;
+        var expected=Invoke(reference,oldCount:round==0?3:oldCount,
+            newCount:round==0?4:newCount,candidates);
+        var resolvedOld=round==0?3:oldCount;
+        var resolvedNew=round==0?4:newCount;
+        var rust=NativeCodeVersionComparer.SelectDocumentPartMoves(
+            resolvedOld,resolvedNew,candidates);
+        Check(rust is not null && expected.Count==rust.Count &&
+            expected.Zip(rust).All(x=>x.First.Old==x.Second.Old &&
+                x.First.New==x.Second.New &&
+                Math.Abs(x.First.Score-x.Second.Score)<1e-12),
+            "Rust changed-move matching differs from C# baseline: "+round);
+        var used=Invoke(liveSelector,resolvedOld,resolvedNew,candidates);
+        Check(expected.Count==used.Count &&
+            expected.Zip(used).All(x=>x.First.Old==x.Second.Old &&
+                x.First.New==x.Second.New &&
+                Math.Abs(x.First.Score-x.Second.Score)<1e-12),
+            "live C# document engine must only accept exact Rust move candidates");
+        candidateCases++;
+    }
+    Check(Matches()-baseMatches==candidateCases &&
+        Mismatches()==baseMismatches,
+        "candidate stage must have zero parity divergence");
+
+    var oldDoc="① 개인정보 수집 목적 안내\n② 개인정보 이용 범위 안내\n"+
+        "③ 이용자의 개인정보는 이용 목적이 완료되면 지체 없이 안전한 방법으로 삭제하고 기록을 보존한다.";
+    var newDoc="① 개인정보 수집 목적 안내\n② 신규 개인정보 보관 기준 안내\n"+
+        "③ 개인정보 이용 범위 안내\n"+
+        "④ 이용자의 개인정보는 이용 목적이 완료되면 지체 없이 안전한 방식으로 삭제하고 기록을 보존한다.";
+    var oldParts=originalParser.Invoke(null,new object[]{oldDoc})!;
+    var newParts=originalParser.Invoke(null,new object[]{newDoc})!;
+    var beforeLive=Matches();
+    var matched=((System.Collections.IEnumerable)actualMatch.Invoke(
+        null,new[]{oldParts,newParts})!).Cast<object>().ToList();
+    var matchedPairs=matched.Select(x=>(
+        Old:(int)x.GetType().GetProperty("Old")!.GetValue(x)!,
+        New:(int)x.GetType().GetProperty("New")!.GetValue(x)!)).ToArray();
+    Check(matchedPairs.Contains((2,3)) &&
+        !matchedPairs.Contains((2,2)) &&
+        Matches()>beforeLive,
+        "real document matching must find edited old ③→new ④, not old ③→new ③");
+    Check(Mismatches()==baseMismatches,
+        "real modified move must not create native-vs-managed parity divergence");
+    Console.WriteLine($"PASS RUST MODIFIED MOVE CANDIDATE CSHARP PARITY {candidateCases}/{candidateCases}");
+}
 Console.WriteLine("ALL REGRESSIONS PASSED");
