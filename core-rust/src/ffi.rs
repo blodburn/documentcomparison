@@ -744,3 +744,115 @@ mod cross_file_ffi_tests {
         fs::remove_dir_all(root).unwrap();
     }
 }
+
+/// The bounded document whitespace parity slice. Reads strict UTF-8 source,
+/// returns UTF-16 position spans in Rust-owned JSON; free using
+/// dc_free_ast_json_result. 0=success, 1=invalid UTF8, 2=invalid arguments,
+/// 3=unsupported/oversized, 4=serialization failure, 5=Rust panic.
+///
+/// # Safety
+/// Input pointers must refer to readable byte buffers for the given lengths
+/// and output to a writable DcAstJsonResult with exclusive ownership.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dc_compare_document_whitespace_utf8(
+    before: *const u8,
+    before_len: usize,
+    after: *const u8,
+    after_len: usize,
+    output: *mut DcAstJsonResult,
+) -> i32 {
+    if output.is_null() {
+        return 2;
+    }
+    // SAFETY: valid writable output pointer is guaranteed by caller.
+    unsafe { ptr::write(output, DcAstJsonResult::empty()) };
+    const MAX_DOCUMENT_FRAGMENT_BYTES: usize = 3 * 1024 * 1024;
+    if before_len > MAX_DOCUMENT_FRAGMENT_BYTES
+        || after_len > MAX_DOCUMENT_FRAGMENT_BYTES
+        || (before_len > 0 && before.is_null())
+        || (after_len > 0 && after.is_null())
+    {
+        return 2;
+    }
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let left = if before_len == 0 {
+            &[][..]
+        } else {
+            // SAFETY: input bytes are valid for duration of call.
+            unsafe { slice::from_raw_parts(before, before_len) }
+        };
+        let right = if after_len == 0 {
+            &[][..]
+        } else {
+            // SAFETY: input bytes are valid for duration of call.
+            unsafe { slice::from_raw_parts(after, after_len) }
+        };
+        let before = std::str::from_utf8(left).map_err(|_| 1)?;
+        let after = std::str::from_utf8(right).map_err(|_| 1)?;
+        let compared = crate::doc_whitespace::compare(before, after).map_err(|_| 3)?;
+        serde_json::to_vec(&compared).map_err(|_| 4)
+    }));
+    match result {
+        Ok(Ok(json)) => {
+            let bytes = json.into_boxed_slice();
+            let length = bytes.len();
+            let data = Box::into_raw(bytes) as *mut u8;
+            // SAFETY: valid writable output pointer is guaranteed by caller.
+            unsafe { ptr::write(output, DcAstJsonResult { data, length }) };
+            0
+        }
+        Ok(Err(code)) => code,
+        Err(_) => 5,
+    }
+}
+
+#[cfg(test)]
+mod document_whitespace_ffi_tests {
+    use super::*;
+
+    #[test]
+    fn whitespace_ffi_json_utf16_contract_and_free() {
+        let old = "😀동의없이";
+        let new = "😀동의 없이";
+        let mut output = DcAstJsonResult::empty();
+        assert_eq!(
+            unsafe {
+                dc_compare_document_whitespace_utf8(
+                    old.as_ptr(),
+                    old.len(),
+                    new.as_ptr(),
+                    new.len(),
+                    &mut output,
+                )
+            },
+            0
+        );
+        let bytes = unsafe { slice::from_raw_parts(output.data, output.length) };
+        let data: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        assert_eq!(data["eligible"], true);
+        assert_eq!(data["spans"][0]["oldStart"], 2);
+        assert_eq!(data["spans"][0]["newEnd"], 7);
+        unsafe { dc_free_ast_json_result(&mut output) };
+        assert!(output.data.is_null());
+        assert_eq!(output.length, 0);
+    }
+
+    #[test]
+    fn whitespace_ffi_rejects_invalid_utf8() {
+        let invalid = [0xFF];
+        let mut output = DcAstJsonResult::empty();
+        assert_eq!(
+            unsafe {
+                dc_compare_document_whitespace_utf8(
+                    invalid.as_ptr(),
+                    invalid.len(),
+                    std::ptr::null(),
+                    0,
+                    &mut output,
+                )
+            },
+            1
+        );
+        assert!(output.data.is_null());
+    }
+}

@@ -1589,6 +1589,14 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         };
     }
 
+    // Shadow-parity counters: keep C# as the authority until Rust spans match.
+    private static long _whitespaceRustParityMatches;
+    private static long _whitespaceRustParityMismatches;
+    internal static long WhitespaceRustParityMatches =>
+        System.Threading.Interlocked.Read(ref _whitespaceRustParityMatches);
+    internal static long WhitespaceRustParityMismatches =>
+        System.Threading.Interlocked.Read(ref _whitespaceRustParityMismatches);
+
     private static List<NativeMarker>? TryWhitespaceBoundaryDiff(
         string oldText, string newText, int oldBase, int newBase, int oldDoc, int newDoc,
         string pair, int pairOrder, string part, int itemOrder)
@@ -1650,6 +1658,43 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         }
 
         if (changes.Count == 0) return null;
+
+        // A deliberate parity gate: the source C# rule is still evaluated,
+        // and Rust output is only accepted if every UTF-16 change span agrees.
+        // Never let an experimental Rust rule change legal/table document
+        // judgments, or make comparison fail if a native optional slice fails.
+        if (oldText.Length <= 16384 && newText.Length <= 16384)
+        {
+            try
+            {
+                var native = NativeCodeVersionComparer.CompareDocumentWhitespace(oldText, newText);
+                if (native is not null)
+                {
+                    var equivalent = native.Eligible && native.Spans.Count == changes.Count;
+                    if (equivalent)
+                        for (var i = 0; i < changes.Count; i++)
+                        {
+                            var old = changes[i]; var rust = native.Spans[i];
+                            if (old.OldStart != rust.OldStart || old.OldEnd != rust.OldEnd ||
+                                old.NewStart != rust.NewStart || old.NewEnd != rust.NewEnd)
+                            { equivalent = false; break; }
+                        }
+                    if (equivalent)
+                    {
+                        System.Threading.Interlocked.Increment(ref _whitespaceRustParityMatches);
+                        changes = native.Spans.Select(x =>
+                            (x.OldStart, x.OldEnd, x.NewStart, x.NewEnd)).ToList();
+                    }
+                    else
+                        System.Threading.Interlocked.Increment(ref _whitespaceRustParityMismatches);
+                }
+            }
+            catch (Exception ex) when (ex is InvalidDataException or
+                System.Text.EncoderFallbackException or OverflowException)
+            {
+                System.Threading.Interlocked.Increment(ref _whitespaceRustParityMismatches);
+            }
+        }
 
         var result = new List<NativeMarker>(changes.Count);
         for (var i = 0; i < changes.Count; i++)

@@ -26,6 +26,7 @@ It is designed for general documents as well as structured legal, policy, and re
 
 ## Architecture reviews
 
+- [Rust document-engine migration parity gates and guarded whitespace-port (2026-10-22)](docs/architecture/RUST_DOCUMENT_ENGINE_PARITY_GATE_2026-10-22.md)
 - [Phase 2 hardening: code navigation, line parity and directory performance (2026-10-21)](docs/architecture/UNIFIED_VERSION_PHASE2_HARDENING_2026-10-21.md)
 
 - [Phase 2: code-file Version History UI and Rust folder comparison (2026-10-21)](docs/architecture/UNIFIED_VERSION_PHASE2_2026-10-21.md)

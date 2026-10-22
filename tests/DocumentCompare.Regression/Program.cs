@@ -2860,4 +2860,100 @@ if(NativeCodeVersionComparer.IsAvailable)
 }
 Console.WriteLine("PASS GIT AST RENAMED SIGNATURE MOVE AND COMMIT TIMELINE SECTIONS");
 
+
+// 172. Word/document-engine whitespace slice: byte-exact C# reference vs
+// Rust FFI, including the famous "동의없이" -> "동의 없이" regression.
+// Full Word paragraph/table/part judgment remains managed and must not regress.
+if(NativeCodeVersionComparer.IsAvailable)
+{
+    var whitespaceMethod=typeof(NativeComparisonEngine).GetMethod(
+        "TryWhitespaceBoundaryDiff",BindingFlags.Static|BindingFlags.NonPublic)!;
+    var matchProperty=typeof(NativeComparisonEngine).GetProperty(
+        "WhitespaceRustParityMatches",BindingFlags.Static|BindingFlags.NonPublic)!;
+    var mismatchProperty=typeof(NativeComparisonEngine).GetProperty(
+        "WhitespaceRustParityMismatches",BindingFlags.Static|BindingFlags.NonPublic)!;
+    long BeforeMatch()=>(long)matchProperty.GetValue(null)!;
+    long BeforeMismatch()=>(long)mismatchProperty.GetValue(null)!;
+    var startingMatches=BeforeMatch();
+    var startingMismatches=BeforeMismatch();
+    var corpus=new List<(string,string)>
+    {
+        ("동의없이", "동의 없이"),
+        ("동의 없이", "동의없이"),
+        ("이용자의 동의없이 제3자에게", "이용자의 동의 없이 제3자에게"),
+        ("제 1 조 · 동의없이", "제1조 · 동의 없이"),
+        ("😀동의없이", "😀동의 없이"),
+        ("한 글", "한글"),
+        ("코드_word", "코드_ word"),
+        ("  시작 문장", " 시작 문장"),
+        ("문장 마지막", "문장 마지막 "),
+        ("안녕\n세계", "안녕 세계"),
+        ("동의없이", "동의 없이"), // repeated call must be deterministic
+        ("동의없이", "동의없음"), // not whitespace-only
+        ("", ""), ("  ", "\t"), ("동의", "동의"),
+        ("a\u00a0b", "a b"), ("a\u3000b", "a b"),
+        ("가😀나", "가😀 나"),
+        ("X⁰Y", "X⁰ Y"),
+        ("A\u2028B", "A B"),
+        ("A\u0085B", "A B"),
+    };
+    var randomWhitespace=new Random(20261022);
+    string[] words = {"동의", "없이", "개인정보", "제3자", "이용자", "보호", "본문", "abc", "_code", "한글", "😀", "Ω", "1", ".", "§"};
+    string[] gaps = {"", "", "", " ", "  ", "\t", "\r\n", "\u00a0", "\u3000", "\u202f"};
+    for(var n=0;n<500;n++)
+    {
+        var count=randomWhitespace.Next(1,16);
+        var parts=Enumerable.Range(0,count).Select(_=>words[randomWhitespace.Next(words.Length)]).ToArray();
+        var left=parts[0]; var right=parts[0];
+        for(var i=1;i<count;i++)
+        {
+            left+=gaps[randomWhitespace.Next(gaps.Length)]+parts[i];
+            right+=gaps[randomWhitespace.Next(gaps.Length)]+parts[i];
+        }
+        corpus.Add((left,right));
+    }
+    var eligible=0;
+    foreach(var (oldText,newText) in corpus)
+    {
+        var native=NativeCodeVersionComparer.CompareDocumentWhitespace(oldText,newText);
+        Check(native is not null, "Rust whitespace FFI must return an explicit eligible/ineligible result");
+        var raw=whitespaceMethod.Invoke(null,new object[]{oldText,newText,0,0,0,1,"A-B",0,"body",0});
+        var original=new List<NativeCodeVersionComparer.DocumentWhitespaceSpan>();
+        if(raw is System.Collections.IEnumerable markers)
+        {
+            foreach(var marker in markers)
+            {
+                var endpoints=(System.Collections.IEnumerable)marker!.GetType().GetProperty("Endpoints")!.GetValue(marker)!;
+                var spans=endpoints.Cast<object>().ToArray();
+                Check(spans.Length==2, "whitespace change marker must have two endpoint spans");
+                var oldEp=spans[0]; var newEp=spans[1];
+                int Pos(object ep,string prop)=>(int)ep.GetType().GetProperty(prop)!.GetValue(ep)!;
+                original.Add(new NativeCodeVersionComparer.DocumentWhitespaceSpan(
+                    Pos(oldEp,"CharStart"),Pos(oldEp,"CharEnd"),
+                    Pos(newEp,"CharStart"),Pos(newEp,"CharEnd")));
+            }
+        }
+        Check(native!.Eligible==(original.Count!=0) &&
+              native.Spans.SequenceEqual(original),
+              "Rust document whitespace range differs from the original C# judgment: "+
+              System.Text.Json.JsonSerializer.Serialize(new{oldText,newText,managed=original,native}));
+        if(native.Eligible)eligible++;
+    }
+    Check(eligible>100 && BeforeMatch()>startingMatches,
+          "live document engine must actually accept matching Rust whitespace spans");
+    Check(BeforeMismatch()==startingMismatches,
+          "every eligible document whitespace comparison must match C# before replacement");
+    // Malformed surrogate is not UTF-8, so the optional Rust port must not
+    // break the long-established managed document comparison behavior.
+    var badOld="\uD800동의없이";
+    var badNew="\uD800동의 없이";
+    var bad=whitespaceMethod.Invoke(null,
+        new object[]{badOld,badNew,0,0,0,1,"A-B",0,"body",0});
+    Check(bad is System.Collections.IEnumerable &&
+          ((System.Collections.IEnumerable)bad).Cast<object>().Any(),
+          "invalid UTF-16 must safely retain the original C# whitespace decision");
+    Check(BeforeMismatch()==startingMismatches+1,
+          "native-encoding parity fallback must be observable, not silently accepted");
+    Console.WriteLine($"PASS RUST DOCUMENT WHITESPACE PARITY {corpus.Count}/{corpus.Count}, eligible={eligible}");
+}
 Console.WriteLine("ALL REGRESSIONS PASSED");

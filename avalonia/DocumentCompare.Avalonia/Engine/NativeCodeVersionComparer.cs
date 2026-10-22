@@ -101,6 +101,18 @@ public static class NativeCodeVersionComparer
         [In] byte[] after, nuint afterLength,
         out NativeAstResult result);
 
+    public sealed record DocumentWhitespaceSpan(
+        int OldStart, int OldEnd, int NewStart, int NewEnd);
+
+    public sealed record DocumentWhitespaceResult(
+        bool Eligible, IReadOnlyList<DocumentWhitespaceSpan> Spans);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int DocumentWhitespaceDiffDelegate(
+        [In] byte[] before, nuint beforeLength,
+        [In] byte[] after, nuint afterLength,
+        out NativeAstResult result);
+
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate uint VersionDelegate();
 
@@ -123,6 +135,7 @@ public static class NativeCodeVersionComparer
         public readonly AstDiffDelegate AstDiff;
         public readonly AstFreeDelegate AstFree;
         public readonly CrossFileAstDelegate CrossFileAst;
+        public readonly DocumentWhitespaceDiffDelegate? DocumentWhitespaceDiff;
 
         public Exports(IntPtr handle)
         {
@@ -145,6 +158,12 @@ public static class NativeCodeVersionComparer
                 NativeLibrary.GetExport(handle, "dc_free_ast_json_result"));
             CrossFileAst = Marshal.GetDelegateForFunctionPointer<CrossFileAstDelegate>(
                 NativeLibrary.GetExport(handle, "dc_compare_cross_file_ast_json_utf8"));
+            // Optional ABI v1 extension: older Rust DLLs continue to run
+            // code/folder/AST comparisons; document whitespace stays on C#.
+            if (NativeLibrary.TryGetExport(handle,
+                "dc_compare_document_whitespace_utf8", out var whitespaceExport))
+                DocumentWhitespaceDiff = Marshal.GetDelegateForFunctionPointer<DocumentWhitespaceDiffDelegate>(
+                    whitespaceExport);
         }
     }
 
@@ -209,6 +228,66 @@ public static class NativeCodeVersionComparer
             exports.Free(ref nativeResult);
         }
     }
+
+    /// <summary>
+    /// Narrow document-engine Rust port: whitespace-only change ranges in
+    /// UTF-16 code units. Null signals no native payload or analysis budget
+    /// exclusion; a returned ineligible result means not whitespace-only.
+    /// The C# document matcher remains authoritative during parity rollout.
+    /// </summary>
+    public static DocumentWhitespaceResult? CompareDocumentWhitespace(string before, string after)
+    {
+        ArgumentNullException.ThrowIfNull(before);
+        ArgumentNullException.ThrowIfNull(after);
+        var exports = Native.Value;
+        if (exports?.DocumentWhitespaceDiff is null) return null;
+        if (before.Length > 1_048_576 || after.Length > 1_048_576)
+            return null;
+        var encoding = new UTF8Encoding(false, true);
+        var left = encoding.GetBytes(before);
+        var right = encoding.GetBytes(after);
+        var status = exports.DocumentWhitespaceDiff(left, (nuint)left.Length,
+            right, (nuint)right.Length, out var output);
+        try
+        {
+            if (status is 2 or 3) return null;
+            if (status != 0)
+                throw new InvalidDataException($"Rust 문서 공백 비교 실패: {status}");
+            if (output.Data == IntPtr.Zero || output.Length == 0 ||
+                output.Length > 8UL * 1024 * 1024)
+                throw new InvalidDataException("Rust 문서 공백 비교 결과 메모리가 유효하지 않습니다.");
+            var json = new byte[checked((int)output.Length)];
+            Marshal.Copy(output.Data, json, 0, json.Length);
+            var parsed = JsonSerializer.Deserialize<DocumentWhitespaceWire>(json,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
+                ?? throw new InvalidDataException("Rust 문서 공백 결과 JSON 오류");
+            if (parsed.Spans is null || parsed.Spans.Count > 1_048_576 ||
+                (!parsed.Eligible && parsed.Spans.Count > 0) ||
+                (parsed.Eligible && parsed.Spans.Count == 0))
+                throw new InvalidDataException("Rust 문서 공백 결과 개수 오류");
+            var lastOld = 0;
+            var lastNew = 0;
+            foreach (var span in parsed.Spans)
+            {
+                if (span.OldStart < lastOld || span.NewStart < lastNew ||
+                    span.OldEnd < span.OldStart || span.NewEnd < span.NewStart ||
+                    span.OldEnd > before.Length || span.NewEnd > after.Length ||
+                    string.Equals(before[span.OldStart..span.OldEnd],
+                        after[span.NewStart..span.NewEnd], StringComparison.Ordinal))
+                    throw new InvalidDataException("Rust 문서 공백 결과 범위가 유효하지 않습니다.");
+                lastOld = span.OldEnd;
+                lastNew = span.NewEnd;
+            }
+            return new DocumentWhitespaceResult(parsed.Eligible, parsed.Spans);
+        }
+        finally
+        {
+            exports.AstFree(ref output);
+        }
+    }
+
+    private sealed record DocumentWhitespaceWire(
+        bool Eligible, List<DocumentWhitespaceSpan> Spans);
 
     /// <summary>
     /// Returns syntax-tree declaration changes only for Rust/C#. Unsupported
