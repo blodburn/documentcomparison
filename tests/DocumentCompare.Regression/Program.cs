@@ -2693,8 +2693,12 @@ var sameCommitTree=GitCommitLineageComparer.Compare(gitFixture,"HEAD","HEAD");
 Check(sameCommitTree.Changes.Count==0,"identical Git commits must compare equal");
 var nestedGitResult=GitCommitLineageComparer.Compare(
     Path.Combine(gitFixture,"new location"),"HEAD~1","HEAD");
+static string NormalizedGitPath(string path) =>
+    Path.GetFullPath(path).Replace('\\','/').TrimEnd('/');
 Check(nestedGitResult.Changes.SequenceEqual(gitLineage.Changes) &&
-      nestedGitResult.RepositoryRoot==gitFixture,
+      string.Equals(NormalizedGitPath(nestedGitResult.RepositoryRoot),
+          NormalizedGitPath(gitFixture),
+          OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal),
       "selecting a nested path must compare the same repository root");
 File.Delete(untracked);
 File.Move(Path.Combine(gitFixture,"ambiguous-a.txt"),
