@@ -137,6 +137,45 @@ public static class GitCommitLineageComparer
         return new Result(repositoryRoot, before, after, changes);
     }
 
+    /// <summary>
+    /// Enumerate each commit on the selected first-parent history, oldest
+    /// to newest. Reject sideways ancestry and very long ranges rather than
+    /// pretend that a two-snapshot diff proves an intermediate move.
+    /// </summary>
+    public static IReadOnlyList<string> FirstParentPath(Result lineage, int maxSteps = 16)
+    {
+        if (maxSteps is < 1 or > 64)
+            throw new ArgumentOutOfRangeException(nameof(maxSteps));
+        var lines = Decode(Run(lineage.RepositoryRoot, "rev-list",
+                "--first-parent", "-n", (maxSteps + 2).ToString(),
+                lineage.AfterCommit).Data)
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var match = Array.FindIndex(lines,
+            sha => string.Equals(sha, lineage.BeforeCommit, StringComparison.OrdinalIgnoreCase));
+        if (match < 0)
+            throw new InvalidDataException(
+                $"변경 전 커밋이 후손의 최초 부모 계보 {maxSteps}단계 내에 없습니다.");
+        if (match > maxSteps)
+            throw new InvalidDataException("Git 커밋 단계 추적 제한을 초과했습니다.");
+        var path = lines.Take(match + 1).Reverse().ToArray();
+        if (path[0] != lineage.BeforeCommit || path[^1] != lineage.AfterCommit)
+            throw new InvalidDataException("Git 최초 부모 계보 검증에 실패했습니다.");
+        return path;
+    }
+
+    /// <summary>
+    /// Retrieve an immutable Git object by its resolved blob ID; this never
+    /// consults the working tree. Bounded for AST snapshot extraction.
+    /// </summary>
+    internal static byte[] ReadBlob(string root, string blobId, int maxBytes)
+    {
+        if (blobId.Length is not (40 or 64) || !blobId.All(Uri.IsHexDigit) ||
+            maxBytes is <= 0 or > 2 * 1024 * 1024 + 1)
+            throw new ArgumentException("잘못된 Git blob ID 또는 크기 제한입니다.");
+        // Git writes only the raw object bytes to stdout.
+        return Run(root, maxBytes, "cat-file", "blob", blobId).Data;
+    }
+
     private static string Resolve(string root, string revision)
     {
         if (string.IsNullOrWhiteSpace(revision) || revision.Length > 128 ||
@@ -197,9 +236,15 @@ public static class GitCommitLineageComparer
         new UTF8Encoding(false, true).GetString(bytes);
 
     private static GitOutput Run(string root, params string[] arguments) =>
-        Run(root, false, arguments);
+        Run(root, false, MaxStdout, arguments);
 
-    private static GitOutput Run(string root, bool allowExitOne, params string[] arguments)
+    private static GitOutput Run(string root, int maxStdout, params string[] arguments) =>
+        Run(root, false, maxStdout, arguments);
+
+    private static GitOutput Run(string root, bool allowExitOne, params string[] arguments) =>
+        Run(root, allowExitOne, MaxStdout, arguments);
+
+    private static GitOutput Run(string root, bool allowExitOne, int maxStdout, params string[] arguments)
     {
         using var process = new Process();
         process.StartInfo = new ProcessStartInfo("git")
@@ -222,7 +267,7 @@ public static class GitCommitLineageComparer
         {
             process.Start();
             started = true;
-            var outputTask = ReadBoundedAsync(process.StandardOutput.BaseStream, MaxStdout, timeout.Token);
+            var outputTask = ReadBoundedAsync(process.StandardOutput.BaseStream, maxStdout, timeout.Token);
             var errorTask = ReadBoundedAsync(process.StandardError.BaseStream, 16 * 1024, timeout.Token);
             Task.WhenAll(outputTask, errorTask, process.WaitForExitAsync(timeout.Token))
                 .GetAwaiter().GetResult();

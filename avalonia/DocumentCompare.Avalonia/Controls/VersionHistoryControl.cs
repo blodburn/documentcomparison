@@ -188,11 +188,19 @@ public sealed class VersionHistoryControl : UserControl
             _loadCts = new CancellationTokenSource();
             var token = _loadCts.Token;
             _status.Text = "Git 커밋 트리·blob 계보 조회 중...";
-            var history = await Task.Run(
-                () => GitCommitLineageComparer.Compare(root, refs.Value.Before, refs.Value.After), token);
+            var compared = await Task.Run(() =>
+            {
+                var history = GitCommitLineageComparer.Compare(root, refs.Value.Before, refs.Value.After);
+                var ast = GitAstLineageComparer.Compare(history);
+                var timeline = GitAstHistoryComparer.Compare(history);
+                return (history, ast, timeline);
+            }, token);
             token.ThrowIfCancellationRequested();
-
-            _folderChanges = GitLineageReviewMapper.Map(history);
+            var history = compared.history;
+            var endpointResults = GitLineageReviewMapper.WithAst(history, compared.ast);
+            var timelineResults = GitLineageReviewMapper.WithTimeline(history, compared.timeline);
+            _folderChanges = endpointResults.Concat(
+                timelineResults.Skip(history.Changes.Count)).ToArray();
             _folderRendered = 0;
             _folderMore = null;
             _preview.Children.Clear();
@@ -202,7 +210,16 @@ public sealed class VersionHistoryControl : UserControl
             _previewTitle.Text = "Git 커밋 계보 비교";
             _previewSubtitle.Text = $"{history.RepositoryRoot} · " +
                 $"{history.BeforeCommit[..12]} → {history.AfterCommit[..12]} · " +
-                "정확한 이동: 동일 Git blob · 이름 변경 후보: Git 유사도(비확정)";
+                "정확한 파일 이동: 동일 blob · 선언 이동: AST · 수정된 이동: 후보" +
+                (compared.ast.Supported
+                    ? $" · AST {compared.ast.Moves.Count}건, 분석 {compared.ast.AnalyzedFiles}파일" +
+                        (compared.ast.SkippedFiles == 0 ? "" : $", 제외 {compared.ast.SkippedFiles}파일")
+                    : $" · AST 제외({compared.ast.Reason})") +
+                (compared.timeline.Supported
+                    ? $" · 커밋 단계 {compared.timeline.Steps.Count}개" +
+                      (compared.timeline.Steps.Any(step => !step.Ast.Supported ||
+                          step.Ast.SkippedFiles > 0) ? " (일부 AST 미분석)" : "")
+                    : $" · 커밋별 추적 제외({compared.timeline.Reason})");
             _changeSummary.Text = $"전체 {_folderChanges.Count:N0}건 · " +
                 string.Join(" · ", _folderChanges.GroupBy(x => x.Kind)
                     .Select(group => $"{group.Key} {group.Count():N0}"));
@@ -210,8 +227,15 @@ public sealed class VersionHistoryControl : UserControl
                 _changes.Children.Add(Message("커밋 사이에 파일 내용 변경이 없습니다.", "#64748B"));
             else
                 RenderFolderBatch();
-            _status.Text = $"Git 계보 조회 완료 · {_folderChanges.Count:N0}건 · " +
-                "작업 트리는 수정하지 않았습니다. 현재 화면에만 표시됩니다.";
+            _status.Text = $"Git 계보 조회 완료 · 파일 {history.Changes.Count:N0}건" +
+                (compared.ast.Supported
+                    ? $" · AST 선언 이동 {compared.ast.Moves.Count(m => !m.ContentChanged)}건" +
+                      $" · 이동·수정 후보 {compared.ast.Moves.Count(m => m.ContentChanged)}건"
+                    : " · AST 분석 제외") +
+                (compared.timeline.Supported
+                    ? $" · 커밋별 이동 {compared.timeline.Steps.Sum(step => step.Ast.Moves.Count)}건"
+                    : " · 커밋별 분석 제외") +
+                " · 작업 트리는 변경하지 않았습니다.";
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
@@ -352,6 +376,8 @@ public sealed class VersionHistoryControl : UserControl
             var marker = i + 1;
             var summary = entry.Kind is "이동/이름 변경" or "선언 이동(AST)" or "이동·수정 후보(AST)"
                 or "정확한 파일 이동(Git)" or "이름 변경 후보(Git)"
+                or "Git 선언 이동(AST)" or "Git 함수 이동·수정 후보(AST)"
+                or "커밋별 선언 이동(AST)" or "커밋별 이동·수정 후보(AST)"
                 ? $"{entry.BeforePath} → {entry.AfterPath}"
                 : entry.Kind == "삭제" ? entry.BeforePath : entry.AfterPath;
             var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };

@@ -2712,4 +2712,106 @@ Check(duplicatedTree.Changes.Count==2 &&
       "a duplicate blob also present in unchanged paths must not prove an exact rename");
 Console.WriteLine("PASS GIT COMMIT TREE LINEAGE AND READONLY SAFETY");
 
+
+// 170. AST lineage is derived from immutable Git blobs (not the current working tree).
+var gitAstRoot=Path.Combine(dir,"git-ast-lineage-한글");
+Directory.CreateDirectory(gitAstRoot);
+GitExec(gitAstRoot,"init","-q");
+GitExec(gitAstRoot,"config","user.name","Regression Tester");
+GitExec(gitAstRoot,"config","user.email","test@example.invalid");
+var methodOld=
+    "fn compute(input: i32) -> i32 {\n let offset = 10;\n let doubled = input * 2;\n let result = doubled + offset;\n println!(\"결과 {}\", result);\n result\n}\n";
+var methodUpdated=
+    "fn compute(input: i32) -> i32 {\n let offset = 11;\n let doubled = input * 2;\n let result = doubled + offset;\n println!(\"결과 {}\", result);\n result\n}\n";
+File.WriteAllText(Path.Combine(gitAstRoot,"source.rs"),
+    methodOld+"fn remain() { let unused = 3; }\n");
+GitExec(gitAstRoot,"add",".");
+GitExec(gitAstRoot,"commit","-q","-m","initial symbol");
+var symbolBase=GitExec(gitAstRoot,"rev-parse","HEAD");
+File.WriteAllText(Path.Combine(gitAstRoot,"source.rs"),"fn remain() { let unused = 3; }\n");
+File.WriteAllText(Path.Combine(gitAstRoot,"target.rs"),methodOld);
+GitExec(gitAstRoot,"add","-A");
+GitExec(gitAstRoot,"commit","-q","-m","move method");
+var symbolMiddle=GitExec(gitAstRoot,"rev-parse","HEAD");
+File.WriteAllText(Path.Combine(gitAstRoot,"target.rs"),methodUpdated);
+GitExec(gitAstRoot,"add","-A");
+GitExec(gitAstRoot,"commit","-q","-m","edit method");
+var symbolFinal=GitExec(gitAstRoot,"rev-parse","HEAD");
+if(NativeCodeVersionComparer.IsAvailable)
+{
+    var firstHistory=GitCommitLineageComparer.Compare(gitAstRoot,symbolBase,symbolMiddle);
+    var firstAst=GitAstLineageComparer.Compare(firstHistory);
+    Check(firstAst.Supported && firstAst.SkippedFiles==0 &&
+          firstAst.Moves.Count==1 && !firstAst.Moves[0].ContentChanged &&
+          firstAst.Moves[0] is {BeforePath:"source.rs",AfterPath:"target.rs",SymbolName:"compute"},
+          "immutable Git blobs must detect an exact symbol move between commits");
+    var allHistory=GitCommitLineageComparer.Compare(gitAstRoot,symbolBase,symbolFinal);
+    var timeline=GitAstHistoryComparer.Compare(allHistory);
+    Check(timeline.Supported && timeline.Steps.Count==2 &&
+          timeline.Steps[0].BeforeCommit==symbolBase &&
+          timeline.Steps[0].AfterCommit==symbolMiddle &&
+          timeline.Steps[0].Ast.Supported &&
+          timeline.Steps[0].Ast.Moves.Count==1 &&
+          !timeline.Steps[0].Ast.Moves[0].ContentChanged &&
+          timeline.Steps[1].BeforeCommit==symbolMiddle &&
+          timeline.Steps[1].AfterCommit==symbolFinal &&
+          timeline.Steps[1].Ast.Moves.Count==0,
+          "Git AST timeline must identify movement in its actual intermediate commit");
+    var limitedStepsRejected=false;
+    try { GitCommitLineageComparer.FirstParentPath(allHistory,1); }
+    catch(InvalidDataException) { limitedStepsRejected=true; }
+    Check(limitedStepsRejected,
+          "Git AST history must explicitly reject a first-parent interval longer than its step budget");
+    var timelineReview=GitLineageReviewMapper.WithTimeline(allHistory,timeline);
+    Check(timelineReview.Count==allHistory.Changes.Count+1 &&
+          timelineReview[^1].Kind=="커밋별 선언 이동(AST)" &&
+          timelineReview[^1].BeforePath.Contains(symbolBase[..12]) &&
+          timelineReview[^1].AfterPath.Contains(symbolMiddle[..12]) &&
+          !string.IsNullOrWhiteSpace(timelineReview[^1].EventId),
+          "Git timeline review must identify the precise adjacent commit edge");
+    var allAst=GitAstLineageComparer.Compare(allHistory);
+    Check(allAst.Supported && allAst.SkippedFiles==0 &&
+          allAst.Moves.Count==1 && allAst.Moves[0].ContentChanged &&
+          allAst.Moves[0].SimilarityPermille>=880 &&
+          allAst.Moves[0].BeforePath=="source.rs" && allAst.Moves[0].AfterPath=="target.rs",
+          "multi-commit before/after snapshot must identify modified-and-moved function as candidate");
+    var joined=GitLineageReviewMapper.WithAst(allHistory,allAst);
+    Check(joined.Count==allHistory.Changes.Count+1 &&
+          joined.Last().Kind=="Git 함수 이동·수정 후보(AST)" &&
+          joined.Last().AfterPath.Contains("유사도") &&
+          !string.IsNullOrEmpty(joined.Last().EventId),
+          "Git and AST must display separate stable file vs symbol lineage events");
+    var again=GitLineageReviewMapper.WithAst(allHistory,GitAstLineageComparer.Compare(allHistory));
+    Check(joined.SequenceEqual(again),"Git AST event IDs must remain stable across repeat runs");
+    File.WriteAllText(Path.Combine(gitAstRoot,"source.rs"),"fn fake() { let fake = 123; }");
+    File.WriteAllText(Path.Combine(gitAstRoot,"target.rs"),"fn fake() { let fake = 456; }");
+    var uncommitted=GitAstLineageComparer.Compare(allHistory);
+    Check(uncommitted.Moves.SequenceEqual(allAst.Moves) &&
+          uncommitted.SkippedFiles==allAst.SkippedFiles,
+          "uncommitted source changes must never affect Git AST analysis");
+    var unsupported=new NativeCodeVersionComparer.CrossFileAstReport(
+        Array.Empty<NativeCodeVersionComparer.CrossFileMove>(),0,0,false,"test simulated limit");
+    Check(GitLineageReviewMapper.WithAst(allHistory,unsupported)
+          .SequenceEqual(GitLineageReviewMapper.Map(allHistory)),
+          "AST failure must never erase the Git file history");
+    var unrelated=GitAstLineageComparer.Compare(
+        GitCommitLineageComparer.Compare(gitAstRoot,symbolFinal,symbolFinal));
+    Check(unrelated.Supported && unrelated.Moves.Count==0,
+          "unchanged commit pair has no AST move events");
+    File.WriteAllText(Path.Combine(gitAstRoot,"corrupt.rs"),"fn broken() {");
+    GitExec(gitAstRoot,"add","-A");
+    GitExec(gitAstRoot,"commit","-q","-m","invalid Rust source");
+    var corruptedHistory=GitCommitLineageComparer.Compare(gitAstRoot,symbolFinal,"HEAD");
+    var corruptedAst=GitAstLineageComparer.Compare(corruptedHistory);
+    var corruptedTimeline=GitAstHistoryComparer.Compare(corruptedHistory);
+    Check(corruptedAst.Supported && corruptedAst.SkippedFiles>=1 &&
+          corruptedTimeline.Supported && corruptedTimeline.Steps.Count==1 &&
+          corruptedTimeline.Steps[0].Ast.SkippedFiles>=1 &&
+          GitLineageReviewMapper.WithTimeline(corruptedHistory,corruptedTimeline)
+            .Take(corruptedHistory.Changes.Count)
+            .SequenceEqual(GitLineageReviewMapper.Map(corruptedHistory)),
+          "malformed committed source must be counted as skipped while Git file evidence stays intact");
+}
+Console.WriteLine("PASS IMMUTABLE GIT COMMIT AST SYMBOL MOVE AND MODIFIED MOVE");
+
 Console.WriteLine("ALL REGRESSIONS PASSED");

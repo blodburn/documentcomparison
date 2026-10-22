@@ -33,9 +33,29 @@ and bounded, timeout-protected raw subprocess output.
   calibrated probability.
 - NUL-delimited paths support Unicode and unescaped whitespace.
   Symlinks and submodule commits are skipped; regular Git blobs are included.
-- Git lineage is additive to, and separate from, the existing Rust line,
-  folder and AST analyses. Git-aware AST tracking of declarations across
-  arbitrary historical snapshots is not yet implemented.
+- The Git-commit review now additionally retrieves source files from
+  immutable Git blobs (git cat-file blob, not a checkout) into bounded,
+  unique disposable directories, then calls the existing native Tree-sitter
+  cross-file comparer. It reports exact unique declaration moves and
+  conservative changed-function move candidates separately from the Git
+  file-change ledger, with stable event IDs tied to commit SHA/path/AST span.
+  Changes to the current working tree do not affect any finding.
+- The first-parent commit history is additionally traversed, up to 16 edges
+  and at most 128 changed source-file endpoints across the entire range,
+  comparing each adjacent commit pair with Git blob-backed AST. Results
+  state exactly which consecutive commit pair introduced a declaration move.
+  The endpoint AST results are shown separately: for a move in one commit and
+  a later edit, the endpoint event may be a changed-move candidate, while the
+  per-commit event is an exact move. The two are not interchangeable claims.
+- Non-first-parent ancestry and intervals longer than 16 edges do not claim
+  an exhaustive per-step history; the view discloses that limitation and
+  retains endpoint Git file/AST evidence.
+- Git AST processing is bounded to 128 changed Rust/C# files per side, 2 MB
+  per source, 32 MB combined. Unsupported paths, malformed UTF-8 or parse
+  failures, and file-size skips are surfaced as a skipped-files count.
+  Intermediate files are cleaned after analysis. A failure in AST analysis
+  never discards the original Git file changes. This is not a full semantic
+  call-graph or dependency lineage analysis.
 
 ## Limits and safeguards
 
