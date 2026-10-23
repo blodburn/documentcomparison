@@ -1457,7 +1457,14 @@ public sealed class NativeComparisonEngine : IComparisonEngine
                 structural.Add($"{pair} · {(contentChanged ? "항/호 이동+변경" : "항/호 이동")}: {ap.Label} → {bp.Label}");
             if (!contentChanged) continue;
             bodyChanged = true;
-            var wholePlainRewrite = ap.Label == "본문" && bp.Label == "본문" && oldParts.Count == 1 && newParts.Count == 1 && m.Score < .72;
+            // A low overall similarity score must not swallow substantial
+            // unchanged legal text when a sentence is deleted and another
+            // is appended. In that case keep the surviving sentence as a
+            // review anchor and emit only actual deletion/insertion spans.
+            var wholePlainRewrite = ap.Label == "본문" && bp.Label == "본문" &&
+                oldParts.Count == 1 && newParts.Count == 1 && m.Score < .72 &&
+                !HasStableEdgeContext(ap.Core, bp.Core) &&
+                !HasSubstantialSharedSentence(ap.Core, bp.Core);
             var wholeItemRewrite = IsStructuralLabel(ap.Label) && IsStructuralLabel(bp.Label) && m.Score <= .56 && !HasReviewAnchors(ap.Core, bp.Core) && !HasStableEdgeContext(ap.Core, bp.Core);
             if (wholePlainRewrite || wholeItemRewrite)
                 result.Add(NativeMarker.Change(pair, pairOrder, oldDoc, newDoc, ap.Core.Trim(), bp.Core.Trim(),
@@ -1712,6 +1719,103 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return result.Count > 0 ? result : null;
     }
 
+    // Long document paragraphs may preserve entire sentences even when the
+    // overall score is low because another sentence was removed/inserted.
+    // Anchor those exact sentences before word-level LCS: repeated common
+    // words and punctuation must not make an unchanged sentence look edited.
+    private static List<TokenSpan> ReviewSentences(string text)
+    {
+        var segments = new List<TokenSpan>();
+        if (text.Length > 65_536) return segments;
+        var from = 0;
+        void Add(int end)
+        {
+            var start = from;
+            while (start < end && char.IsWhiteSpace(text[start])) start++;
+            while (end > start && char.IsWhiteSpace(text[end - 1])) end--;
+            if (end > start)
+                segments.Add(new TokenSpan(start, end, text[start..end]));
+        }
+        for (var i = 0; i < text.Length; i++)
+        {
+            if (text[i] is not ('.' or '!' or '?' or '。' or '！' or '？') ||
+                (i + 1 < text.Length && !char.IsWhiteSpace(text[i + 1])))
+                continue;
+            Add(i + 1);
+            from = i + 1;
+            if (segments.Count >= 128) return new List<TokenSpan>();
+        }
+        Add(text.Length);
+        return segments;
+    }
+
+    private static bool HasSubstantialSharedSentence(string oldText, string newText)
+    {
+        var oldSentences = ReviewSentences(oldText);
+        var newSentences = ReviewSentences(newText);
+        if (oldSentences.Count < 2 || newSentences.Count < 2) return false;
+        // Anchors must be *verbatim*. CanonicalVisibleText folds whitespace;
+        // using it here could hide a whitespace edit when another sentence
+        // changes in the same paragraph.
+        var keys = newSentences.Where(s => s.Text.Length >= 40)
+            .Select(s => s.Text).ToHashSet(StringComparer.Ordinal);
+        return oldSentences.Any(s => s.Text.Length >= 40 && keys.Contains(s.Text));
+    }
+
+    private static List<NativeMarker>? TryPreservedSentenceDiff(
+        string oldText, string newText, int oldBase, int newBase,
+        int oldDoc, int newDoc, string pair, int pairOrder,
+        string part, bool includePunctuation, int itemOrder)
+    {
+        if (Math.Min(oldText.Length, newText.Length) < 96 ||
+            !HasSubstantialSharedSentence(oldText, newText)) return null;
+        var a = ReviewSentences(oldText);
+        var b = ReviewSentences(newText);
+        var pairs = MatcherPairs(a.Select(x => x.Text).ToArray(),
+            b.Select(x => x.Text).ToArray());
+        if (!pairs.Any(x => a[x.A].Text.Length >= 40 && b[x.B].Text.Length >= 40))
+            return null;
+
+        // Sentences are already matched at their full original UTF-16 span.
+        // Trim only separator whitespace in unmatched gaps; never trim or
+        // consume the punctuation belonging to a preserved sentence.
+        var anchors = new List<(int A, int B)> { (-1, -1) };
+        anchors.AddRange(pairs);
+        anchors.Add((a.Count, b.Count));
+        var markers = new List<NativeMarker>();
+        for (var k = 0; k + 1 < anchors.Count; k++)
+        {
+            var prev = anchors[k]; var next = anchors[k + 1];
+            var oldStart = prev.A < 0 ? 0 : a[prev.A].End;
+            var newStart = prev.B < 0 ? 0 : b[prev.B].End;
+            var oldEnd = next.A == a.Count ? oldText.Length : a[next.A].Start;
+            var newEnd = next.B == b.Count ? newText.Length : b[next.B].Start;
+            while (oldStart < oldEnd && char.IsWhiteSpace(oldText[oldStart])) oldStart++;
+            while (newStart < newEnd && char.IsWhiteSpace(newText[newStart])) newStart++;
+            while (oldEnd > oldStart && char.IsWhiteSpace(oldText[oldEnd - 1])) oldEnd--;
+            while (newEnd > newStart && char.IsWhiteSpace(newText[newEnd - 1])) newEnd--;
+            if (oldStart == oldEnd && newStart == newEnd) continue;
+            if (!includePunctuation &&
+                (oldStart == oldEnd || IsPunctuationOnly(oldText[oldStart..oldEnd])) &&
+                (newStart == newEnd || IsPunctuationOnly(newText[newStart..newEnd])))
+                continue;
+
+            if (oldStart == oldEnd)
+                markers.Add(NativeMarker.Insert(pair, pairOrder, oldDoc, newDoc,
+                    newText[newStart..newEnd], oldBase + oldStart,
+                    newBase + newStart, newBase + newEnd, part, itemOrder, k));
+            else if (newStart == newEnd)
+                markers.Add(NativeMarker.Delete(pair, pairOrder, oldDoc, newDoc,
+                    oldText[oldStart..oldEnd], oldBase + oldStart,
+                    oldBase + oldEnd, newBase + newStart, part, itemOrder, k));
+            else
+                markers.AddRange(DiffText(oldText[oldStart..oldEnd],
+                    newText[newStart..newEnd], oldBase + oldStart, newBase + newStart,
+                    oldDoc, newDoc, pair, pairOrder, part, includePunctuation, itemOrder));
+        }
+        return markers.Count > 0 ? markers : null;
+    }
+
     private static List<NativeMarker> DiffText(
         string oldText, string newText, int oldBase, int newBase, int oldDoc, int newDoc,
         string pair, int pairOrder, string part, bool includePunctuation, int itemOrder)
@@ -1720,6 +1824,9 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         var whitespace = TryWhitespaceBoundaryDiff(
             oldText, newText, oldBase, newBase, oldDoc, newDoc, pair, pairOrder, part, itemOrder);
         if (whitespace is not null) return whitespace;
+        var preserved = TryPreservedSentenceDiff(oldText, newText, oldBase, newBase,
+            oldDoc, newDoc, pair, pairOrder, part, includePunctuation, itemOrder);
+        if (preserved is not null) return preserved;
         var korean = TryKoreanReviewDiff(oldText, newText, oldBase, newBase, oldDoc, newDoc, pair, pairOrder, part, itemOrder);
         if (korean is not null) return korean;
         var a = LexTokens(oldText); var b = LexTokens(newText);

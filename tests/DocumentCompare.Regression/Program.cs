@@ -3805,4 +3805,83 @@ if (NativeCodeVersionComparer.IsAvailable)
         "cross-level count budget must preserve managed fallback");
     Console.WriteLine($"PASS RUST COLLAPSED LEVEL CSHARP PARITY {crossCases}/{crossCases}");
 }
+
+// SCREENSHOT REGRESSION: v5.21.9 article 26 -> 27 fee paragraph.
+// Two long sentences survive unchanged, one middle sentence disappears,
+// and a new statutory refund sentence is appended.
+var feeOldBody="회원은 회원 또는 회원에게 등록된 계정을 이용하는 누군가에 의하여 발생하는 모든 비용과 해당 세금을 지급하는 것에 동의합니다. "+
+    "회원은 언제든지 서비스를 통하여 제공되는 상품과 용역의 가격을 수정할 수 있습니다. "+
+    "회원은 계정이 차별적 또는 비차별적으로 폐쇄되었을 때, 미사용 가상 아이템에 관하여 현금을 수령하거나 또는 다른 배상을 받지 않는다는 점에 동의합니다.";
+var feeNewBody="회원은 회원 또는 회원에게 등록된 계정을 이용하는 누군가에 의하여 발생하는 모든 비용과 해당 세금을 지급하는 것에 동의합니다. "+
+    "회원은 계정이 차별적 또는 비차별적으로 폐쇄되었을 때, 미사용 가상 아이템에 관하여 현금을 수령하거나 또는 다른 배상을 받지 않는다는 점에 동의합니다. "+
+    "다만, 관련 법령 및 이 약관에 따른 청약철회·환급 등 회원의 권리는 제한되지 않습니다.";
+var feeOld=Path.Combine(dir,"fee-26-before.docx");
+var feeNew=Path.Combine(dir,"fee-27-after.docx");
+Make(feeOld,P("제26조(수수료의 지급)")+P(feeOldBody));
+Make(feeNew,P("제27조(수수료의 지급)")+P(feeNewBody));
+var feeResult=await eng.CompareAsync(new[]{feeOld,feeNew},0,"legal",true,true);
+var feeRow=feeResult.Rows.Single(r=>r.Members[0]?.Number=="26");
+var feeBodyMarkers=feeRow.Markers.Where(m=>m.Part=="body").ToList();
+var deletedFeeSentence="회원은 언제든지 서비스를 통하여 제공되는 상품과 용역의 가격을 수정할 수 있습니다.";
+var addedFeeSentence="다만, 관련 법령 및 이 약관에 따른 청약철회·환급 등 회원의 권리는 제한되지 않습니다.";
+Check(feeRow.Markers.Count(m=>m.Part=="header" && m.Message.Contains("26") &&
+    m.Message.Contains("27"))==1,
+    "article 26 -> 27 number lineage disappeared while correcting body diff");
+Check(feeBodyMarkers.Count==2 &&
+    feeBodyMarkers.Count(m=>m.Action=="삭제" && m.Text==deletedFeeSentence)==1 &&
+    feeBodyMarkers.Count(m=>m.Action=="추가" && m.Text==addedFeeSentence)==1,
+    "fee article must report only deleted price-change sentence and new refund sentence: "+
+    string.Join(" | ",feeBodyMarkers.Select(m=>m.Message)));
+var firstFeeSentence="회원은 회원 또는 회원에게 등록된 계정을 이용하는 누군가에 의하여 발생하는 모든 비용과 해당 세금을 지급하는 것에 동의합니다.";
+var lastFeeSentence="회원은 계정이 차별적 또는 비차별적으로 폐쇄되었을 때, 미사용 가상 아이템에 관하여 현금을 수령하거나 또는 다른 배상을 받지 않는다는 점에 동의합니다.";
+Check(feeOldBody.Contains(firstFeeSentence) && feeNewBody.Contains(firstFeeSentence) &&
+    feeOldBody.Contains(lastFeeSentence) && feeNewBody.Contains(lastFeeSentence) &&
+    feeBodyMarkers.All(m=>!m.Text.Contains(firstFeeSentence) && !m.Text.Contains(lastFeeSentence)),
+    "unchanged substantial sentences must not be marked as deleted or inserted");
+var bodyOffsetOld=feeRow.Members[0]!.Header.Length+1;
+var bodyOffsetNew=feeRow.Members[1]!.Header.Length+1;
+var deletedMarker=feeBodyMarkers.Single(m=>m.Action=="삭제");
+var addedMarker=feeBodyMarkers.Single(m=>m.Action=="추가");
+Check(deletedMarker.Endpoints.Any(ep=>ep.TargetDoc==0 &&
+    ep.CharStart==bodyOffsetOld+feeOldBody.IndexOf(deletedFeeSentence,StringComparison.Ordinal) &&
+    ep.CharEnd==ep.CharStart+deletedFeeSentence.Length) &&
+    addedMarker.Endpoints.Any(ep=>ep.TargetDoc==1 &&
+    ep.CharStart==bodyOffsetNew+feeNewBody.IndexOf(addedFeeSentence,StringComparison.Ordinal) &&
+    ep.CharEnd==ep.CharStart+addedFeeSentence.Length),
+    "fee article Word/UI spans must anchor precisely to the deleted/inserted sentences");
+Check(!feeRow.DisplayMessages.Any(message=>message.Contains("변경: “"+firstFeeSentence)),
+    "fee article change sidebar must not quote the entire unchanged paragraph");
+
+// The same stable sentence in the middle must survive even if both
+// surrounding sentences are changed. An unrelated long rewrite should
+// still be eligible for the original whole-block treatment.
+var sentenceGate=typeof(NativeComparisonEngine).GetMethod(
+    "HasSubstantialSharedSentence",BindingFlags.NonPublic|BindingFlags.Static)!;
+var preservedMiddle="이용자는 개인정보 처리의 목적과 이용 기간을 명확하게 확인할 수 있으며 필요한 사항을 요청할 수 있습니다.";
+var middleOld="회사는 기존 계약 조건을 적용하고 분기별 자료를 공개합니다. "+
+    preservedMiddle+" 기존 문의는 담당 부서로 전화하여 접수합니다.";
+var middleNew="회사는 새로운 계약 기준과 별도의 안내 절차를 도입합니다. "+
+    preservedMiddle+" 신규 문의는 온라인 접수 화면을 이용합니다.";
+Check((bool)sentenceGate.Invoke(null,new object[]{middleOld,middleNew})!,
+    "long unchanged middle sentence must remain a valid diff anchor");
+var middleA=Path.Combine(dir,"middle-sentence-before.docx");
+var middleB=Path.Combine(dir,"middle-sentence-after.docx");
+Make(middleA,P("제31조(민감정보 처리)")+P(middleOld));
+Make(middleB,P("제31조(민감정보 처리)")+P(middleNew));
+var middleResult=await eng.CompareAsync(new[]{middleA,middleB},0,"legal",true,true);
+var middleRow=middleResult.Rows.Single(r=>r.Members[0]?.Number=="31");
+Check(middleRow.Markers.Any(m=>m.Part=="body") &&
+    middleRow.Markers.Where(m=>m.Part=="body").All(m=>
+        !m.Text.Contains(preservedMiddle,StringComparison.Ordinal)),
+    "mid-paragraph common sentence must not be highlighted during two distinct rewrites");
+Check(!(bool)sentenceGate.Invoke(null,new object[]{
+    "기존 계약 조건을 적용합니다. 과거 자료는 회사에서 별도 보관합니다.",
+    "신규 이용 기준을 적용합니다. 현재 자료는 서버에서 일괄 삭제합니다."})!,
+    "unrelated or short boilerplate must not trigger a false sentence anchor");
+var whitespaceAnchorA=firstFeeSentence+" "+lastFeeSentence;
+var whitespaceAnchorB=firstFeeSentence.Replace("비용과 해당","비용과  해당")+" "+
+    lastFeeSentence.Replace("계정이 차별적","계정이  차별적");
+Check(!(bool)sentenceGate.Invoke(null,new object[]{whitespaceAnchorA,whitespaceAnchorB})!,
+    "changed internal whitespace must not be mistaken for an unchanged sentence anchor");
+Console.WriteLine("PASS V5.21.9 FEE ARTICLE WORD DIFF PRESERVED SENTENCES");
 Console.WriteLine("ALL REGRESSIONS PASSED");
