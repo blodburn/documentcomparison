@@ -627,7 +627,106 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return result;
     }
 
-    private static List<NativeUnit?[]> BuildRows(IReadOnlyList<List<NativeUnit>> docs, int baseIndex, CancellationToken token)
+    private static long _rowAlignmentRustMatches;
+    private static long _rowAlignmentRustMismatches;
+    internal static long RowAlignmentRustMatches =>
+        System.Threading.Interlocked.Read(ref _rowAlignmentRustMatches);
+    internal static long RowAlignmentRustMismatches =>
+        System.Threading.Interlocked.Read(ref _rowAlignmentRustMismatches);
+
+    private static List<NativeUnit?[]> BuildRows(
+        IReadOnlyList<List<NativeUnit>> docs,int baseIndex,CancellationToken token)
+    {
+        var counts=docs.Select(d=>d.Count).ToArray();
+        if (docs.Count is < 2 or > 3 || counts.Any(x=>x>512))
+            return BuildRowsCSharp(docs,baseIndex,token);
+        var baseline=docs[baseIndex];
+        try
+        {
+            var matches=new List<NativeCodeVersionComparer.DocumentRowMatch>();
+            var additions=new List<NativeCodeVersionComparer.DocumentRowAddition>();
+            for(var doc=0;doc<docs.Count;doc++)
+            {
+                if (doc==baseIndex) continue;
+                token.ThrowIfCancellationRequested();
+                var found=MatchUnitSequence(baseline,docs[doc],token);
+                var used=found.Select(x=>x.Other).ToHashSet();
+                matches.AddRange(found.Select(x=>
+                    new NativeCodeVersionComparer.DocumentRowMatch(
+                        doc,x.Base,x.Other)));
+                for(var index=0;index<docs[doc].Count;index++)
+                    if (!used.Contains(index))
+                        additions.Add(new(doc,index,
+                            AdditionSlot(index,found,baseline.Count),
+                            docs[doc][index].Index));
+            }
+            if (additions.Count>192 || matches.Count>1024)
+                return BuildRowsCSharp(docs,baseIndex,token);
+
+            // For three-way comparisons, C# retains the original semantic
+            // merge predicates. Rust independently owns the insertion slot,
+            // row ordering, one-to-one merge choice and final row grid.
+            var allowed=new List<NativeCodeVersionComparer.DocumentRowMerge>();
+            foreach(var group in additions.GroupBy(x=>x.Slot))
+            {
+                var ordered=group.OrderBy(x=>x.UnitIndex).ThenBy(x=>x.Doc).ToList();
+                for(var i=0;i<ordered.Count;i++)
+                for(var j=i+1;j<ordered.Count;j++)
+                {
+                    if (ordered[i].Doc==ordered[j].Doc) continue;
+                    var ex=docs[ordered[i].Doc][ordered[i].Other];
+                    var other=docs[ordered[j].Doc][ordered[j].Other];
+                    if (UnitLineageSimilarity(ex,other)<.84) continue;
+                    if (ex.Title.Length>0 && other.Title.Length>0 &&
+                        TitleSimilarity(ex,other)<.35) continue;
+                    if (ex.Number.Length>0 && other.Number.Length>0 &&
+                        !string.Equals(ex.Number,other.Number,
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (ex.Title.Length==0 || other.Title.Length==0 ||
+                            TitleSimilarity(ex,other)<.35) continue;
+                        if (IsLowInformationTitle(ex.Title) &&
+                            IsLowInformationTitle(other.Title))
+                        {
+                            var exBody=LineageNormalize(ex.Body);
+                            var otherBody=LineageNormalize(other.Body);
+                            if (exBody.Length==0 || exBody!=otherBody) continue;
+                        }
+                    }
+                    allowed.Add(new(ordered[i].Doc,ordered[i].Other,
+                        ordered[j].Doc,ordered[j].Other));
+                }
+            }
+            var native=NativeCodeVersionComparer.AlignDocumentRows(
+                counts,baseIndex,matches,additions,allowed);
+            if (native is null) return BuildRowsCSharp(docs,baseIndex,token);
+            var rows=native.Select(indices=>indices.Select((idx,doc)=>
+                idx.HasValue ? docs[doc][idx.Value] : null).ToArray()).ToList();
+            if (Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_REQUIRE_NATIVE")=="1" ||
+                Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_VERIFY_DOCUMENT_MATCHES")=="1")
+            {
+                var reference=BuildRowsCSharp(docs,baseIndex,token);
+                if (rows.Count!=reference.Count ||
+                    rows.Where((row,i)=>row.Where((unit,d)=>
+                        !ReferenceEquals(unit,reference[i][d])).Any()).Any())
+                {
+                    System.Threading.Interlocked.Increment(ref _rowAlignmentRustMismatches);
+                    return reference;
+                }
+            }
+            System.Threading.Interlocked.Increment(ref _rowAlignmentRustMatches);
+            return rows;
+        }
+        catch(Exception ex) when(ex is InvalidDataException or
+            System.Text.Json.JsonException or ArgumentException or OverflowException)
+        {
+            System.Threading.Interlocked.Increment(ref _rowAlignmentRustMismatches);
+            return BuildRowsCSharp(docs,baseIndex,token);
+        }
+    }
+
+    private static List<NativeUnit?[]> BuildRowsCSharp(
+        IReadOnlyList<List<NativeUnit>> docs, int baseIndex, CancellationToken token)
     {
         var n = docs.Count;
         var baseline = docs[baseIndex];
@@ -3688,7 +3787,58 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return 0;
     }
 
-    private static List<SegmentVm> BuildSegments(string text, IReadOnlyList<MarkerVm> markers, int doc, string part, int offset)
+    private static long _reviewSegmentsRustMatches;
+    private static long _reviewSegmentsRustMismatches;
+    internal static long ReviewSegmentsRustMatches =>
+        System.Threading.Interlocked.Read(ref _reviewSegmentsRustMatches);
+    internal static long ReviewSegmentsRustMismatches =>
+        System.Threading.Interlocked.Read(ref _reviewSegmentsRustMismatches);
+
+    private static List<SegmentVm> BuildSegments(
+        string text,IReadOnlyList<MarkerVm> markers,int doc,string part,int offset)
+    {
+        if (text.Length==0) return new List<SegmentVm>();
+        try
+        {
+            var spans=new List<NativeCodeVersionComparer.DocumentReviewSpan>();
+            foreach(var marker in markers.Where(x=>x.Part==part))
+            foreach(var ep in marker.Endpoints.Where(x=>
+                x.TargetDoc==doc && x.CharEnd>x.CharStart))
+            {
+                var start=Math.Clamp(ep.CharStart-offset,0,text.Length);
+                var end=Math.Clamp(ep.CharEnd-offset,start,text.Length);
+                var role=marker.Action=="삭제" ? 1 :
+                    marker.Action=="추가" ? 2 :
+                    (doc==marker.TargetDoc ? 2 : 1);
+                spans.Add(new(start,end,role));
+            }
+            var rust=NativeCodeVersionComparer.SegmentDocumentReview(text,spans);
+            if (rust is null) return BuildSegmentsCSharp(text,markers,doc,part,offset);
+            if (Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_REQUIRE_NATIVE")=="1" ||
+                Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_VERIFY_DOCUMENT_MATCHES")=="1")
+            {
+                var reference=BuildSegmentsCSharp(text,markers,doc,part,offset);
+                if (rust.Count!=reference.Count ||
+                    rust.Where((seg,i)=>seg.Text!=reference[i].Text ||
+                        seg.Style!=reference[i].Style).Any())
+                {
+                    System.Threading.Interlocked.Increment(ref _reviewSegmentsRustMismatches);
+                    return reference;
+                }
+            }
+            System.Threading.Interlocked.Increment(ref _reviewSegmentsRustMatches);
+            return rust.Select(seg=>new SegmentVm{Text=seg.Text,Style=seg.Style}).ToList();
+        }
+        catch(Exception ex) when(ex is InvalidDataException or
+            System.Text.Json.JsonException or ArgumentException or OverflowException)
+        {
+            System.Threading.Interlocked.Increment(ref _reviewSegmentsRustMismatches);
+            return BuildSegmentsCSharp(text,markers,doc,part,offset);
+        }
+    }
+
+    private static List<SegmentVm> BuildSegmentsCSharp(
+        string text, IReadOnlyList<MarkerVm> markers, int doc, string part, int offset)
     {
         if (text.Length == 0) return new();
         var flags = new int[text.Length]; // 1 delete, 2 insert

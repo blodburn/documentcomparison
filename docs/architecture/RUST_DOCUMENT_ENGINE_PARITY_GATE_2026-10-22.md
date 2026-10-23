@@ -576,3 +576,31 @@ This is a verifiable functional port of large comparison subpipelines,
 not a source-file-for-source-file replacement. Full retirement requires
 the remaining parser/normalization/marker model and their reference
 tests to move into Rust in a separately reviewed API boundary.
+
+## Rust-first A/B/C row placement and display shading (2026-10-24)
+
+NativeComparisonEngine.BuildRows now delegates the baseline-aligned
+cross-document row grid, per-gap insertion ordering, and compatible
+unmatched addition coalescing to doc_row_alignment.rs. The managed
+input supplies previously selected article/unit correspondence and the
+original semantic coalescing-predicate outcomes. The Rust function
+dc_align_document_rows_utf8 owns the resulting complete A/B/C index
+grid, which is checked against the original BuildRowsCSharp output
+for exact row/document object identity when native parity is enabled.
+540 deterministic 2- and 3-way row placement cases passed with no
+mismatch, and the live regression asserts the Rust path was used.
+
+NativeComparisonEngine.BuildSegments now delegates final deletion,
+addition and replacement shading segments to doc_segments.rs,
+including overlapping markers (both), UTF-16 absolute offsets,
+unchanged spans, and exact text concatenation. Splits inside a UTF-16
+surrogate pair are an intentional fallback to the original C# path.
+550 source-equivalent randomized test vectors passed; live document
+regressions confirm zero shading mismatches and production smoke
+asserts both shading and A/B/C row placement run in Rust.
+
+These additions do NOT complete a 100% Rust rewrite of the class:
+document normalization, legal/general structural parsing, semantic
+unit/text review event construction, Word-specific data model
+adaptation and unmanaged C#-compatibility fallbacks remain.
+100%-completion claims require separately proving these behaviors.

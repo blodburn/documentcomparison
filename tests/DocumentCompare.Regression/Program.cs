@@ -158,7 +158,11 @@ if (args.Length==1 && args[0]=="--smoke-native-production")
         koreanMarkers.Cast<object>().Count()>=2 &&
         GetRustCounter("KoreanReviewRustMatches")>beforeMorph,
         "production Rust-first Korean morphology alignment not adopted");
-    Console.WriteLine("PASS PRODUCTION RUST-FIRST FULL ITEM, LINEAGE, TABLE, TOKEN, CHARACTER SCORE, KOREAN DP AND SENTENCE REVIEW");
+    Check(GetRustCounter("ReviewSegmentsRustMatches")>0,
+        "production Word review text segmentation must run in Rust");
+    Check(GetRustCounter("RowAlignmentRustMatches")>0,
+        "production A/B/C row positioning must run in Rust");
+    Console.WriteLine("PASS PRODUCTION RUST-FIRST ITEM, LINEAGE, TABLE, TOKEN, SCORE, KOREAN DP, SENTENCE AND REVIEW SEGMENTS");
     return;
 }
 
@@ -4448,5 +4452,154 @@ if (NativeCodeVersionComparer.IsAvailable)
         ReadKoreanCounter(accepted)>initialAccepted,
         "Korean short-word regression must exercise Rust native DP");
     Console.WriteLine($"PASS RUST KOREAN MORPH DP CSHARP PARITY {koreanChecked}/{koreanChecked}");
+}
+
+// C# vs Rust review shading boundary/overlap/UTF-16 index parity.
+// The live document regression additionally verifies BuildSegments uses
+// Rust without silently falling back for the supported inputs.
+if (NativeCodeVersionComparer.IsAvailable)
+{
+    var rng=new Random(20261024);
+    var total=0;
+    for(var k=0;k<550;k++)
+    {
+        var text=k%4==0?"주문을 취소할 수 있습니다.":new string(
+            Enumerable.Range(0,rng.Next(1,91)).Select(_=>(char)('a'+rng.Next(26))).ToArray());
+        var count=rng.Next(0,12);
+        var spans=new List<NativeCodeVersionComparer.DocumentReviewSpan>();
+        var flags=new int[text.Length];
+        for(var m=0;m<count;m++)
+        {
+            var first=rng.Next(0,text.Length+6);
+            var last=first+rng.Next(0,Math.Max(1,text.Length+6-first));
+            var role=rng.Next(2)==0?1:2;
+            spans.Add(new(first,last,role));
+            for(var i=Math.Min(first,text.Length);i<Math.Min(last,text.Length);i++)
+                flags[i]|=role;
+        }
+        var expected=new List<(string Text,string Style)>();
+        var offset=0;
+        while(offset<text.Length)
+        {
+            var style=flags[offset];var end=offset+1;
+            while(end<text.Length && flags[end]==style) end++;
+            expected.Add((text[offset..end],style switch {
+                1=>"delete",2=>"insert",3=>"both",_=>"normal"}));
+            offset=end;
+        }
+        var native=NativeCodeVersionComparer.SegmentDocumentReview(text,spans);
+        Check(native is not null && native.Count==expected.Count &&
+            native.Zip(expected).All(x=>
+                x.First.Text==x.Second.Text && x.First.Style==x.Second.Style),
+            "Rust review text segmented incorrectly: "+k);
+        total++;
+    }
+    var unicodeSplit=NativeCodeVersionComparer.SegmentDocumentReview(
+        "a😀b",new[]{new NativeCodeVersionComparer.DocumentReviewSpan(1,2,1)});
+    Check(unicodeSplit is null,
+        "Rust must fall back if marker splits an astral UTF-16 surrogate pair");
+    var counter=(long)typeof(NativeComparisonEngine).GetProperty(
+        "ReviewSegmentsRustMatches",
+        BindingFlags.Static|BindingFlags.NonPublic)!.GetValue(null)!;
+    var rejected=(long)typeof(NativeComparisonEngine).GetProperty(
+        "ReviewSegmentsRustMismatches",
+        BindingFlags.Static|BindingFlags.NonPublic)!.GetValue(null)!;
+    Check(counter>0 && rejected==0,
+        "document regression did not use Rust review segmentation or found mismatch");
+    Console.WriteLine($"PASS RUST DOCUMENT REVIEW SHADING SEGMENTS PARITY {total}/{total}");
+}
+
+// A/B/C row placement: 540 deterministic source-compatible matching
+// matrices with two- and three-document inputs, moved indices and
+// coalescing across inserted rows.
+if (NativeCodeVersionComparer.IsAvailable)
+{
+    var rng=new Random(20261024);
+    var cases=0;
+    for(var trial=0;trial<540;trial++)
+    {
+        var docs=trial%2==0?2:3;
+        var baseline=rng.Next(0,22);
+        var counts=Enumerable.Range(0,docs).Select(d=>
+            d==0?baseline:rng.Next(0,24)).ToArray();
+        var mappings=new List<NativeCodeVersionComparer.DocumentRowMatch>();
+        var newItems=new List<NativeCodeVersionComparer.DocumentRowAddition>();
+        for(var d=1;d<docs;d++)
+        {
+            var baseOrder=Enumerable.Range(0,baseline).OrderBy(_=>rng.Next())
+                .Take(Math.Min(baseline,counts[d])/2).ToArray();
+            var otherOrder=Enumerable.Range(0,counts[d]).OrderBy(_=>rng.Next())
+                .Take(baseOrder.Length).ToArray();
+            var matched=baseOrder.Zip(otherOrder)
+                .Select(p=>new NativeCodeVersionComparer.DocumentRowMatch(
+                    d,p.First,p.Second)).ToArray();
+            mappings.AddRange(matched);
+            var used=otherOrder.ToHashSet();
+            for(var other=0;other<counts[d];other++)
+            {
+                if(used.Contains(other))continue;
+                var prev=matched.Where(x=>x.Other<other).OrderByDescending(x=>x.Other)
+                    .FirstOrDefault();
+                var next=matched.Where(x=>x.Other>other).OrderBy(x=>x.Other)
+                    .FirstOrDefault();
+                var slot=prev is not null && next is not null && prev.Base<next.Base
+                    ? next.Base : prev is not null
+                    ? Math.Min(baseline,prev.Base+1)
+                    : next is not null ? Math.Max(0,next.Base) : baseline;
+                newItems.Add(new(d,other,slot,other));
+            }
+        }
+        var rowGrouped=newItems.GroupBy(x=>x.Slot)
+            .OrderByDescending(x=>x.Key);
+        var mergeable=new List<NativeCodeVersionComparer.DocumentRowMerge>();
+        foreach(var group in rowGrouped)
+        {
+            var sorted=group.OrderBy(x=>x.UnitIndex).ThenBy(x=>x.Doc).ToArray();
+            for(var i=0;i<sorted.Length;i++)
+            for(var j=i+1;j<sorted.Length;j++)
+                if(sorted[i].Doc!=sorted[j].Doc&&rng.Next(2)==0)
+                    mergeable.Add(new(sorted[i].Doc,sorted[i].Other,
+                        sorted[j].Doc,sorted[j].Other));
+        }
+        var expected=Enumerable.Range(0,baseline)
+            .Select(i=>{
+                var row=new int?[docs];row[0]=i;return row;
+            }).ToList();
+        foreach(var m in mappings) expected[m.Base][m.Doc]=m.Other;
+        foreach(var group in rowGrouped)
+        {
+            var pending=new List<int?[]>();
+            foreach(var a in group.OrderBy(x=>x.UnitIndex).ThenBy(x=>x.Doc))
+            {
+                var row=pending.FirstOrDefault(r=>{
+                    if(r[a.Doc].HasValue)return false;
+                    var existing=Enumerable.Range(0,docs)
+                        .Where(d=>r[d].HasValue).Select(d=>(Doc:d,Index:r[d]!.Value))
+                        .FirstOrDefault();
+                    return mergeable.Any(m=>m.LeftDoc==existing.Doc &&
+                        m.LeftOther==existing.Index &&
+                        m.RightDoc==a.Doc && m.RightOther==a.Other);
+                });
+                if(row is null){row=new int?[docs];pending.Add(row);}
+                row[a.Doc]=a.Other;
+            }
+            expected.InsertRange(Math.Clamp(group.Key,0,expected.Count),pending);
+        }
+        var native=NativeCodeVersionComparer.AlignDocumentRows(
+            counts,0,mappings,newItems,mergeable);
+        Check(native is not null && native.Count==expected.Count &&
+            expected.Zip(native).All(pair=>pair.First.SequenceEqual(pair.Second)),
+            "Rust A/B/C row ordering differs from canonical grouping: "+trial);
+        cases++;
+    }
+    var rowCounter=(long)typeof(NativeComparisonEngine).GetProperty(
+        "RowAlignmentRustMatches",
+        BindingFlags.Static|BindingFlags.NonPublic)!.GetValue(null)!;
+    var rowMismatch=(long)typeof(NativeComparisonEngine).GetProperty(
+        "RowAlignmentRustMismatches",
+        BindingFlags.Static|BindingFlags.NonPublic)!.GetValue(null)!;
+    Check(rowCounter>0 && rowMismatch==0,
+        "live document compare must actually adopt Rust A/B/C rows without drift");
+    Console.WriteLine($"PASS RUST A/B/C ROW ALIGNMENT CSHARP PARITY {cases}/{cases}");
 }
 Console.WriteLine("ALL REGRESSIONS PASSED");

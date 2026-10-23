@@ -152,6 +152,22 @@ public static class NativeCodeVersionComparer
     public sealed record DocumentTableCell(int Index, int Table, int Row, string Key);
     public sealed record DocumentTablePair(int Base, int Other);
     public sealed record DocumentTokenBlock(int A, int B, int Size);
+    public sealed record DocumentReviewSpan(int Start,int End,int Role);
+    public sealed record DocumentReviewSegment(string Text,string Style);
+    public sealed record DocumentRowMatch(int Doc,int Base,int Other);
+    public sealed record DocumentRowAddition(int Doc,int Other,int Slot,int UnitIndex);
+    public sealed record DocumentRowMerge(
+        int LeftDoc,int LeftOther,int RightDoc,int RightOther);
+    private sealed record DocumentAlignedRowsWire(List<List<int?>> Rows);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int DocumentRowAlignmentDelegate(
+        [In] byte[] input,nuint length,out NativeAstResult result);
+
+    private sealed record DocumentReviewSegmentsWire(List<DocumentReviewSegment> Segments);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int DocumentReviewSegmentsDelegate(
+        [In] byte[] input,nuint length,out NativeAstResult result);
+
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int DocumentCharacterScoreDelegate(
         [In] byte[] input, nuint length, out NativeAstResult result);
@@ -261,6 +277,8 @@ public static class NativeCodeVersionComparer
         public readonly DocumentTokenMatcherDelegate? DocumentTokenMatcher;
         public readonly DocumentCharacterScoreDelegate? DocumentCharacterScore;
         public readonly DocumentKoreanWordDelegate? DocumentKoreanWord;
+        public readonly DocumentReviewSegmentsDelegate? DocumentReviewSegments;
+        public readonly DocumentRowAlignmentDelegate? DocumentRowAlignment;
 
         public Exports(IntPtr handle)
         {
@@ -358,6 +376,16 @@ public static class NativeCodeVersionComparer
                 DocumentKoreanWord =
                     Marshal.GetDelegateForFunctionPointer<DocumentKoreanWordDelegate>(
                         koreanReviewExport);
+            if (NativeLibrary.TryGetExport(handle,
+                "dc_segment_document_review_utf8", out var segmentsExport))
+                DocumentReviewSegments =
+                    Marshal.GetDelegateForFunctionPointer<DocumentReviewSegmentsDelegate>(
+                        segmentsExport);
+            if (NativeLibrary.TryGetExport(handle,
+                "dc_align_document_rows_utf8", out var rowAlignmentExport))
+                DocumentRowAlignment =
+                    Marshal.GetDelegateForFunctionPointer<DocumentRowAlignmentDelegate>(
+                        rowAlignmentExport);
         }
     }
 
@@ -1156,6 +1184,107 @@ public static class NativeCodeVersionComparer
     }
 
     private sealed record DocumentTokenBlocksWire(List<DocumentTokenBlock> Blocks);
+    /// <summary>
+    /// Rust A/B/C row ordering, baseline axis and cross-version addition
+    /// placement. The original managed engine provides unit matches and
+    /// item-level merge eligibility, native code owns the output row grid.
+    /// </summary>
+    public static IReadOnlyList<IReadOnlyList<int?>>? AlignDocumentRows(
+        IReadOnlyList<int> counts,int baseDoc,
+        IReadOnlyList<DocumentRowMatch> matched,
+        IReadOnlyList<DocumentRowAddition> additions,
+        IReadOnlyList<DocumentRowMerge> allowedMerge)
+    {
+        var exports=Native.Value;
+        if (exports?.DocumentRowAlignment is null ||
+            counts.Count is < 2 or > 3 ||
+            baseDoc<0 || baseDoc>=counts.Count ||
+            counts.Any(c=>c is < 0 or > 512) ||
+            additions.Count>192 || matched.Count>1024 ||
+            allowedMerge.Count>18432)
+            return null;
+        var bytes=JsonSerializer.SerializeToUtf8Bytes(new{
+            counts,baseDoc,matched,additions,allowedMerge},
+            new JsonSerializerOptions{PropertyNamingPolicy=JsonNamingPolicy.CamelCase});
+        if (bytes.Length>1024*1024) return null;
+        var status=exports.DocumentRowAlignment(bytes,(nuint)bytes.Length,out var output);
+        try
+        {
+            if (status is 2 or 3) return null;
+            if (status!=0) throw new InvalidDataException($"Rust A/B/C 행 정렬 오류: {status}");
+            if (output.Data==IntPtr.Zero || output.Length==0 ||
+                output.Length>2UL*1024*1024)
+                throw new InvalidDataException("Rust A/B/C 행 정렬 응답 크기 오류");
+            var raw=new byte[checked((int)output.Length)];
+            Marshal.Copy(output.Data,raw,0,raw.Length);
+            var parsed=JsonSerializer.Deserialize<DocumentAlignedRowsWire>(raw,
+                new JsonSerializerOptions{PropertyNameCaseInsensitive=true});
+            if (parsed?.Rows is null ||
+                parsed.Rows.Count>counts.Sum() ||
+                parsed.Rows.Any(row=>row.Count!=counts.Count))
+                throw new InvalidDataException("Rust A/B/C 행 정렬 행 수 오류");
+            var used=new HashSet<(int Doc,int Index)>();
+            foreach(var row in parsed.Rows)
+            for(var d=0;d<counts.Count;d++)
+                if (row[d] is int index && (index<0 || index>=counts[d] ||
+                    !used.Add((d,index))))
+                    throw new InvalidDataException("Rust A/B/C 행 정렬 중복/범위 오류");
+            if (used.Count!=counts.Sum())
+                throw new InvalidDataException("Rust A/B/C 행 정렬 문서 단위 누락");
+            return parsed.Rows;
+        }
+        finally
+        {
+            exports.AstFree(ref output);
+        }
+    }
+
+
+    /// <summary>
+    /// Rust review-span overlay segmentation, C# fallback for unsupported
+    /// surrogate boundaries or oversized review texts.
+    /// </summary>
+    public static IReadOnlyList<DocumentReviewSegment>? SegmentDocumentReview(
+        string text, IReadOnlyList<DocumentReviewSpan> spans)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        ArgumentNullException.ThrowIfNull(spans);
+        var exports=Native.Value;
+        if (exports?.DocumentReviewSegments is null ||
+            text.Length>131072 || spans.Count>8192 ||
+            spans.Any(s=>s.Start<0 || s.End<s.Start || s.Role is not (1 or 2)))
+            return null;
+        var bytes=JsonSerializer.SerializeToUtf8Bytes(new{text,spans},
+            new JsonSerializerOptions{PropertyNamingPolicy=JsonNamingPolicy.CamelCase});
+        if (bytes.Length>1024*1024) return null;
+        var status=exports.DocumentReviewSegments(bytes,(nuint)bytes.Length,out var output);
+        try
+        {
+            if (status is 2 or 3) return null;
+            if (status!=0)
+                throw new InvalidDataException($"Rust 문서 변경 음영 생성 실패: {status}");
+            if (output.Data==IntPtr.Zero || output.Length==0 ||
+                output.Length>2UL*1024*1024)
+                throw new InvalidDataException("Rust 문서 변경 음영 응답 크기 오류");
+            var raw=new byte[checked((int)output.Length)];
+            Marshal.Copy(output.Data,raw,0,raw.Length);
+            var parsed=JsonSerializer.Deserialize<DocumentReviewSegmentsWire>(raw,
+                new JsonSerializerOptions{PropertyNameCaseInsensitive=true});
+            if (parsed?.Segments is null ||
+                parsed.Segments.Count>text.Length+1 ||
+                parsed.Segments.Any(x=>x.Style is not
+                    ("normal" or "delete" or "insert" or "both")) ||
+                string.Concat(parsed.Segments.Select(x=>x.Text))!=text)
+                throw new InvalidDataException("Rust 문서 변경 음영 범위 오류");
+            return parsed.Segments;
+        }
+        finally
+        {
+            exports.AstFree(ref output);
+        }
+    }
+
+
     /// <summary>
     /// Selects Korean legal review word alignments in Rust. Word lexing
     /// and morphological relation costs are supplied from the C# source.
