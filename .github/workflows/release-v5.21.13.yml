@@ -1,10 +1,9 @@
 name: DocumentCompare v5.21.13 Windows release
 
+# Historical release workflow. Manual only; never auto-create v5.21.13
+# when reorganizing sources on main.
 on:
-  push:
-    branches: [main]
-    paths:
-      - .github/workflows/release-v5.21.13.yml
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -34,7 +33,7 @@ jobs:
       - name: Publish Windows x64 self-contained single EXE
         shell: pwsh
         run: |
-          dotnet publish avalonia/DocumentCompare.Avalonia/DocumentCompare.Avalonia.csproj -c Release -r win-x64 --self-contained true -p:PublishTrimmed=false -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:DebugType=None -p:DebugSymbols=false -o dist/publish
+          dotnet publish csharp/DocumentCompare.Avalonia/DocumentCompare.Avalonia.csproj -c Release -r win-x64 --self-contained true -p:PublishTrimmed=false -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:DebugType=None -p:DebugSymbols=false -o dist/publish
           if ($LASTEXITCODE -ne 0) { throw "Windows publish failed" }
           if (-not (Test-Path dist/publish/DocumentCompare.exe)) { throw "EXE missing" }
           New-Item -ItemType Directory dist/portable -Force | Out-Null

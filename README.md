@@ -21,7 +21,7 @@ It is designed for general documents as well as structured legal, policy, and re
 
 - Add source-code files (Rust, C#, Python, JavaScript/TypeScript, etc.) directly to Version History. They are saved as immutable versions alongside DOCX and TXT files.
 - Select a code file's Before and After versions to inspect numbered code lines and clickable change ranges in the familiar Version History panel. The desktop interface currently uses a bounded C# line-diff adapter; code-aware AST analysis is not yet available in the UI.
-- Experimental `core-rust/` now compares whole project directories, identifying additions, deletions, edits, and unambiguous byte-identical moves/renames without following symlinks or traversing build directories.
+- Experimental `rust/` now compares whole project directories, identifying additions, deletions, edits, and unambiguous byte-identical moves/renames without following symlinks or traversing build directories.
 - Repaired malformed project-source and test-fixture identifiers inherited from the prior source revision so the full comparison regression suite runs again.
 
 ## Architecture reviews
@@ -142,14 +142,42 @@ CHECK_AVALONIA_BUILD.cmd
 
 ## Source layout
 
-```text
-avalonia/DocumentCompare.Avalonia/Engine/NativeComparisonEngine.cs   Native C# document/diff engine
-avalonia/DocumentCompare.Avalonia/Engine/NativeDocumentReader.cs    Native DOCX/TXT reader
-avalonia/DocumentCompare.Avalonia/Engine/NativeOfficeExporter.cs    Excel / Word exporter
-avalonia/DocumentCompare.Avalonia/                                  Avalonia desktop application
-BUILD_AVALONIA_RELEASE.cmd                                            Final Windows one-file build script
-CHECK_AVALONIA_BUILD.cmd                                             Avalonia/C# build check
-```
+The repository separates its C# application and Rust native engine:
+
+~~~text
+DocumentCompare/
+├── csharp/
+│   └── DocumentCompare.Avalonia/
+│       ├── Engine/                C# document I/O, export, fallback and adapters
+│       ├── Controls/              Desktop comparison views
+│       ├── Models/                Comparison and review models
+│       ├── Views/                 Avalonia windows and dialogs
+│       ├── Localization/          Language resources
+│       └── DocumentCompare.Avalonia.csproj
+├── rust/
+│   ├── src/                       Native comparison algorithms and FFI
+│   ├── Cargo.toml
+│   └── Cargo.lock
+├── tests/                         C# regressions, Golden fixtures and parity tests
+├── docs/                          Architecture and migration documentation
+├── .github/workflows/             Windows and Rust CI
+├── BUILD_AVALONIA_RELEASE.cmd     Portable Windows single-EXE build
+└── CHECK_AVALONIA_BUILD.cmd       C# build verification
+~~~
+
+**Runtime:** The Avalonia UI, Word/DOCX reading and Word/Excel export
+remain in C#. Supported document matching and native comparison operations
+run in Rust first, with C# fallbacks where necessary. This directory
+separation does not imply that the C# comparison engine has been entirely
+ported to Rust.
+
+To validate either side independently:
+
+~~~text
+cargo test --manifest-path rust/Cargo.toml
+dotnet build csharp/DocumentCompare.Avalonia/DocumentCompare.Avalonia.csproj
+dotnet run --project tests/DocumentCompare.Regression/DocumentCompare.Regression.csproj -c Release
+~~~
 
 ## License / Copyright
 

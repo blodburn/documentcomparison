@@ -25,7 +25,7 @@ Thumbs.db
 DEPLOY_PACKAGE/
 DocumentCompare_Windows_x64_Portable.zip
 
-/core-rust/target/
+/rust/target/
 
 # Local version projects and preserved document contents
 *.dcv.json

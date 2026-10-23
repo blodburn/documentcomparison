@@ -15,7 +15,7 @@ root = Path(__file__).resolve().parents[1]
 dotnet = sys.argv[1] if len(sys.argv) > 1 else "dotnet"
 cargo = sys.argv[2] if len(sys.argv) > 2 else "cargo"
 project = "tests/DocumentCompare.Regression/DocumentCompare.Regression.csproj"
-manifest = "core-rust/Cargo.toml"
+manifest = "rust/Cargo.toml"
 subprocess.run([cargo, "build", "--manifest-path", manifest], cwd=root, check=True)
 subprocess.run([dotnet, "build", project, "-c", "Release"], cwd=root, check=True)
 
@@ -47,7 +47,7 @@ with tempfile.TemporaryDirectory(prefix="dc-code-parity-") as tmp:
     )
     cs_results = json.loads(cs.stdout)
     assert len(cs_results) == len(corpus)
-    rust_exe = root / "core-rust" / "target" / "debug" / ("dc-code-diff.exe" if sys.platform == "win32" else "dc-code-diff")
+    rust_exe = root / "rust" / "target" / "debug" / ("dc-code-diff.exe" if sys.platform == "win32" else "dc-code-diff")
     for index, pair in enumerate(corpus):
         before, after = tmp / "before.rs", tmp / "after.rs"
         before.write_bytes(pair["before"].encode("utf-8"))

@@ -11,7 +11,7 @@ The first implementation milestone creates reusable version identity and snapsho
 - `Models/VersionHistoryModels.cs` and `Models/VersionFileImportPolicy.cs`: version entry gains `SnapshotBlobId`; snapshot-backed imports allow the same source path to be added again after its content has changed while same-content duplicates are ignored.
 - `Controls/VersionHistoryControl.cs`: normal version addition and drag/drop capture snapshots; preview and comparison read stored blobs; save/open bind the correct project sidecar. The visible version names stay the user's original names.
 - `Models/UnifiedChangeModels.cs`: shared, domain-neutral event type with optional pre/post locations, byte/UTF-16 offsets, and deterministic `EventId` separate from review badge numbers. This is a **contract introduction**, not yet a replacement for current UI markers.
-- `core-rust/`: standalone dependency-free Rust library and `dc-code-diff` CLI performing bounded LCS line comparison for UTF-8 code/text. Extremely large divergent regions are conservatively returned as one replacement event rather than allocating an unbounded matrix.
+- `rust/`: standalone dependency-free Rust library and `dc-code-diff` CLI performing bounded LCS line comparison for UTF-8 code/text. Extremely large divergent regions are conservatively returned as one replacement event rather than allocating an unbounded matrix.
 
 ## Important usage detail
 
@@ -31,9 +31,9 @@ dotnet run --project tests/DocumentCompare.Regression/DocumentCompare.Regression
 Rust (toolchain currently installed at `/home/blodburn/.cargo/bin/` on the build server):
 
 ```sh
-cargo fmt --manifest-path core-rust/Cargo.toml --check
-cargo test --manifest-path core-rust/Cargo.toml
-cargo run --manifest-path core-rust/Cargo.toml --bin dc-code-diff -- before.rs after.rs
+cargo fmt --manifest-path rust/Cargo.toml --check
+cargo test --manifest-path rust/Cargo.toml
+cargo run --manifest-path rust/Cargo.toml --bin dc-code-diff -- before.rs after.rs
 ```
 
 New C# regression coverage: re-import after source changes, same-bytes duplicate detection, source deletion with historic recovery, corruption detection, hostile blob-ID rejection, legacy conversion (including missing source), stable event IDs. Rust coverage: identical text, insertion/deletion, replacement, Unicode, empty files and bounded large-input fallback.

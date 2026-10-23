@@ -20,8 +20,8 @@
 From repo root:
 
 ```sh
-cargo test --manifest-path core-rust/Cargo.toml
-cargo run --manifest-path core-rust/Cargo.toml --bin dc-code-diff -- /path/old-project /path/new-project
+cargo test --manifest-path rust/Cargo.toml
+cargo run --manifest-path rust/Cargo.toml --bin dc-code-diff -- /path/old-project /path/new-project
 ```
 
 Folder events: `Added`, `Deleted`, `Modified`, and `Renamed`. Renames are reported only on a **unique exact-byte match**, not merely a similarly named file. Multiple identical candidates remain additions/deletions. To bound work and avoid traversing outside user-selected trees, the scanner ignores symlinks and standard build folders (`.git`, `node_modules`, `target`, `bin`, `obj`, `.vs`, `.idea`); other supported regular files over 40 MiB produce a clear error. This CLI does not yet understand `.gitignore`, parse code ASTs, or integrate with the desktop version tree.

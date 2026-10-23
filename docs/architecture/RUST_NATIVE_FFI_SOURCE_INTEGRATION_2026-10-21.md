@@ -4,7 +4,7 @@
 
 The code-version view in VersionHistoryControl calls
 NativeCodeVersionComparer.Compare, not the managed LCS directly.
-The native library implements a versioned C ABI in core-rust/src/ffi.rs;
+The native library implements a versioned C ABI in rust/src/ffi.rs;
 C# verifies ABI major version 1, uses explicit UTF-8 bytes and zero-based,
 half-open line spans, and frees the native result with dc_free_diff_result
 in a finally block. CodeVersionChangeMapper receives the resulting spans
@@ -16,14 +16,14 @@ library raises an error rather than silently changing comparison engines.
 ## Build
 
 1. Install .NET 8 SDK and stable Rust.
-2. Run cargo build --manifest-path core-rust/Cargo.toml --release.
+2. Run cargo build --manifest-path rust/Cargo.toml --release.
 3. Run dotnet run --project tests/DocumentCompare.Regression/DocumentCompare.Regression.csproj -c Release
    with DOCUMENTCOMPARE_REQUIRE_NATIVE=1 to verify native use.
 4. Run python3 tests/code_diff_parity.py dotnet cargo with
    DOCUMENTCOMPARE_REQUIRE_NATIVE=1 for cross-language hunk parity.
 
-Windows x64 produces core-rust/target/release/documentcompare_core.dll.
-Linux x64 produces core-rust/target/release/libdocumentcompare_core.so.
+Windows x64 produces rust/target/release/documentcompare_core.dll.
+Linux x64 produces rust/target/release/libdocumentcompare_core.so.
 MSBuild embeds the matching binary as a managed resource. The Windows
 build script and Windows CI job compile Rust before C# compilation.
 Single-file packaging includes the resource, so no sidecar DLL has to be

@@ -17,9 +17,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
-      - run: cargo fmt --manifest-path core-rust/Cargo.toml --check
-      - run: cargo clippy --manifest-path core-rust/Cargo.toml --all-targets -- -D warnings
-      - run: cargo test --manifest-path core-rust/Cargo.toml
+      - run: cargo fmt --manifest-path rust/Cargo.toml --check
+      - run: cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --manifest-path rust/Cargo.toml
 
   windows-document-and-code:
     runs-on: windows-latest
@@ -33,9 +33,9 @@ jobs:
       - name: Build native Windows Rust code engine
         shell: pwsh
         run: |
-          cargo build --manifest-path core-rust/Cargo.toml --release
+          cargo build --manifest-path rust/Cargo.toml --release
           if ($LASTEXITCODE -ne 0) { throw "Rust native build failed" }
-          if (-not (Test-Path core-rust/target/release/documentcompare_core.dll)) { throw "Native Rust DLL is missing" }
+          if (-not (Test-Path rust/target/release/documentcompare_core.dll)) { throw "Native Rust DLL is missing" }
       - name: Run regression suite
         env:
           DOCUMENTCOMPARE_REQUIRE_NATIVE: '1'
@@ -50,4 +50,4 @@ jobs:
           dotnet run --project tests/DocumentCompare.Regression/DocumentCompare.Regression.csproj -c Release --no-build -- --smoke-native-production
           if ($LASTEXITCODE -ne 0) { throw "Rust-first document engine smoke check failed" }
       - name: Verify portable Windows executable build
-        run: dotnet publish avalonia/DocumentCompare.Avalonia/DocumentCompare.Avalonia.csproj -c Release -r win-x64 --self-contained true -p:PublishTrimmed=false -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:DebugType=None -p:DebugSymbols=false -o dist/publish
+        run: dotnet publish csharp/DocumentCompare.Avalonia/DocumentCompare.Avalonia.csproj -c Release -r win-x64 --self-contained true -p:PublishTrimmed=false -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:DebugType=None -p:DebugSymbols=false -o dist/publish

@@ -10,11 +10,11 @@ echo ==== dotnet --info ====
 dotnet --info
 echo.
 echo ==== clean ====
-dotnet clean "avalonia\DocumentCompare.Avalonia\DocumentCompare.Avalonia.csproj" -c Release
+dotnet clean "csharp\DocumentCompare.Avalonia\DocumentCompare.Avalonia.csproj" -c Release
 if errorlevel 1 goto :fail
 echo.
 echo ==== build ====
-dotnet build "avalonia\DocumentCompare.Avalonia\DocumentCompare.Avalonia.csproj" -c Release --no-incremental
+dotnet build "csharp\DocumentCompare.Avalonia\DocumentCompare.Avalonia.csproj" -c Release --no-incremental
 if errorlevel 1 goto :fail
 echo.
 echo [OK] Avalonia build passed.

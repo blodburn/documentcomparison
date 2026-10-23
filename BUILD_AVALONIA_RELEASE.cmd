@@ -22,7 +22,7 @@ where cargo >nul 2>nul || (
   exit /b 1
 )
 
-if not exist "avalonia\DocumentCompare.Avalonia\Assets\DocumentCompare.ico" (
+if not exist "csharp\DocumentCompare.Avalonia\Assets\DocumentCompare.ico" (
   echo [ERROR] Application icon is missing.
   pause
   exit /b 1
@@ -35,14 +35,14 @@ mkdir "%PUBLISH_STAGE%" || goto :fail
 mkdir "%APP_DIR%" || goto :fail
 
 echo [2/6] Building native Rust comparison engine...
-cargo build --manifest-path "core-rust\Cargo.toml" --release || goto :fail
-if not exist "core-rust\target\release\documentcompare_core.dll" goto :fail
+cargo build --manifest-path "rust\Cargo.toml" --release || goto :fail
+if not exist "rust\target\release\documentcompare_core.dll" goto :fail
 
 echo [3/6] Restoring native C# application...
-dotnet restore "avalonia\DocumentCompare.Avalonia\DocumentCompare.Avalonia.csproj" || goto :fail
+dotnet restore "csharp\DocumentCompare.Avalonia\DocumentCompare.Avalonia.csproj" || goto :fail
 
 echo [4/6] Publishing self-contained Windows x64 single EXE...
-dotnet publish "avalonia\DocumentCompare.Avalonia\DocumentCompare.Avalonia.csproj" ^
+dotnet publish "csharp\DocumentCompare.Avalonia\DocumentCompare.Avalonia.csproj" ^
   -c Release ^
   -r win-x64 ^
   --self-contained true ^

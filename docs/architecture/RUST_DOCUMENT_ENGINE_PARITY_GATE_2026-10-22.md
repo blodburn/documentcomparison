@@ -49,7 +49,7 @@ The historical C# bug was presenting 동의없이 -> 동의 없이 as
 NativeComparisonEngine.TryWhitespaceBoundaryDiff and deliberately runs
 before Korean morphology token-diff processing.
 
-Rust implements this SPECIFIC rule in core-rust/src/doc_whitespace.rs.
+Rust implements this SPECIFIC rule in rust/src/doc_whitespace.rs.
 Inputs are strict UTF-8; output ranges are UTF-16 code-unit offsets
 for identical old/new context substrings, not Rust byte offsets.
 It preserves C# whitespace classification, alphanumeric/underscore
@@ -100,7 +100,7 @@ to Rust or equals any missing historical Python implementation.
 
 The source-of-truth C# NativeComparisonEngine.ParsePartsCSharp has been
 retained unchanged, alongside a guarded wrapper ParseParts. The Rust module
-core-rust/src/doc_parts.rs ports the structural segmentation rules:
+rust/src/doc_parts.rs ports the structural segmentation rules:
 
 - Explicit 항/호 labels ①..⑳, (1), (a), (ii), 1./1), 가./가) etc.
 - C#-style whitespace and format-character normalization without changing
@@ -167,7 +167,7 @@ and output generators have NOT been ported to Rust.
 
 ## Fourth narrow port: exact-normalized-content pairing in MatchParts
 
-The new Rust module core-rust/src/doc_match_exact.rs implements only the
+The new Rust module rust/src/doc_match_exact.rs implements only the
 FIRST NativeComparisonEngine.MatchParts pairing pass. Existing C#
 LineageNormalize prepares old/new content keys. Rust performs the original
 greedy old-index traversal: skip empty keys, choose nearest unused new
@@ -280,7 +280,7 @@ C# MatchParts identifies pairs where the logical ordinal is identical but
 the displayed glyph differs, such as ① -> 1. or (1) -> 1. This is performed
 after strong content moves and before same-label sibling fallback.
 
-Rust core-rust/src/doc_same_ordinal.rs implements ONLY candidate ranking
+Rust rust/src/doc_same_ordinal.rs implements ONLY candidate ranking
 and greedy matching. C# still calculates PartOrdinalAt, parent equivalence,
 hierarchy level, OrdinalSiblingShapeEquivalent, PartSimilarity,
 Containment, and HasStableEdgeContext. For each unmatched old item in
@@ -315,7 +315,7 @@ DOCX table matching, A/B/C visualization, or Word tracked-change export.
 
 ## Eighth narrow port: adjacent-level collapse/expansion candidates
 
-Rust core-rust/src/doc_cross_level.rs implements the candidate threshold,
+Rust rust/src/doc_cross_level.rs implements the candidate threshold,
 rank sorting, and greedy one-to-one pairing for document 항/호 structures
 that differ by exactly one hierarchy level.
 
