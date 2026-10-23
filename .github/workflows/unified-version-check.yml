@@ -44,5 +44,10 @@ jobs:
           dotnet run --project tests/DocumentCompare.Regression/DocumentCompare.Regression.csproj -c Release 2>&1 | Tee-Object -FilePath regression.txt
           if ($LASTEXITCODE -ne 0) { throw "Regression failed" }
           if (-not (Select-String -Path regression.txt -Pattern '^ALL REGRESSIONS PASSED$' -Quiet)) { throw "Missing regression completion marker" }
+      - name: Verify production Rust-first document engine
+        shell: pwsh
+        run: |
+          dotnet run --project tests/DocumentCompare.Regression/DocumentCompare.Regression.csproj -c Release --no-build -- --smoke-native-production
+          if ($LASTEXITCODE -ne 0) { throw "Rust-first document engine smoke check failed" }
       - name: Verify portable Windows executable build
         run: dotnet publish avalonia/DocumentCompare.Avalonia/DocumentCompare.Avalonia.csproj -c Release -r win-x64 --self-contained true -p:PublishTrimmed=false -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:DebugType=None -p:DebugSymbols=false -o dist/publish

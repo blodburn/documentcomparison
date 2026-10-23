@@ -130,6 +130,34 @@ public static class NativeCodeVersionComparer
     public sealed record DocumentCrossLevelCandidate(
         int Old, int New, double Similarity, double Containment,
         bool SameOrdinal, bool Edge);
+    public sealed record FullDocumentMatchItem(
+        string Label, string Key, string Head, int Level, int Parent, int? Ordinal);
+    public sealed record FullDocumentMatchFeatures(
+        double Similarity, double Containment, bool Edge,
+        bool OrdinalShape, bool SiblingShape, bool ExactNormalized);
+    public sealed record FullDocumentMatch(int Old, int New, double Score);
+    public sealed record DocumentSentenceReviewEvent(
+        string Kind, int OldStart, int OldEnd, int NewStart, int NewEnd,
+        string Text, int Hunk);
+    public sealed record DocumentSentenceReview(
+        bool Supported, List<DocumentSentenceReviewEvent> Events);
+    public sealed record DocumentGenericUnitMatch(
+        int Base, int Other, double Score, string Mode);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int DocumentGenericUnitsDelegate(
+        [In] byte[] input, nuint length, out NativeAstResult result);
+
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int DocumentSentenceReviewDelegate(
+        [In] byte[] input, nuint length, out NativeAstResult result);
+
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int FullDocumentMatchDelegate(
+        [In] byte[] input, nuint length, out NativeAstResult result);
+
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int DocumentCrossLevelSelectionDelegate(
@@ -191,6 +219,9 @@ public static class NativeCodeVersionComparer
         public readonly DocumentSameLabelSelectionDelegate? DocumentSameLabelSelection;
         public readonly DocumentSameOrdinalSelectionDelegate? DocumentSameOrdinalSelection;
         public readonly DocumentCrossLevelSelectionDelegate? DocumentCrossLevelSelection;
+        public readonly FullDocumentMatchDelegate? FullDocumentMatch;
+        public readonly DocumentSentenceReviewDelegate? DocumentSentenceReview;
+        public readonly DocumentGenericUnitsDelegate? DocumentGenericUnits;
 
         public Exports(IntPtr handle)
         {
@@ -250,6 +281,21 @@ public static class NativeCodeVersionComparer
                 DocumentCrossLevelSelection =
                     Marshal.GetDelegateForFunctionPointer<DocumentCrossLevelSelectionDelegate>(
                         crossLevelExport);
+            if (NativeLibrary.TryGetExport(handle,
+                "dc_match_document_parts_full_utf8", out var fullDocumentExport))
+                FullDocumentMatch =
+                    Marshal.GetDelegateForFunctionPointer<FullDocumentMatchDelegate>(
+                        fullDocumentExport);
+            if (NativeLibrary.TryGetExport(handle,
+                "dc_review_document_sentences_utf8", out var sentenceReviewExport))
+                DocumentSentenceReview =
+                    Marshal.GetDelegateForFunctionPointer<DocumentSentenceReviewDelegate>(
+                        sentenceReviewExport);
+            if (NativeLibrary.TryGetExport(handle,
+                "dc_match_generic_document_units_utf8", out var genericUnitsExport))
+                DocumentGenericUnits =
+                    Marshal.GetDelegateForFunctionPointer<DocumentGenericUnitsDelegate>(
+                        genericUnitsExport);
         }
     }
 
@@ -764,6 +810,181 @@ public static class NativeCodeVersionComparer
             exports.AstFree(ref output);
         }
     }
+
+    /// <summary>
+    /// Full structural MatchParts selection pipeline. Source-derived
+    /// normalization/semantic similarity remain C# inputs and callers
+    /// must compare the complete result to the canonical C# engine.
+    /// </summary>
+    public static IReadOnlyList<FullDocumentMatch>? MatchDocumentPartsFull(
+        IReadOnlyList<FullDocumentMatchItem> oldItems,
+        IReadOnlyList<FullDocumentMatchItem> newItems,
+        IReadOnlyList<FullDocumentMatchFeatures> features)
+    {
+        ArgumentNullException.ThrowIfNull(oldItems);
+        ArgumentNullException.ThrowIfNull(newItems);
+        ArgumentNullException.ThrowIfNull(features);
+        var exports = Native.Value;
+        if (exports?.FullDocumentMatch is null ||
+            oldItems.Count > 32 || newItems.Count > 32 ||
+            features.Count != oldItems.Count * newItems.Count ||
+            oldItems.Any(x => x.Label is null || x.Key is null || x.Head is null ||
+                x.Key.Length > 8192 || x.Head.Length > 8192) ||
+            newItems.Any(x => x.Label is null || x.Key is null || x.Head is null ||
+                x.Key.Length > 8192 || x.Head.Length > 8192))
+            return null;
+        var raw = JsonSerializer.SerializeToUtf8Bytes(
+            new { old = oldItems, @new = newItems, features },
+            new JsonSerializerOptions {PropertyNamingPolicy = JsonNamingPolicy.CamelCase});
+        if (raw.Length > 4 * 1024 * 1024) return null;
+        var status = exports.FullDocumentMatch(raw, (nuint)raw.Length, out var output);
+        try
+        {
+            if (status is 2 or 3) return null;
+            if (status != 0)
+                throw new InvalidDataException($"Rust MatchParts 전체 후보 판정 실패: {status}");
+            if (output.Data == IntPtr.Zero || output.Length == 0 ||
+                output.Length > 4UL * 1024 * 1024)
+                throw new InvalidDataException("Rust MatchParts 전체 결과 크기 오류");
+            var resultBytes = new byte[checked((int)output.Length)];
+            Marshal.Copy(output.Data, resultBytes, 0, resultBytes.Length);
+            var result = JsonSerializer.Deserialize<FullDocumentMatchWire>(resultBytes,
+                new JsonSerializerOptions {PropertyNameCaseInsensitive=true});
+            if (result?.Matches is null ||
+                result.Matches.Count > Math.Min(oldItems.Count, newItems.Count))
+                throw new InvalidDataException("Rust MatchParts 전체 대응 개수 오류");
+            var usedOld = new HashSet<int>(); var usedNew = new HashSet<int>();
+            var lastOld = -1;
+            foreach (var match in result.Matches)
+            {
+                if (match.Old <= lastOld || match.Old < 0 || match.Old >= oldItems.Count ||
+                    match.New < 0 || match.New >= newItems.Count ||
+                    !usedOld.Add(match.Old) || !usedNew.Add(match.New) ||
+                    !double.IsFinite(match.Score) || match.Score is < 0 or > 1.2)
+                    throw new InvalidDataException("Rust MatchParts 전체 대응 값 오류");
+                lastOld = match.Old;
+            }
+            return result.Matches;
+        }
+        finally
+        {
+            exports.AstFree(ref output);
+        }
+    }
+
+    private sealed record FullDocumentMatchWire(List<FullDocumentMatch> Matches);
+
+    /// <summary>
+    /// Optional independent Rust detection of preserved unchanged legal
+    /// sentences and strictly one-sided deleted/inserted sentence events.
+    /// A Supported=false result requests the full C# comparison.
+    /// </summary>
+    public static DocumentSentenceReview? ReviewDocumentSentences(
+        string oldText, string newText, bool includePunctuation)
+    {
+        ArgumentNullException.ThrowIfNull(oldText);
+        ArgumentNullException.ThrowIfNull(newText);
+        var exports = Native.Value;
+        if (exports?.DocumentSentenceReview is null ||
+            oldText.Length > 65_536 || newText.Length > 65_536)
+            return null;
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(
+            new {oldText,newText,includePunctuation});
+        if (bytes.Length > 256 * 1024) return null;
+        var status = exports.DocumentSentenceReview(bytes,(nuint)bytes.Length,out var result);
+        try
+        {
+            if (status is 2 or 3) return null;
+            if (status != 0)
+                throw new InvalidDataException($"Rust 문장 비교 오류: {status}");
+            if (result.Data == IntPtr.Zero || result.Length == 0 ||
+                result.Length > 1024UL * 1024)
+                throw new InvalidDataException("Rust 문장 비교 결과 크기 오류");
+            var json = new byte[checked((int)result.Length)];
+            Marshal.Copy(result.Data,json,0,json.Length);
+            var parsed = JsonSerializer.Deserialize<DocumentSentenceReview>(json,
+                new JsonSerializerOptions {PropertyNameCaseInsensitive=true});
+            if (parsed?.Events is null || parsed.Events.Count > 256 ||
+                (!parsed.Supported && parsed.Events.Count != 0) ||
+                (parsed.Supported && parsed.Events.Count == 0))
+                throw new InvalidDataException("Rust 문장 비교 결과 개수 오류");
+            var oldBoundary=0; var newBoundary=0;
+            foreach(var item in parsed.Events)
+            {
+                if (item.Kind is not ("insert" or "delete") ||
+                    item.OldStart < oldBoundary || item.NewStart < newBoundary ||
+                    item.OldEnd < item.OldStart || item.NewEnd < item.NewStart ||
+                    item.OldEnd > oldText.Length || item.NewEnd > newText.Length ||
+                    item.Hunk < 0 ||
+                    (item.Kind == "delete" &&
+                      (item.NewStart != item.NewEnd ||
+                       item.Text != oldText[item.OldStart..item.OldEnd])) ||
+                    (item.Kind == "insert" &&
+                      (item.OldStart != item.OldEnd ||
+                       item.Text != newText[item.NewStart..item.NewEnd])))
+                    throw new InvalidDataException("Rust 문장 비교 텍스트 위치 오류");
+                oldBoundary=item.OldEnd; newBoundary=item.NewEnd;
+            }
+            return parsed;
+        }
+        finally
+        {
+            exports.AstFree(ref result);
+        }
+    }
+
+    /// <summary>
+    /// Rust-first general-document block matching using C# similarity
+    /// scores; original C# matcher stays available for audit and fallback.
+    /// </summary>
+    public static IReadOnlyList<DocumentGenericUnitMatch>? MatchGenericDocumentUnits(
+        int oldCount, int newCount, IReadOnlyList<double> similarities)
+    {
+        ArgumentNullException.ThrowIfNull(similarities);
+        var exports = Native.Value;
+        if (exports?.DocumentGenericUnits is null ||
+            oldCount is < 0 or > 64 || newCount is < 0 or > 64 ||
+            similarities.Count != oldCount * newCount ||
+            similarities.Any(s => !double.IsFinite(s) || s is < 0 or > 1))
+            return null;
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(
+            new {oldCount,newCount,similarities});
+        if (bytes.Length > 1024 * 1024) return null;
+        var status = exports.DocumentGenericUnits(bytes,(nuint)bytes.Length,out var result);
+        try
+        {
+            if (status is 2 or 3) return null;
+            if (status != 0)
+                throw new InvalidDataException($"Rust 일반 블록 매칭 오류: {status}");
+            if (result.Data == IntPtr.Zero || result.Length == 0 ||
+                result.Length > 1024UL * 1024)
+                throw new InvalidDataException("Rust 일반 블록 매칭 결과 크기 오류");
+            var raw = new byte[checked((int)result.Length)];
+            Marshal.Copy(result.Data,raw,0,raw.Length);
+            var parsed = JsonSerializer.Deserialize<GenericUnitsWire>(raw,
+                new JsonSerializerOptions {PropertyNameCaseInsensitive=true});
+            if (parsed?.Matches is null ||
+                parsed.Matches.Count > Math.Min(oldCount,newCount))
+                throw new InvalidDataException("Rust 일반 블록 매칭 결과 개수 오류");
+            var lastOld=-1; var usedNew=new HashSet<int>();
+            foreach (var m in parsed.Matches)
+            {
+                if (m.Base <= lastOld || m.Base >= oldCount || m.Base < 0 ||
+                    m.Other < 0 || m.Other >= newCount ||
+                    !usedNew.Add(m.Other) || m.Mode!="same" ||
+                    !double.IsFinite(m.Score) || m.Score is < .48 or > 1)
+                    throw new InvalidDataException("Rust 일반 블록 매칭 인덱스 오류");
+                lastOld=m.Base;
+            }
+            return parsed.Matches;
+        }
+        finally
+        {
+            exports.AstFree(ref result);
+        }
+    }
+
+    private sealed record GenericUnitsWire(List<DocumentGenericUnitMatch> Matches);
 
     /// <summary>
     /// Returns syntax-tree declaration changes only for Rust/C#. Unsupported

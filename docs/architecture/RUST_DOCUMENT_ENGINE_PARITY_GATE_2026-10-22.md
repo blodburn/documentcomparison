@@ -1,6 +1,6 @@
 # DOCUMENTCOMPARE — verified C# to Rust document-engine scope (2026-10-22)
 
-## Decision: do not replace the complete document engine
+## Current decision: Rust-first for the complete MatchParts selection, not the complete document engine
 
 The original policy in UNIFIED_VERSION_CODE_RUST_REVIEW_2026-10-20.md
 requires exact golden-output equivalence, source-location parity, no
@@ -10,8 +10,10 @@ and packaging checks BEFORE replacing C# document judgment.
 MainWindow and VersionHistoryControl still use NativeComparisonEngine
 for the Word/TXT document pipeline. That includes article/unit lineage,
 paragraph/item matching, table/row/cell pairing, text diff, marker rendering,
-and Word/Excel export. None of those complete functions has been migrated
-to Rust or proven semantically equivalent. NativeDocumentReader,
+and Word/Excel export. The full MatchParts *candidate/selection orchestration* is now migrated
+and runs in Rust first on bounded item arrays, with C# as fallback.
+Article/unit lineage, text segmentation and score calculation, table
+alignment, marker rendering and export are not completely migrated. NativeDocumentReader,
 StructuredDocxReader, and NativeOfficeExporter remain C#.
 The original Python comparison engine is not currently present as a
 testable independent source in this repository; Python-equivalence claims
@@ -31,7 +33,10 @@ must not be inferred merely from matching current C# behavior.
 | Same-label sibling-shape fallback | C# SelectSameLabelCandidatesCSharp | Rust doc_same_label | 8 frozen Golden plus 850 direct cases; live guarded |
 | Same ordinal, different notation | C# SelectSameOrdinalCandidatesCSharp | Rust doc_same_ordinal | 8 frozen Golden plus 850 direct cases; live guarded |
 | Collapsed/expanded one-level selection | C# SelectCrossLevelCandidatesCSharp | Rust doc_cross_level | 8 frozen Golden and 900 direct cases; live guarded |
-| Full item fuzzy matching and movement | C# remaining MatchParts, CollapsedLevelParentsEquivalent etc. | Partially ported | No full replacement |
+| Full item pairing orchestration (all 6 phases) | MatchPartsCSharp | Rust doc_match_full | 336/336 full ordered old/new matches and scores; default Rust-first <=32 items/side, C# fallback, CI C# shadow parity |
+| Whole sentence preserved review anchors | TryPreservedSentenceDiffCSharp | Rust doc_sentence_review | v5.21.9 article 26->27 DOCX Golden; independent Rust sentence offsets and C# shadow parity for supported changes |
+| Full text normalization and fuzzy scores | C# PartSimilarity, WordSet, Normalize, Containment | Not ported | Rust full matcher currently consumes C#-supplied pair features |
+| Generic non-article unit greedy matching | C# MatchGenericUnitsCSharp | Rust doc_generic_units | 500/500 pair-rank Golden; Rust-first <=64 blocks/side, C# fallback and CI shadow parity |
 | DOCX table cell/merge/row matching | C# structured reader and matcher | Not ported | No replacement |
 | Word formatting and tracked revisions | C# NativeOfficeExporter | Not ported | No replacement |
 | Excel A/B/C and change narrative | C# exporter | Not ported | No replacement |
@@ -350,3 +355,88 @@ candidate matching, definition-head heuristics, one-sided lists, final
 item add/delete/replace, full article lineage, Word table/row/cell
 correspondence, A/B/C mapping and Word tracked-change export.
 Passing this leaf gate does NOT prove full MatchParts parity.
+
+## Ninth port: whole MatchParts orchestration, not just candidate stages
+
+NativeComparisonEngine.MatchParts is now an optional Rust-first pipeline:
+Rust doc_match_full.rs performs *all six ordered matching passes*, not just
+individual ranking helpers:
+1. One-sided prose/structural lists and exact normalized text;
+2. Definition-head matches;
+3. Parent-first strong moves, same ordinal notation and same label;
+4. An omitted or added parent layer;
+5. Remaining body alignment;
+6. Residual high-confidence similarity and cross-parent matching.
+
+C# supplies original normalized item keys, definition heads, hierarchy,
+parent IDs, logical ordinals, similarities, containment, stable edges and
+sibling-shape flags. Rust owns the complete resulting pair selection and
+scores. The full-result FFI is dc_match_document_parts_full_utf8.
+
+For arrays <=32 items/side, <=512 pair combinations, <=32,768 total
+original body UTF-16 code units and <=8,192 units per individual body,
+the application now calls Rust first.
+Missing DLL/export, malformed result, FFI failure and larger arrays
+use the unchanged MatchPartsCSharp fallback. When either
+DOCUMENTCOMPARE_REQUIRE_NATIVE=1 or
+DOCUMENTCOMPARE_VERIFY_DOCUMENT_MATCHES=1 is set (including Windows CI),
+the full canonical C# result is also computed and every ordered pair and
+score is compared before Rust can be selected.
+The deterministic test suite checks 336 full old/new document structure
+pairs, including random numbering and reordering, frozen parser fixtures
+and adjacent-level parent changes, all with zero mismatches.
+WholeMatchRustParityMatches/Mismatches track native adoption/verification.
+No source-level equivalence to unverified historical Python is implied.
+
+This is a whole *matching orchestration* port, not an independent complete
+Rust semantic/lineage engine. Text scoring, input cleanup and parent
+hierarchy detection remain C#-provided features. The public document
+model and final A/B/C review messages remain managed.
+
+## Tenth port: original v5.21.9 fee article preserved sentence boundaries
+
+Rust doc_sentence_review.rs independently segments Korean/English
+sentences, finds exact unchanged substantial sentence anchors and emits
+UTF-16-aligned standalone deleted/inserted sentence events.
+The optional FFI symbol is dc_review_document_sentences_utf8.
+Complex two-sided rewrites or repeated identical sentence ambiguities
+explicitly return unsupported and fall back to C# DiffText.
+When DOCUMENTCOMPARE_REQUIRE_NATIVE=1 or
+DOCUMENTCOMPARE_VERIFY_DOCUMENT_MATCHES=1 is set, the matching C# rules
+must agree on every action, text and both endpoints before using Rust.
+The actual DOCX fixture for the reported v5.21.9 article 26 -> 27 error
+asserts Rust execution, unchanged original sentences, exactly one
+deleted price-change sentence and one inserted refund sentence, and
+preserved article-renumbering markers.
+
+The final remaining NativeComparisonEngine portions are article/unit
+lineage, generic unit matching, rich Word table/row/cell alignment,
+short-text Korean word relation, token LCS and overall A/B/C review
+construction. Those are NOT replaced by this commit.
+
+## Eleventh port: generic non-article unit matching
+
+Rust doc_generic_units.rs now owns general-document block match ranking,
+nearest-position proximity weighting, stable candidate ordering and
+one-to-one greedy selection, including the exact previous C# usedA/usedB
+side-effect contract. It is exposed as an optional ABI v1 extension
+dc_match_generic_document_units_utf8. C# still provides the original
+Similarity score for every pair, cancellation, input classification,
+and the C# fallback for more than 64 blocks on either side or unsupported
+native operation.
+
+In normal use it is Rust-first. CI (DOCUMENTCOMPARE_REQUIRE_NATIVE=1)
+and optional verification mode re-run MatchGenericUnitsCSharp and compare
+all indices, scores and action modes. A deterministic random corpus
+verifies 500 direct C# vs Rust decisions. Independent
+--smoke-native-production regression mode executes a real DOCX legal
+article (whole item + sentence review) and an actual general-document
+block reorder without the shadow-mode flag, asserting native acceptance
+counters for all three paths. Windows CI runs BOTH shadow and production
+smoke before packaging the portable executable.
+
+Remaining in C#: article-level unit lineage/renumbering, structured
+Word table/row/cell alignment, Korean fuzzy short-word changes, generic
+word/token spans outside long exact-sentence anchors, full A/B/C event
+construction. The broader NativeComparisonEngine.cs is NOT yet replaced
+or deleted, and the legacy data model and export contract remain managed.

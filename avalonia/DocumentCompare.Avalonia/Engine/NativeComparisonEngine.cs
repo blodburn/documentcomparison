@@ -1060,7 +1060,56 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return result;
     }
 
-    private static List<UnitMatch> MatchGenericUnits(IReadOnlyList<NativeUnit> a, IReadOnlyList<NativeUnit> b, CancellationToken token)
+    private static long _genericUnitRustMatches;
+    private static long _genericUnitRustMismatches;
+    internal static long GenericUnitRustMatches =>
+        System.Threading.Interlocked.Read(ref _genericUnitRustMatches);
+    internal static long GenericUnitRustMismatches =>
+        System.Threading.Interlocked.Read(ref _genericUnitRustMismatches);
+
+    private static List<UnitMatch> MatchGenericUnits(
+        IReadOnlyList<NativeUnit> a, IReadOnlyList<NativeUnit> b, CancellationToken token)
+    {
+        if (a.Count > 64 || b.Count > 64) return MatchGenericUnitsCSharp(a, b, token);
+        token.ThrowIfCancellationRequested();
+        try
+        {
+            var similarities = new List<double>(a.Count * b.Count);
+            for (var i=0; i<a.Count; i++)
+            for (var j=0; j<b.Count; j++)
+            {
+                if ((j & 63)==0) token.ThrowIfCancellationRequested();
+                similarities.Add(Similarity(a[i].Body, b[j].Body));
+            }
+            var native = NativeCodeVersionComparer.MatchGenericDocumentUnits(
+                a.Count, b.Count, similarities);
+            if (native is null) return MatchGenericUnitsCSharp(a,b,token);
+            if (Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_REQUIRE_NATIVE") == "1" ||
+                Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_VERIFY_DOCUMENT_MATCHES") == "1")
+            {
+                var canonical=MatchGenericUnitsCSharp(a,b,token);
+                if (native.Count != canonical.Count ||
+                    native.Where((m,i) => m.Base != canonical[i].Base ||
+                        m.Other != canonical[i].Other || m.Mode != canonical[i].Mode ||
+                        Math.Abs(m.Score-canonical[i].Score)>1e-12).Any())
+                {
+                    System.Threading.Interlocked.Increment(ref _genericUnitRustMismatches);
+                    return canonical;
+                }
+            }
+            System.Threading.Interlocked.Increment(ref _genericUnitRustMatches);
+            return native.Select(m=>new UnitMatch(m.Base,m.Other,m.Score,m.Mode)).ToList();
+        }
+        catch (Exception ex) when (ex is InvalidDataException or
+            System.Text.Json.JsonException or ArgumentException or
+            System.Text.EncoderFallbackException or OverflowException)
+        {
+            System.Threading.Interlocked.Increment(ref _genericUnitRustMismatches);
+            return MatchGenericUnitsCSharp(a,b,token);
+        }
+    }
+
+    private static List<UnitMatch> MatchGenericUnitsCSharp(IReadOnlyList<NativeUnit> a, IReadOnlyList<NativeUnit> b, CancellationToken token)
     {
         double Candidate(int i, int j, out double score)
         {
@@ -1762,7 +1811,73 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return oldSentences.Any(s => s.Text.Length >= 40 && keys.Contains(s.Text));
     }
 
+    private static long _sentenceReviewRustMatches;
+    private static long _sentenceReviewRustMismatches;
+    internal static long SentenceReviewRustMatches =>
+        System.Threading.Interlocked.Read(ref _sentenceReviewRustMatches);
+    internal static long SentenceReviewRustMismatches =>
+        System.Threading.Interlocked.Read(ref _sentenceReviewRustMismatches);
+
     private static List<NativeMarker>? TryPreservedSentenceDiff(
+        string oldText, string newText, int oldBase, int newBase,
+        int oldDoc, int newDoc, string pair, int pairOrder,
+        string part, bool includePunctuation, int itemOrder)
+    {
+        try
+        {
+            var native = NativeCodeVersionComparer.ReviewDocumentSentences(
+                oldText, newText, includePunctuation);
+            if (native is {Supported:true})
+            {
+                var events = native.Events.Select(e =>
+                    e.Kind == "delete"
+                        ? NativeMarker.Delete(pair, pairOrder, oldDoc, newDoc,
+                            e.Text, oldBase + e.OldStart, oldBase + e.OldEnd,
+                            newBase + e.NewStart, part, itemOrder, e.Hunk)
+                        : NativeMarker.Insert(pair, pairOrder, oldDoc, newDoc,
+                            e.Text, oldBase + e.OldStart,
+                            newBase + e.NewStart, newBase + e.NewEnd,
+                            part, itemOrder, e.Hunk)).ToList();
+                if (Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_REQUIRE_NATIVE") == "1" ||
+                    Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_VERIFY_DOCUMENT_MATCHES") == "1")
+                {
+                    var canonical = TryPreservedSentenceDiffCSharp(
+                        oldText, newText, oldBase, newBase, oldDoc, newDoc, pair,
+                        pairOrder, part, includePunctuation, itemOrder);
+                    if (canonical is null || events.Count != canonical.Count ||
+                        events.Where((e, i) =>
+                            e.Action != canonical[i].Action ||
+                            e.Text != canonical[i].Text ||
+                            e.CharStart != canonical[i].CharStart ||
+                            e.CharEnd != canonical[i].CharEnd ||
+                            e.ItemOrder != canonical[i].ItemOrder ||
+                            e.HunkOrder != canonical[i].HunkOrder ||
+                            e.Endpoints.Count != canonical[i].Endpoints.Count ||
+                            e.Endpoints.Where((ep, j) =>
+                                ep.TargetDoc != canonical[i].Endpoints[j].TargetDoc ||
+                                ep.CharStart != canonical[i].Endpoints[j].CharStart ||
+                                ep.CharEnd != canonical[i].Endpoints[j].CharEnd).Any()).Any())
+                    {
+                        System.Threading.Interlocked.Increment(ref _sentenceReviewRustMismatches);
+                        return canonical;
+                    }
+                }
+                System.Threading.Interlocked.Increment(ref _sentenceReviewRustMatches);
+                return events;
+            }
+        }
+        catch (Exception ex) when (ex is InvalidDataException or
+            System.Text.Json.JsonException or ArgumentException or
+            System.Text.EncoderFallbackException or OverflowException)
+        {
+            System.Threading.Interlocked.Increment(ref _sentenceReviewRustMismatches);
+        }
+        return TryPreservedSentenceDiffCSharp(
+            oldText, newText, oldBase, newBase, oldDoc, newDoc, pair,
+            pairOrder, part, includePunctuation, itemOrder);
+    }
+
+    private static List<NativeMarker>? TryPreservedSentenceDiffCSharp(
         string oldText, string newText, int oldBase, int newBase,
         int oldDoc, int newDoc, string pair, int pairOrder,
         string part, bool includePunctuation, int itemOrder)
@@ -2571,7 +2686,81 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         }
     }
 
+    private static long _wholeMatchRustParityMatches;
+    private static long _wholeMatchRustParityMismatches;
+    internal static long WholeMatchRustParityMatches =>
+        System.Threading.Interlocked.Read(ref _wholeMatchRustParityMatches);
+    internal static long WholeMatchRustParityMismatches =>
+        System.Threading.Interlocked.Read(ref _wholeMatchRustParityMismatches);
+
     private static List<PartMatch> MatchParts(IReadOnlyList<NativePart> a, IReadOnlyList<NativePart> b)
+    {
+        // Rust is the production match-choice path for bounded documents;
+        // C# is still the fail-safe, and the CI parity mode shadows all
+        // native results against the untouched reference implementation.
+        if (a.Count > 32 || b.Count > 32 ||
+            (long)a.Count * b.Count > 512 ||
+            a.Sum(p => (long)p.Core.Length) + b.Sum(p => (long)p.Core.Length) > 32_768 ||
+            a.Any(p => p.Core.Length > 8_192) ||
+            b.Any(p => p.Core.Length > 8_192))
+            return MatchPartsCSharp(a, b);
+        try
+        {
+            var oldNodes = BuildPartHierarchy(a);
+            var newNodes = BuildPartHierarchy(b);
+            var oldItems = a.Select((p, i) =>
+                new NativeCodeVersionComparer.FullDocumentMatchItem(
+                    p.Label, LineageNormalize(p.Core), DefinitionHead(p.Core),
+                    oldNodes[i].Level, oldNodes[i].Parent, PartOrdinalAt(a, i))).ToArray();
+            var newItems = b.Select((p, i) =>
+                new NativeCodeVersionComparer.FullDocumentMatchItem(
+                    p.Label, LineageNormalize(p.Core), DefinitionHead(p.Core),
+                    newNodes[i].Level, newNodes[i].Parent, PartOrdinalAt(b, i))).ToArray();
+            var features = new List<NativeCodeVersionComparer.FullDocumentMatchFeatures>(
+                a.Count * b.Count);
+            for (var i = 0; i < a.Count; i++)
+            for (var j = 0; j < b.Count; j++)
+            {
+                var sameLevel = oldNodes[i].Level == newNodes[j].Level;
+                features.Add(new(
+                    PartSimilarity(a[i], b[j]),
+                    Containment(a[i].Core, b[j].Core),
+                    HasStableEdgeContext(a[i].Core, b[j].Core),
+                    sameLevel && OrdinalSiblingShapeEquivalent(
+                        i, j, a, b, oldNodes, newNodes),
+                    sameLevel && SiblingShapeEquivalent(
+                        i, j, a, b, oldNodes, newNodes),
+                    Normalize(a[i].Core) == Normalize(b[j].Core)));
+            }
+            var native = NativeCodeVersionComparer.MatchDocumentPartsFull(
+                oldItems, newItems, features);
+            if (native is null) return MatchPartsCSharp(a, b);
+            if (Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_REQUIRE_NATIVE") == "1" ||
+                Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_VERIFY_DOCUMENT_MATCHES") == "1")
+            {
+                var canonical = MatchPartsCSharp(a, b);
+                if (native.Count != canonical.Count ||
+                    native.Where((m, i) => m.Old != canonical[i].Old ||
+                        m.New != canonical[i].New ||
+                        Math.Abs(m.Score - canonical[i].Score) > 1e-12).Any())
+                {
+                    System.Threading.Interlocked.Increment(ref _wholeMatchRustParityMismatches);
+                    return canonical;
+                }
+            }
+            System.Threading.Interlocked.Increment(ref _wholeMatchRustParityMatches);
+            return native.Select(x => new PartMatch(x.Old, x.New, x.Score)).ToList();
+        }
+        catch (Exception ex) when (ex is InvalidDataException or
+            System.Text.Json.JsonException or ArgumentException or
+            System.Text.EncoderFallbackException or OverflowException)
+        {
+            System.Threading.Interlocked.Increment(ref _wholeMatchRustParityMismatches);
+            return MatchPartsCSharp(a, b);
+        }
+    }
+
+    private static List<PartMatch> MatchPartsCSharp(IReadOnlyList<NativePart> a, IReadOnlyList<NativePart> b)
     {
         var nodesA = BuildPartHierarchy(a); var nodesB = BuildPartHierarchy(b);
         var structuredA = Enumerable.Range(0, a.Count).Where(i => IsStructuralLabel(a[i].Label)).ToList();

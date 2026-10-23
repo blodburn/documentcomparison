@@ -67,6 +67,50 @@ static XDocument Doc(string path){using var z=ZipFile.OpenRead(path);using var s
 static async Task<string> Read(string path){var t=typeof(NativeComparisonEngine).Assembly.GetType("DocumentCompare.Avalonia.Engine.NativeDocumentReader")!;var m=t.GetMethod("ReadAsync",BindingFlags.Static|BindingFlags.Public|BindingFlags.NonPublic)!;return await (Task<string>)m.Invoke(null,new object[]{path,CancellationToken.None})!;}
 var eng=new NativeComparisonEngine();
 
+// Production-path smoke test for the Rust-first whole matcher and the
+// Rust-first sentence review. This intentionally does not enable the
+// shadow C# verification environment used in the full regression suite.
+if (args.Length==1 && args[0]=="--smoke-native-production")
+{
+    Check(NativeCodeVersionComparer.IsAvailable,
+        "Native Rust library was not embedded or found in production mode");
+    static long GetRustCounter(string property) =>
+        (long)typeof(NativeComparisonEngine).GetProperty(property,
+            BindingFlags.NonPublic|BindingFlags.Static)!.GetValue(null)!;
+    var oldDoc=Path.Combine(dir,"production-rust-26.docx");
+    var newDoc=Path.Combine(dir,"production-rust-27.docx");
+    var commonA="회원은 제공된 서비스의 이용요금과 관련 세금의 지급 조건에 동의하며 계약에 따른 의무를 이행합니다.";
+    var oldOnly="회원은 언제든지 서비스를 통하여 제공되는 상품과 용역의 가격을 수정할 수 있습니다.";
+    var commonB="회원은 서비스 종료 후에도 기존 계약에 명시된 개인정보 처리 및 반환 절차를 준수하여야 합니다.";
+    var newOnly="다만, 관련 법령 및 이 약관에 따른 청약철회·환급 등 회원의 권리는 제한되지 않습니다.";
+    Make(oldDoc,P("제26조(수수료의 지급)")+P(commonA+" "+oldOnly+" "+commonB));
+    Make(newDoc,P("제27조(수수료의 지급)")+P(commonA+" "+commonB+" "+newOnly));
+    var initialFull=GetRustCounter("WholeMatchRustParityMatches");
+    var initialSentence=GetRustCounter("SentenceReviewRustMatches");
+    var compared=await eng.CompareAsync(new[]{oldDoc,newDoc},0,"legal",true,true);
+    var article=compared.Rows.Single(x=>x.Members[0]?.Number=="26");
+    Check(article.Markers.Count(m=>m.Part=="header"&&m.Message.Contains("27"))==1 &&
+          article.Markers.Count(m=>m.Part=="body"&&m.Action=="삭제"&&m.Text==oldOnly)==1 &&
+          article.Markers.Count(m=>m.Part=="body"&&m.Action=="추가"&&m.Text==newOnly)==1 &&
+          article.Markers.Where(m=>m.Part=="body")
+              .All(m=>!m.Text.Contains(commonA)&&!m.Text.Contains(commonB)),
+        "production Rust-first legal article markers differ from exact expected result");
+    Check(GetRustCounter("WholeMatchRustParityMatches")>initialFull &&
+          GetRustCounter("SentenceReviewRustMatches")>initialSentence,
+        "production Rust-first execution did not adopt both native engine stages");
+    var generalBefore=Path.Combine(dir,"rust-general-old.docx");
+    var generalAfter=Path.Combine(dir,"rust-general-new.docx");
+    Make(generalBefore,P("Basic introductory paragraph")+P("General privacy terms"));
+    Make(generalAfter,P("General privacy terms")+P("Basic introductory paragraph"));
+    var beforeGeneric=GetRustCounter("GenericUnitRustMatches");
+    var genericCmp=await eng.CompareAsync(new[]{generalBefore,generalAfter},0,"general",true,true);
+    Check(genericCmp.Rows.Count>=2 &&
+          GetRustCounter("GenericUnitRustMatches")>beforeGeneric,
+        "production general-document matcher must use Rust-first execution");
+    Console.WriteLine("PASS PRODUCTION RUST-FIRST MATCHPARTS, SENTENCE REVIEW AND GENERIC UNITS");
+    return;
+}
+
 // 1. Hidden runs: screen and Word export must use the same visible-text policy.
 var ha=Path.Combine(dir,"hiddenA.docx");var hb=Path.Combine(dir,"hiddenB.docx");var ho=Path.Combine(dir,"hiddenOut.docx");
 Make(ha,P("Alpha Beta"));Make(hb,"<w:p><w:r><w:t xml:space=\"preserve\">Alpha </w:t></w:r><w:r><w:rPr><w:vanish/></w:rPr><w:t xml:space=\"preserve\">HIDDEN </w:t></w:r><w:r><w:t>Beta</w:t></w:r></w:p>");
@@ -3819,7 +3863,18 @@ var feeOld=Path.Combine(dir,"fee-26-before.docx");
 var feeNew=Path.Combine(dir,"fee-27-after.docx");
 Make(feeOld,P("제26조(수수료의 지급)")+P(feeOldBody));
 Make(feeNew,P("제27조(수수료의 지급)")+P(feeNewBody));
+var nativeSentenceProperty=typeof(NativeComparisonEngine).GetProperty(
+    "SentenceReviewRustMatches",BindingFlags.NonPublic|BindingFlags.Static)!;
+var nativeSentenceMismatchProperty=typeof(NativeComparisonEngine).GetProperty(
+    "SentenceReviewRustMismatches",BindingFlags.NonPublic|BindingFlags.Static)!;
+long SentenceNativeAccepted()=>(long)nativeSentenceProperty.GetValue(null)!;
+long SentenceNativeRejected()=>(long)nativeSentenceMismatchProperty.GetValue(null)!;
+var beforeFeeRustSentence=SentenceNativeAccepted();
+var beforeFeeRustMismatch=SentenceNativeRejected();
 var feeResult=await eng.CompareAsync(new[]{feeOld,feeNew},0,"legal",true,true);
+Check(SentenceNativeAccepted()>beforeFeeRustSentence &&
+      SentenceNativeRejected()==beforeFeeRustMismatch,
+    "v5.21.9 fee article sentence diff must execute Rust with full C# parity");
 var feeRow=feeResult.Rows.Single(r=>r.Members[0]?.Number=="26");
 var feeBodyMarkers=feeRow.Markers.Where(m=>m.Part=="body").ToList();
 var deletedFeeSentence="회원은 언제든지 서비스를 통하여 제공되는 상품과 용역의 가격을 수정할 수 있습니다.";
@@ -3884,4 +3939,134 @@ var whitespaceAnchorB=firstFeeSentence.Replace("비용과 해당","비용과  �
 Check(!(bool)sentenceGate.Invoke(null,new object[]{whitespaceAnchorA,whitespaceAnchorB})!,
     "changed internal whitespace must not be mistaken for an unchanged sentence anchor");
 Console.WriteLine("PASS V5.21.9 FEE ARTICLE WORD DIFF PRESERVED SENTENCES");
+
+// 180. Whole NativeComparisonEngine.MatchParts pipeline, not individual
+// candidate stages: verify every returned old/new index and score against
+// original managed code for real legal structures and seeded edits.
+if (NativeCodeVersionComparer.IsAvailable)
+{
+    var wholeType=typeof(NativeComparisonEngine);
+    var wholeParser=wholeType.GetMethod("ParsePartsCSharp",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var wholeCSharp=wholeType.GetMethod("MatchPartsCSharp",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var wholeLive=wholeType.GetMethod("MatchParts",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var wholeMatched=wholeType.GetProperty("WholeMatchRustParityMatches",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var wholeMismatched=wholeType.GetProperty("WholeMatchRustParityMismatches",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    long MatchesWhole()=>(long)wholeMatched.GetValue(null)!;
+    long MissesWhole()=>(long)wholeMismatched.GetValue(null)!;
+    var initialWholeMatches=MatchesWhole();
+    var initialWholeMismatches=MissesWhole();
+    (int Old,int New,double Score)[] FetchWhole(
+        System.Reflection.MethodInfo method,object oldParts,object newParts) =>
+        ((System.Collections.IEnumerable)method.Invoke(null,new[]{oldParts,newParts})!)
+        .Cast<object>().Select(m=>(
+            Old:(int)m.GetType().GetProperty("Old")!.GetValue(m)!,
+            New:(int)m.GetType().GetProperty("New")!.GetValue(m)!,
+            Score:(double)m.GetType().GetProperty("Score")!.GetValue(m)!)).ToArray();
+    var wholeDocs=new List<string> {
+        "① 개인정보 수집 방법\n1. 이용자의 동의\n2. 개인정보 처리기간\n② 개인정보 보관기간",
+        "① 개인정보 수집 방법\n1. 이용자의 동의\n2. 개인정보 처리기간",
+        "① 개인정보 수집 방법\n1. 신규 개인정보 활용\n2. 이용자의 동의\n3. 개인정보 처리기간\n② 개인정보 보관기간",
+        "① 신청인의 동의서를 제출하여야 한다.\n② 신청인이 기한 내에 이의를 제기할 수 있다.",
+        "1. 신청인의 동의서를 제출하여야 한다.\n2. 신청인이 기한 내에 이의를 제기할 수 있다.",
+        "① 원칙\n1. 첫 번째 항\n2. 두 번째 항",
+        "(1) 첫 번째 항\n(2) 두 번째 항",
+        "본문만 존재하는 문서의 원칙입니다.",
+        "① 신청인의 동의서를 제출한다.\n② 이의 신청은 서면으로 한다.",
+        "1. 신청인의 동의서를 제출한다.\n2. 이의 신청은 서면으로 한다.",
+        "① 첫 번째\n② 두 번째\n③ 세 번째",
+        "① 세 번째\n② 첫 번째\n③ 두 번째",
+        "가. 신청인의 증빙자료 제출\n나. 증빙자료 확인 절차\n다. 대상자의 이의신청",
+        "가. 신청인의 증빙자료 수정\n나. 증빙자료 확인 절차\n다. 대상자의 이의신청",
+        "(i) 첫째\n(ii) 둘째\n(iii) 셋째",
+        "① 예외처리\n가. 추가자료\n나. 반환절차",
+        "",
+    };
+    var frozenWhole=System.Text.Json.JsonDocument.Parse(File.ReadAllText(
+        Path.Combine(AppContext.BaseDirectory,"Fixtures","document_parts_golden.json")));
+    wholeDocs.AddRange(frozenWhole.RootElement.EnumerateArray()
+        .Select(x=>x.GetProperty("input").GetString()!));
+    var seededWhole=new Random(20261023);
+    var labelsWhole=new[]{"①","②","③","④","1.","2.","3.","(1)","(2)","가.","나.","(i)","(ii)"};
+    var textsWhole=new[]{"개인정보 수집 목적을 안내합니다","개인정보를 보관합니다",
+        "이용자의 동의를 요청합니다","법령이 정하는 기간 동안 보존합니다",
+        "처리자 접근 권한을 제한합니다","이용자가 이의신청을 할 수 있습니다"};
+    for(var k=0;k<120;k++)
+    {
+        var lines=Enumerable.Range(0,seededWhole.Next(1,10))
+            .Select(_=>labelsWhole[seededWhole.Next(labelsWhole.Length)]+" "+
+                textsWhole[seededWhole.Next(textsWhole.Length)]);
+        wholeDocs.Add(string.Join("\n",lines));
+    }
+    var checkedWhole=0;
+    foreach(var originalText in wholeDocs)
+    {
+        var allTargets=new[]{originalText,wholeDocs[(checkedWhole*11+9)%wholeDocs.Count]};
+        foreach(var alteredText in allTargets)
+        {
+            var oldPart=wholeParser.Invoke(null,new object[]{originalText})!;
+            var newPart=wholeParser.Invoke(null,new object[]{alteredText})!;
+            var oldMatches=FetchWhole(wholeCSharp,oldPart,newPart);
+            var liveMatches=FetchWhole(wholeLive,oldPart,newPart);
+            Check(oldMatches.Length==liveMatches.Length &&
+                oldMatches.Zip(liveMatches).All(x=>x.First.Old==x.Second.Old &&
+                    x.First.New==x.Second.New &&
+                    Math.Abs(x.First.Score-x.Second.Score)<1e-12),
+                "whole MatchParts Rust diverged from source matching: "+originalText+
+                " -> "+alteredText);
+            checkedWhole++;
+        }
+    }
+    Check(MissesWhole()==initialWholeMismatches,
+        "whole MatchParts Rust differs from C# in tested document structures; "+
+        (MissesWhole()-initialWholeMismatches)+" mismatches");
+    Check(MatchesWhole()-initialWholeMatches==checkedWhole,
+        "whole MatchParts must actually use native Rust for every bounded corpus pair: "+
+        (MatchesWhole()-initialWholeMatches)+"/"+checkedWhole);
+    Console.WriteLine($"PASS RUST WHOLE MATCHPARTS CSHARP PARITY {checkedWhole}/{checkedWhole}");
+}
+
+// 181. Entire generic document block matching: Rust and the original
+// C# rank/greedy decision must agree even on ties and one-sided input.
+if (NativeCodeVersionComparer.IsAvailable)
+{
+    var genericRandom=new Random(20261023);
+    var cases=0;
+    var scale=new[]{.0,.32,.4799,.48,.50,.60,.72,.90,.99,1.0};
+    for(var round=0;round<500;round++)
+    {
+        var n=genericRandom.Next(0,18);
+        var m=genericRandom.Next(0,18);
+        var scores=Enumerable.Range(0,n*m).Select(_=>scale[
+            genericRandom.Next(scale.Length)]).ToArray();
+        var original = Enumerable.Range(0,n)
+            .SelectMany(i=>Enumerable.Range(0,m).Select(j=>(
+                Base:i,Other:j,Score:scores[i*m+j],
+                Rank:scores[i*m+j]+(1.0-
+                    Math.Min(Math.Abs(i-j)/(double)Math.Max(1,Math.Max(n,m)),1.0))*.015)))
+            .Where(x=>x.Score>=.48)
+            .OrderByDescending(x=>x.Rank).ToList();
+        var usedOld=new HashSet<int>();var usedNew=new HashSet<int>();
+        var expected=new List<(int Base,int Other,double Score)>();
+        foreach(var genericEntry in original)
+            if(usedOld.Add(genericEntry.Base)&&usedNew.Add(genericEntry.Other))
+                expected.Add((genericEntry.Base,genericEntry.Other,genericEntry.Score));
+        expected=expected.OrderBy(x=>x.Base).ToList();
+        var rust=NativeCodeVersionComparer.MatchGenericDocumentUnits(n,m,scores);
+        Check(rust is not null && rust.Count==expected.Count &&
+            expected.Zip(rust).All(x=>
+                x.First.Base==x.Second.Base&&x.First.Other==x.Second.Other &&
+                Math.Abs(x.First.Score-x.Second.Score)<1e-12&&x.Second.Mode=="same"),
+            "full generic Rust pair rank deviated from C#: "+round);
+        cases++;
+    }
+    Check(NativeCodeVersionComparer.MatchGenericDocumentUnits(
+        65,1,Enumerable.Repeat(.95,65).ToArray()) is null,
+        "unsupported large generic matcher must safely fall back to C#");
+    Console.WriteLine($"PASS RUST GENERIC BLOCK CSHARP PARITY {cases}/{cases}");
+}
 Console.WriteLine("ALL REGRESSIONS PASSED");

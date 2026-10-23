@@ -1240,3 +1240,139 @@ pub unsafe extern "C" fn dc_select_document_cross_level_parts_utf8(
         Err(_) => 5,
     }
 }
+
+/// Whole legal-item MatchParts choice pipeline using precomputed canonical
+/// C# structural and similarity feature vectors. Caller must parity check.
+/// # Safety
+/// Input must be readable for length bytes and output must be writable
+/// exclusively until the call returns; free data via dc_free_ast_json_result.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dc_match_document_parts_full_utf8(
+    input: *const u8,
+    length: usize,
+    output: *mut DcAstJsonResult,
+) -> i32 {
+    if output.is_null() {
+        return 2;
+    }
+    // SAFETY: exclusive writable pointer required by caller.
+    unsafe { ptr::write(output, DcAstJsonResult::empty()) };
+    if length > 4 * 1024 * 1024 || (length > 0 && input.is_null()) {
+        return 2;
+    }
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let bytes = if length == 0 {
+            &[][..]
+        } else {
+            // SAFETY: readable caller-provided bytes.
+            unsafe { slice::from_raw_parts(input, length) }
+        };
+        let request: crate::doc_match_full::Input = serde_json::from_slice(bytes).map_err(|_| 1)?;
+        if !crate::doc_match_full::validate(&request) {
+            return Err(3);
+        }
+        serde_json::to_vec(&crate::doc_match_full::checked(&request)).map_err(|_| 4)
+    }));
+    match result {
+        Ok(Ok(json)) => {
+            let buffer = json.into_boxed_slice();
+            let length = buffer.len();
+            let data = Box::into_raw(buffer) as *mut u8;
+            // SAFETY: exclusive writable pointer required by caller.
+            unsafe { ptr::write(output, DcAstJsonResult { data, length }) };
+            0
+        }
+        Ok(Err(status)) => status,
+        Err(_) => 5,
+    }
+}
+
+/// Independent Rust sentence-anchored legal paragraph diff, with explicit
+/// unsupported response for complex two-sided rewrites.
+/// # Safety
+/// Input must be readable, output exclusive and writable; caller frees
+/// Rust-owned result using dc_free_ast_json_result.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dc_review_document_sentences_utf8(
+    input: *const u8,
+    length: usize,
+    output: *mut DcAstJsonResult,
+) -> i32 {
+    if output.is_null() {
+        return 2;
+    }
+    // SAFETY: exclusive writable output required from caller.
+    unsafe { ptr::write(output, DcAstJsonResult::empty()) };
+    if length > 256 * 1024 || (length > 0 && input.is_null()) {
+        return 2;
+    }
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let bytes = if length == 0 {
+            &[][..]
+        } else {
+            // SAFETY: caller provides readable input bytes.
+            unsafe { slice::from_raw_parts(input, length) }
+        };
+        let request: crate::doc_sentence_review::Input =
+            serde_json::from_slice(bytes).map_err(|_| 1)?;
+        serde_json::to_vec(&crate::doc_sentence_review::review(&request)).map_err(|_| 4)
+    }));
+    match result {
+        Ok(Ok(json)) => {
+            let raw = json.into_boxed_slice();
+            let length = raw.len();
+            let data = Box::into_raw(raw) as *mut u8;
+            // SAFETY: exclusive writable output required from caller.
+            unsafe { ptr::write(output, DcAstJsonResult { data, length }) };
+            0
+        }
+        Ok(Err(status)) => status,
+        Err(_) => 5,
+    }
+}
+
+/// Greedy positional/semantic fallback for ordinary non-article document
+/// blocks, using C#-computed similarity values. Bounded FFI entrypoint.
+/// # Safety
+/// Input must be readable for length bytes, output writable exclusively.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dc_match_generic_document_units_utf8(
+    input: *const u8,
+    length: usize,
+    output: *mut DcAstJsonResult,
+) -> i32 {
+    if output.is_null() {
+        return 2;
+    }
+    // SAFETY: writable exclusive caller-owned output.
+    unsafe { ptr::write(output, DcAstJsonResult::empty()) };
+    if length > 1024 * 1024 || (length > 0 && input.is_null()) {
+        return 2;
+    }
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let bytes = if length == 0 {
+            &[][..]
+        } else {
+            // SAFETY: readable caller input.
+            unsafe { slice::from_raw_parts(input, length) }
+        };
+        let request: crate::doc_generic_units::Input =
+            serde_json::from_slice(bytes).map_err(|_| 1)?;
+        if !crate::doc_generic_units::validate(&request) {
+            return Err(3);
+        }
+        serde_json::to_vec(&crate::doc_generic_units::select(&request)).map_err(|_| 4)
+    }));
+    match result {
+        Ok(Ok(json)) => {
+            let raw = json.into_boxed_slice();
+            let length = raw.len();
+            let data = Box::into_raw(raw) as *mut u8;
+            // SAFETY: writable exclusive caller-owned output.
+            unsafe { ptr::write(output, DcAstJsonResult { data, length }) };
+            0
+        }
+        Ok(Err(status)) => status,
+        Err(_) => 5,
+    }
+}
