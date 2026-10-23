@@ -1514,3 +1514,94 @@ pub unsafe extern "C" fn dc_match_document_tokens_utf8(
         Err(_) => 5,
     }
 }
+
+/// Character score for normalized legal item/article text.
+/// # Safety
+/// Input readable for length bytes, output exclusive writable,
+/// successful result freed by dc_free_ast_json_result.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dc_score_document_characters_utf8(
+    input: *const u8,
+    length: usize,
+    output: *mut DcAstJsonResult,
+) -> i32 {
+    if output.is_null() {
+        return 2;
+    }
+    // SAFETY: caller guarantees exclusive writable output.
+    unsafe { ptr::write(output, DcAstJsonResult::empty()) };
+    if length > 128 * 1024 || (length > 0 && input.is_null()) {
+        return 2;
+    }
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let raw = if length == 0 {
+            &[][..]
+        } else {
+            // SAFETY: caller guarantees readable input.
+            unsafe { slice::from_raw_parts(input, length) }
+        };
+        let request: crate::doc_character_score::Input =
+            serde_json::from_slice(raw).map_err(|_| 1)?;
+        if !crate::doc_character_score::validate(&request) {
+            return Err(3);
+        }
+        serde_json::to_vec(&crate::doc_character_score::compare(&request)).map_err(|_| 4)
+    }));
+    match result {
+        Ok(Ok(raw)) => {
+            let buf = raw.into_boxed_slice();
+            let length = buf.len();
+            let data = Box::into_raw(buf) as *mut u8;
+            // SAFETY: caller guarantees exclusive writable output.
+            unsafe { ptr::write(output, DcAstJsonResult { data, length }) };
+            0
+        }
+        Ok(Err(rc)) => rc,
+        Err(_) => 5,
+    }
+}
+
+/// Short Korean word-level change alignment using managed lexical relations.
+/// # Safety
+/// Readable input, exclusive writable output, freed by dc_free_ast_json_result.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dc_align_document_korean_review_utf8(
+    input: *const u8,
+    length: usize,
+    output: *mut DcAstJsonResult,
+) -> i32 {
+    if output.is_null() {
+        return 2;
+    }
+    // SAFETY: caller guarantees exclusive writable result.
+    unsafe { ptr::write(output, DcAstJsonResult::empty()) };
+    if length > 256 * 1024 || (length > 0 && input.is_null()) {
+        return 2;
+    }
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let bytes = if length == 0 {
+            &[][..]
+        } else {
+            // SAFETY: caller guarantees readable bytes.
+            unsafe { slice::from_raw_parts(input, length) }
+        };
+        let request: crate::doc_korean_review::Input =
+            serde_json::from_slice(bytes).map_err(|_| 1)?;
+        if !crate::doc_korean_review::validate(&request) {
+            return Err(3);
+        }
+        serde_json::to_vec(&crate::doc_korean_review::select(&request)).map_err(|_| 4)
+    }));
+    match result {
+        Ok(Ok(raw)) => {
+            let buf = raw.into_boxed_slice();
+            let length = buf.len();
+            let data = Box::into_raw(buf) as *mut u8;
+            // SAFETY: caller guarantees exclusive writable result.
+            unsafe { ptr::write(output, DcAstJsonResult { data, length }) };
+            0
+        }
+        Ok(Err(code)) => code,
+        Err(_) => 5,
+    }
+}

@@ -521,3 +521,58 @@ shadow parity, production Rust-first smoke (parts, legal-unit lineage,
 generic units, table rows, token anchors, preserved sentences),
 code C#/Rust parity, Windows portable single EXE. Keep the installed
 version at v5.21.15 and do not publish a Release without a request.
+
+## Core text scoring and Korean review DP (Rust-first, 2026-10-23)
+
+New Rust doc_character_score.rs now executes both C#-normalized
+UTF-16 character score algorithms required by legal article/item matching:
+- Indel normalized LCS (IndelRatio, called by TitleSimilarity and
+  BodySimilarity), and
+- difflib-style longest contiguous matching-block ratio
+  (SequenceRatio, used by same-item PartSimilarity).
+It also executes token-array LCS similarity (Similarity) after C# has
+normalized Unicode and lexed the original token sequences. Native scores
+use the optional ABI v1 dc_score_document_characters_utf8 entrypoint,
+limited to <=512 UTF-16 code units, plus <=256 normalized tokens per side
+in token mode. Unsupported/oversized requests use the original managed
+algorithm. When native parity verification is enabled, the exact C#
+score is calculated and compared (absolute <=1e-12); divergence
+retains the original result. Unit tests explicitly cover Korean,
+combining marks, astral surrogate pairs and transposed/repeated text.
+
+Deterministic live tests check 840/840 C# vs native character score pairs
+and 480/480 token-LCS similarity scores. An independent production
+smoke confirms both native score paths actually execute without C#
+shadow verification.
+
+New Rust doc_korean_review.rs executes the entire short-Korean-word
+dynamic programming alignment, tie-breaking, traceback and exact/fuzzy
+evidence gate from TryKoreanReviewDiff. C# continues to supply original
+Korean word tokens, morphological pair relation costs, and the text/UTF-16
+marker presentation. The optional ABI v1 symbol is
+dc_align_document_korean_review_utf8. Original managed DP is kept as a
+fallback and golden reference. Four real fuzzy-changed Korean sentence
+cases pass source parity on marker actions, text and positions; the
+production smoke requires successful native DP adoption.
+
+## Completion boundary and honest limitations
+
+Comparison matching decisions now use Rust-first for bounded article
+lineage, list parts, generic blocks and DOCX table rows/cells, and
+most review word anchors. Character scores, token LCS scoring, long
+preserved-sentence anchors and eligible short Korean morphology also
+have Rust-first implementations.
+
+However, NativeComparisonEngine.cs is still an essential C# file:
+- Unicode FormC/FormKC normalization and original word/token lexing;
+- DOM/Word paragraph identification, legal article and structure
+  recovery, text unit creation, structural numbering and reference IDs;
+- global cross-unit part movements, markers, coalescing, absolute source
+  offsets, A/B/C row/display/Excel alignment; and
+- unsupported very large inputs and existing managed-compatible fallbacks.
+
+Do not delete the file or claim a standalone 100% Rust implementation.
+This is a verifiable functional port of large comparison subpipelines,
+not a source-file-for-source-file replacement. Full retirement requires
+the remaining parser/normalization/marker model and their reference
+tests to move into Rust in a separately reviewed API boundary.

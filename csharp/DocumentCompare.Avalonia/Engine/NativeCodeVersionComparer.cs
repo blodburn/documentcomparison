@@ -153,6 +153,19 @@ public static class NativeCodeVersionComparer
     public sealed record DocumentTablePair(int Base, int Other);
     public sealed record DocumentTokenBlock(int A, int B, int Size);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int DocumentCharacterScoreDelegate(
+        [In] byte[] input, nuint length, out NativeAstResult result);
+    private sealed record DocumentCharacterScoreWire(double Score);
+    public sealed record DocumentKoreanWordRelation(string Kind,double Cost);
+    public sealed record DocumentKoreanWordOp(string Kind,int? OldIndex,int? NewIndex);
+    private sealed record DocumentKoreanWordWire(
+        bool Supported,List<DocumentKoreanWordOp> Ops);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int DocumentKoreanWordDelegate(
+        [In] byte[] input,nuint length,out NativeAstResult result);
+
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int DocumentTokenMatcherDelegate(
         [In] byte[] input, nuint length, out NativeAstResult result);
 
@@ -246,6 +259,8 @@ public static class NativeCodeVersionComparer
         public readonly DocumentUnitLineageDelegate? DocumentUnitLineage;
         public readonly DocumentTableMatcherDelegate? DocumentTableMatcher;
         public readonly DocumentTokenMatcherDelegate? DocumentTokenMatcher;
+        public readonly DocumentCharacterScoreDelegate? DocumentCharacterScore;
+        public readonly DocumentKoreanWordDelegate? DocumentKoreanWord;
 
         public Exports(IntPtr handle)
         {
@@ -333,6 +348,16 @@ public static class NativeCodeVersionComparer
                 "dc_match_document_tokens_utf8", out var tokenMatcherExport))
                 DocumentTokenMatcher = Marshal.GetDelegateForFunctionPointer<DocumentTokenMatcherDelegate>(
                     tokenMatcherExport);
+            if (NativeLibrary.TryGetExport(handle,
+                "dc_score_document_characters_utf8", out var characterScoreExport))
+                DocumentCharacterScore =
+                    Marshal.GetDelegateForFunctionPointer<DocumentCharacterScoreDelegate>(
+                        characterScoreExport);
+            if (NativeLibrary.TryGetExport(handle,
+                "dc_align_document_korean_review_utf8", out var koreanReviewExport))
+                DocumentKoreanWord =
+                    Marshal.GetDelegateForFunctionPointer<DocumentKoreanWordDelegate>(
+                        koreanReviewExport);
         }
     }
 
@@ -1131,6 +1156,109 @@ public static class NativeCodeVersionComparer
     }
 
     private sealed record DocumentTokenBlocksWire(List<DocumentTokenBlock> Blocks);
+    /// <summary>
+    /// Selects Korean legal review word alignments in Rust. Word lexing
+    /// and morphological relation costs are supplied from the C# source.
+    /// </summary>
+    public static IReadOnlyList<DocumentKoreanWordOp>? AlignKoreanReview(
+        int oldCount,int newCount,
+        IReadOnlyList<DocumentKoreanWordRelation> relations)
+    {
+        ArgumentNullException.ThrowIfNull(relations);
+        var exports=Native.Value;
+        if (exports?.DocumentKoreanWord is null ||
+            oldCount is < 1 or > 96 || newCount is < 1 or > 96 ||
+            relations.Count!=oldCount*newCount)
+            return null;
+        var bytes=JsonSerializer.SerializeToUtf8Bytes(new{oldCount,newCount,relations},
+            new JsonSerializerOptions{PropertyNamingPolicy=JsonNamingPolicy.CamelCase});
+        if (bytes.Length>256*1024) return null;
+        var status=exports.DocumentKoreanWord(bytes,(nuint)bytes.Length,out var output);
+        try
+        {
+            if (status is 2 or 3) return null;
+            if (status!=0) throw new InvalidDataException($"Rust 한국어 문구 대응 실패: {status}");
+            if (output.Data==IntPtr.Zero || output.Length==0 ||
+                output.Length>1024UL*1024)
+                throw new InvalidDataException("Rust 한국어 문구 응답 크기 오류");
+            var raw=new byte[checked((int)output.Length)];
+            Marshal.Copy(output.Data,raw,0,raw.Length);
+            var parsed=JsonSerializer.Deserialize<DocumentKoreanWordWire>(raw,
+                new JsonSerializerOptions{PropertyNameCaseInsensitive=true});
+            if (parsed?.Ops is null || parsed.Ops.Count>oldCount+newCount ||
+                (!parsed.Supported && parsed.Ops.Count!=0))
+                throw new InvalidDataException("Rust 한국어 문구 응답 개수 오류");
+            if (!parsed.Supported) return null;
+            var oldIndex=0;var newIndex=0;
+            foreach(var op in parsed.Ops)
+            {
+                if (op.Kind is not ("equal" or "fuzzy" or "delete" or "insert") ||
+                    op.OldIndex!=(op.Kind=="insert"?(int?)null:oldIndex) ||
+                    op.NewIndex!=(op.Kind=="delete"?(int?)null:newIndex))
+                    throw new InvalidDataException("Rust 한국어 문구 순서 오류");
+                if (op.OldIndex.HasValue) oldIndex++;
+                if (op.NewIndex.HasValue) newIndex++;
+            }
+            if (oldIndex!=oldCount || newIndex!=newCount ||
+                parsed.Ops.Count(x=>x.Kind=="equal")<2 ||
+                parsed.Ops.Count(x=>x.Kind=="fuzzy")<2)
+                throw new InvalidDataException("Rust 한국어 문구 종료 경계 오류");
+            return parsed.Ops;
+        }
+        finally
+        {
+            exports.AstFree(ref output);
+        }
+    }
+
+
+    /// <summary>
+    /// Legal C#-normalized UTF-16 character similarity, calculated by Rust.
+    /// Only the supported small scoring domain is sent to the native core.
+    /// </summary>
+    public static double? ScoreDocumentCharacters(
+        string oldText, string newText, string mode,
+        IReadOnlyList<string>? oldTokens=null, IReadOnlyList<string>? newTokens=null)
+    {
+        ArgumentNullException.ThrowIfNull(oldText);
+        ArgumentNullException.ThrowIfNull(newText);
+        if (mode is not ("indel" or "sequence" or "token") ||
+            oldText.Length > 512 || newText.Length > 512 ||
+            (mode=="token" && (oldTokens is null || newTokens is null ||
+                oldTokens.Count>256 || newTokens.Count>256)))
+            return null;
+        var exports=Native.Value;
+        if (exports?.DocumentCharacterScore is null) return null;
+        var bytes=JsonSerializer.SerializeToUtf8Bytes(new {
+            old=oldText,@new=newText,mode,
+            oldTokens=oldTokens ?? Array.Empty<string>(),
+            newTokens=newTokens ?? Array.Empty<string>()
+        });
+        if (bytes.Length>128*1024) return null;
+        var status=exports.DocumentCharacterScore(bytes,(nuint)bytes.Length,out var output);
+        try
+        {
+            if (status is 2 or 3) return null;
+            if (status!=0) throw new InvalidDataException($"Rust 문자 유사도 실패: {status}");
+            if (output.Data==IntPtr.Zero || output.Length==0 ||
+                output.Length>1024UL*1024)
+                throw new InvalidDataException("Rust 문자 유사도 결과 크기 오류");
+            var raw=new byte[checked((int)output.Length)];
+            Marshal.Copy(output.Data,raw,0,raw.Length);
+            var parsed=JsonSerializer.Deserialize<DocumentCharacterScoreWire>(raw,
+                new JsonSerializerOptions{PropertyNameCaseInsensitive=true});
+            if (parsed is null || !double.IsFinite(parsed.Score) ||
+                parsed.Score is < 0 or > 1)
+                throw new InvalidDataException("Rust 문자 유사도 점수 오류");
+            return parsed.Score;
+        }
+        finally
+        {
+            exports.AstFree(ref output);
+        }
+    }
+
+
 
 
 

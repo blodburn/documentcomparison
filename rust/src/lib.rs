@@ -1,7 +1,9 @@
 pub mod ast;
 pub mod cross_file;
+pub mod doc_character_score;
 pub mod doc_cross_level;
 pub mod doc_generic_units;
+pub mod doc_korean_review;
 pub mod doc_match_exact;
 pub mod doc_match_full;
 pub mod doc_move_candidates;

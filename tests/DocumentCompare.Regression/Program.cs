@@ -144,7 +144,21 @@ if (args.Length==1 && args[0]=="--smoke-native-production")
     Check(wordReview.Rows.Any(x=>x.Changed) &&
         GetRustCounter("TokenMatchRustMatches")>initialTokens,
         "production general word edits must use Rust token anchor matching");
-    Console.WriteLine("PASS PRODUCTION RUST-FIRST PARTS, LINEAGE, TABLE, TOKENS, SENTENCES AND GENERAL BLOCKS");
+    Check(GetRustCounter("CharacterScoreRustMatches")>0 &&
+        GetRustCounter("TokenScoreRustMatches")>0,
+        "production Rust-first character and token similarity scores were never used");
+    var beforeMorph=GetRustCounter("KoreanReviewRustMatches");
+    var morph=typeof(NativeComparisonEngine).GetMethod("TryKoreanReviewDiff",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    var koreanMarkers=(System.Collections.IEnumerable?)morph.Invoke(null,
+        new object[]{"개인정보 동의서 제출기한 요구",
+            "개인정보 동의서는 제출기한을 요구",
+            0,0,0,1,"A↔B",0,"body",0});
+    Check(koreanMarkers is not null &&
+        koreanMarkers.Cast<object>().Count()>=2 &&
+        GetRustCounter("KoreanReviewRustMatches")>beforeMorph,
+        "production Rust-first Korean morphology alignment not adopted");
+    Console.WriteLine("PASS PRODUCTION RUST-FIRST FULL ITEM, LINEAGE, TABLE, TOKEN, CHARACTER SCORE, KOREAN DP AND SENTENCE REVIEW");
     return;
 }
 
@@ -4275,5 +4289,145 @@ if (NativeCodeVersionComparer.IsAvailable)
     Check(Count(accepts)-start==checkedCases && Count(rejects)==mismatchStart,
         "Rust token matcher must be adopted for all bounded test pairs, zero mismatch");
     Console.WriteLine($"PASS RUST TOKEN LONGEST BLOCK CSHARP PARITY {checkedCases}/{checkedCases}");
+}
+
+// Whole Rust-first UTF-16 character similarity parity, not only string
+// token alignment: long legal titles, Korean, surrogate pairs, and repeats.
+if (NativeCodeVersionComparer.IsAvailable)
+{
+    var owner=typeof(NativeComparisonEngine);
+    var scoreIndel=owner.GetMethod("IndelRatioCSharp",BindingFlags.NonPublic|BindingFlags.Static)!;
+    var seq=owner.GetMethod("SequenceRatioCSharp",BindingFlags.NonPublic|BindingFlags.Static)!;
+    var nativeIndel=owner.GetMethod("IndelRatio",BindingFlags.NonPublic|BindingFlags.Static)!;
+    var nativeSeq=owner.GetMethod("SequenceRatio",BindingFlags.NonPublic|BindingFlags.Static)!;
+    var accepts=owner.GetProperty("CharacterScoreRustMatches",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var rejects=owner.GetProperty("CharacterScoreRustMismatches",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    long Counter(System.Reflection.PropertyInfo property)=>
+        (long)property.GetValue(null)!;
+    double InvokeScore(System.Reflection.MethodInfo method,string a,string b)=>
+        (double)method.Invoke(null,new object[]{a,b})!;
+    var acceptedStart=Counter(accepts);var rejectedStart=Counter(rejects);
+    var rng=new Random(20261023);
+    var terms=new[]{"a","b","A","한","글","동","의","개","인","보","호"," ",
+        "①","(1)","법","령","의","미","😀","😃","™","é","e\u0301","\n","X"};
+    var checkedScores=0;
+    for(var i=0;i<420;i++)
+    {
+        var lenA=i<24?i%6:rng.Next(0,65);
+        var lenB=i<24?(i+3)%6:rng.Next(0,65);
+        var a=string.Concat(Enumerable.Range(0,lenA)
+            .Select(_=>terms[rng.Next(terms.Length)]));
+        var b=i%4==0?a:string.Concat(Enumerable.Range(0,lenB)
+            .Select(_=>terms[rng.Next(terms.Length)]));
+        foreach(var (mode,method,live) in new[]{
+            ("indel",scoreIndel,nativeIndel),("sequence",seq,nativeSeq)})
+        {
+            var expected=InvokeScore(method,a,b);
+            var rust=NativeCodeVersionComparer.ScoreDocumentCharacters(a,b,mode);
+            Check(rust is not null && Math.Abs(expected-rust.Value)<1e-12,
+                "Rust native character score disagrees with original C#: "+i+" "+mode);
+            var liveScore=InvokeScore(live,a,b);
+            Check(Math.Abs(expected-liveScore)<1e-12,
+                "Rust-first character scoring modified the legal matcher: "+i+" "+mode);
+            checkedScores++;
+        }
+    }
+    Check(Counter(rejects)==rejectedStart &&
+        Counter(accepts)-acceptedStart==checkedScores,
+        "UTF-16 scoring was not executed on every test with zero parity drift");
+    Console.WriteLine($"PASS RUST UTF16 DOCUMENT CHARACTER SCORE PARITY {checkedScores}/{checkedScores}");
+}
+
+// Rust-first *token similarity score* across real Korean/English review
+// tokens; this is a separate contract from longest matching-block indices.
+if (NativeCodeVersionComparer.IsAvailable)
+{
+    var rng=new Random(20261023);
+    var vocab=new[]{"계약","회원","개인정보","수집","동의","없이","환급",
+        "Article","Privacy","the","of","pay","and","😀","A","B","⓵","1"};
+    var beforeCount=(long)typeof(NativeComparisonEngine).GetProperty(
+        "TokenScoreRustMatches",BindingFlags.Static|BindingFlags.NonPublic)!.GetValue(null)!;
+    var beforeMismatch=(long)typeof(NativeComparisonEngine).GetProperty(
+        "TokenScoreRustMismatches",BindingFlags.Static|BindingFlags.NonPublic)!.GetValue(null)!;
+    var checkedValues=0;var adoptedValues=0;
+    for(var k=0;k<480;k++)
+    {
+        var a=string.Join(" ",Enumerable.Range(0,rng.Next(1,12))
+            .Select(_=>vocab[rng.Next(vocab.Length)]));
+        var b=k%3==0?a:string.Join(" ",Enumerable.Range(0,rng.Next(1,12))
+            .Select(_=>vocab[rng.Next(vocab.Length)]));
+        var original=(double)typeof(NativeComparisonEngine).GetMethod("SimilarityCSharp",
+            BindingFlags.NonPublic|BindingFlags.Static)!.Invoke(null,new object[]{a,b})!;
+        var production=(double)typeof(NativeComparisonEngine).GetMethod("Similarity",
+            BindingFlags.NonPublic|BindingFlags.Static)!.Invoke(null,new object[]{a,b})!;
+        Check(Math.Abs(original-production)<1e-12,
+            "Rust token similarity differs from canonical C# LCS: "+k);
+        if (a!=b && a.Length<=512 && b.Length<=512) adoptedValues++;
+        checkedValues++;
+    }
+    var adoptedAfter=(long)typeof(NativeComparisonEngine).GetProperty(
+        "TokenScoreRustMatches",BindingFlags.Static|BindingFlags.NonPublic)!.GetValue(null)!;
+    var mismatchAfter=(long)typeof(NativeComparisonEngine).GetProperty(
+        "TokenScoreRustMismatches",BindingFlags.Static|BindingFlags.NonPublic)!.GetValue(null)!;
+    Check(mismatchAfter==beforeMismatch &&
+          adoptedAfter-beforeCount==adoptedValues,
+        "Rust token scoring did not execute consistently with zero parity fallbacks");
+    Console.WriteLine($"PASS RUST TOKEN LCS SIMILARITY PARITY {checkedValues}/{checkedValues}");
+}
+
+// Korean short-word morphological alignment must execute the new Rust
+// dynamic-programming selector, without any change to marker positions.
+if (NativeCodeVersionComparer.IsAvailable)
+{
+    var engineType=typeof(NativeComparisonEngine);
+    var wrapper=engineType.GetMethod("TryKoreanReviewDiff",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var original=engineType.GetMethod("TryKoreanReviewDiffCSharp",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var accepted=engineType.GetProperty("KoreanReviewRustMatches",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var rejected=engineType.GetProperty("KoreanReviewRustMismatches",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    long ReadKoreanCounter(System.Reflection.PropertyInfo prop)=>(long)prop.GetValue(null)!;
+    var initialAccepted=ReadKoreanCounter(accepted);
+    var initialRejected=ReadKoreanCounter(rejected);
+    var corpus=new[]{
+        ("개인정보 동의서 제출기한 요구","개인정보 동의서는 제출기한을 요구"),
+        ("개인정보 동의서 제출기한 요청","개인정보 동의서를 제출기한에 요청"),
+        ("개인정보 동의서 제출기한 확인","개인정보 동의서를 제출기한이 확인"),
+        ("개인정보 동의서 제출기한 관리","개인정보 동의서는 제출기한이 관리"),
+    };
+    var koreanChecked=0;
+    foreach(var (a,b) in corpus)
+    {
+        object?[] koreanReviewArgs={a,b,0,0,0,1,"A↔B",0,"body",0};
+        var source=(System.Collections.IEnumerable?)original.Invoke(null,koreanReviewArgs);
+        var actual=(System.Collections.IEnumerable?)wrapper.Invoke(null,koreanReviewArgs);
+        Check((source is null)==(actual is null),
+            "Rust Korean review eligibility differs from C#");
+        var expected=source?.Cast<object>().ToArray() ?? Array.Empty<object>();
+        var produced=actual?.Cast<object>().ToArray() ?? Array.Empty<object>();
+        Check(expected.Length==produced.Length &&
+            expected.Zip(produced).All(pair=>
+            {
+                var type=pair.First.GetType();
+                return type.GetProperty("Action")!.GetValue(pair.First)!.Equals(
+                        type.GetProperty("Action")!.GetValue(pair.Second)) &&
+                    type.GetProperty("Text")!.GetValue(pair.First)!.Equals(
+                        type.GetProperty("Text")!.GetValue(pair.Second)) &&
+                    type.GetProperty("CharStart")!.GetValue(pair.First)!.Equals(
+                        type.GetProperty("CharStart")!.GetValue(pair.Second)) &&
+                    type.GetProperty("CharEnd")!.GetValue(pair.First)!.Equals(
+                        type.GetProperty("CharEnd")!.GetValue(pair.Second));
+            }),
+            "Rust Korean DP changed visible Word review marker for "+a+" -> "+b);
+        koreanChecked++;
+    }
+    Check(ReadKoreanCounter(rejected)==initialRejected &&
+        ReadKoreanCounter(accepted)>initialAccepted,
+        "Korean short-word regression must exercise Rust native DP");
+    Console.WriteLine($"PASS RUST KOREAN MORPH DP CSHARP PARITY {koreanChecked}/{koreanChecked}");
 }
 Console.WriteLine("ALL REGRESSIONS PASSED");

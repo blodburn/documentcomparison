@@ -2170,56 +2170,83 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     private sealed record WordSpan(int Start, int End, string Text);
     private sealed record WordOp(string Kind, int? OldIndex, int? NewIndex);
 
+    private static long _koreanReviewRustMatches;
+    private static long _koreanReviewRustMismatches;
+    internal static long KoreanReviewRustMatches =>
+        System.Threading.Interlocked.Read(ref _koreanReviewRustMatches);
+    internal static long KoreanReviewRustMismatches =>
+        System.Threading.Interlocked.Read(ref _koreanReviewRustMismatches);
+
     private static List<NativeMarker>? TryKoreanReviewDiff(
-        string oldText, string newText, int oldBase, int newBase, int oldDoc, int newDoc,
-        string pair, int pairOrder, string part, int itemOrder)
+        string oldText,string newText,int oldBase,int newBase,int oldDoc,int newDoc,
+        string pair,int pairOrder,string part,int itemOrder)
     {
-        // Exact V5.19.4.4k gate: only compact Korean edits are morph-refined.
-        if (Math.Max(oldText.Length, newText.Length) > 96 ||
+        if (Math.Max(oldText.Length,newText.Length)>96 ||
             !KoreanPresence.IsMatch(oldText) || !KoreanPresence.IsMatch(newText))
             return null;
-
-        var a = KoreanLexToken.Matches(oldText)
-            .Select(m => new WordSpan(m.Index, m.Index + m.Length, m.Value)).ToList();
-        var b = KoreanLexToken.Matches(newText)
-            .Select(m => new WordSpan(m.Index, m.Index + m.Length, m.Value)).ToList();
-        if (a.Count == 0 || b.Count == 0) return null;
-
-        const double gap = .68;
-        var dp = new double[a.Count + 1, b.Count + 1];
-        var prev = new char[a.Count + 1, b.Count + 1];
-        for (var i = 1; i <= a.Count; i++) { dp[i, 0] = dp[i - 1, 0] + gap; prev[i, 0] = 'D'; }
-        for (var j = 1; j <= b.Count; j++) { dp[0, j] = dp[0, j - 1] + gap; prev[0, j] = 'I'; }
-        for (var i = 1; i <= a.Count; i++)
-        for (var j = 1; j <= b.Count; j++)
+        try
         {
-            var (_, cost) = KoreanWordRelation(a[i - 1].Text, b[j - 1].Text);
-            var match = dp[i - 1, j - 1] + cost;
-            var del = dp[i - 1, j] + gap;
-            var ins = dp[i, j - 1] + gap;
-            if (match <= del && match <= ins) { dp[i, j] = match; prev[i, j] = 'M'; }
-            else if (del <= ins) { dp[i, j] = del; prev[i, j] = 'D'; }
-            else { dp[i, j] = ins; prev[i, j] = 'I'; }
-        }
-
-        var ops = new List<WordOp>();
-        var x = a.Count; var y = b.Count;
-        while (x > 0 || y > 0)
-        {
-            var op = prev[x, y];
-            if (op == 'M')
+            var a=KoreanLexToken.Matches(oldText)
+                .Select(m=>new WordSpan(m.Index,m.Index+m.Length,m.Value)).ToList();
+            var b=KoreanLexToken.Matches(newText)
+                .Select(m=>new WordSpan(m.Index,m.Index+m.Length,m.Value)).ToList();
+            var relations=new List<NativeCodeVersionComparer.DocumentKoreanWordRelation>(
+                a.Count*b.Count);
+            foreach(var x in a)
+            foreach(var y in b)
             {
-                var (kind, _) = KoreanWordRelation(a[x - 1].Text, b[y - 1].Text);
-                ops.Add(new WordOp(kind, x - 1, y - 1)); x--; y--;
+                var (kind,cost)=KoreanWordRelation(x.Text,y.Text);
+                relations.Add(new(kind,cost));
             }
-            else if (op == 'D') { ops.Add(new WordOp("delete", x - 1, null)); x--; }
-            else { ops.Add(new WordOp("insert", null, y - 1)); y--; }
+            var selected=NativeCodeVersionComparer.AlignKoreanReview(a.Count,b.Count,relations);
+            if (selected is null)
+                return TryKoreanReviewDiffCSharp(oldText,newText,oldBase,newBase,
+                    oldDoc,newDoc,pair,pairOrder,part,itemOrder);
+            var ops=selected.Select(x=>new WordOp(x.Kind,x.OldIndex,x.NewIndex)).ToList();
+            var rust=RenderKoreanReviewMarkers(oldText,newText,oldBase,newBase,
+                oldDoc,newDoc,pair,pairOrder,part,itemOrder,a,b,ops);
+            if (Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_REQUIRE_NATIVE")=="1" ||
+                Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_VERIFY_DOCUMENT_MATCHES")=="1")
+            {
+                var original=TryKoreanReviewDiffCSharp(oldText,newText,oldBase,newBase,
+                    oldDoc,newDoc,pair,pairOrder,part,itemOrder);
+                if (rust is null && original is null)
+                    return null;
+                if (rust is null || original is null ||
+                    rust.Count!=original.Count ||
+                    rust.Where((marker,i)=>
+                        marker.Action!=original[i].Action ||
+                        marker.Text!=original[i].Text ||
+                        marker.CharStart!=original[i].CharStart ||
+                        marker.CharEnd!=original[i].CharEnd ||
+                        marker.Endpoints.Count!=original[i].Endpoints.Count ||
+                        marker.Endpoints.Where((ep,j)=>
+                            ep.TargetDoc!=original[i].Endpoints[j].TargetDoc ||
+                            ep.CharStart!=original[i].Endpoints[j].CharStart ||
+                            ep.CharEnd!=original[i].Endpoints[j].CharEnd).Any()).Any())
+                {
+                    System.Threading.Interlocked.Increment(ref _koreanReviewRustMismatches);
+                    return original;
+                }
+            }
+            if (rust is not null)
+                System.Threading.Interlocked.Increment(ref _koreanReviewRustMatches);
+            return rust;
         }
-        ops.Reverse();
-        var exact = ops.Count(o => o.Kind == "equal");
-        var fuzzy = ops.Count(o => o.Kind == "fuzzy");
-        if (exact < 2 || fuzzy < 2) return null;
+        catch(Exception ex) when(ex is InvalidDataException or
+            System.Text.Json.JsonException or ArgumentException or OverflowException)
+        {
+            System.Threading.Interlocked.Increment(ref _koreanReviewRustMismatches);
+            return TryKoreanReviewDiffCSharp(oldText,newText,oldBase,newBase,
+                oldDoc,newDoc,pair,pairOrder,part,itemOrder);
+        }
+    }
 
+    private static List<NativeMarker>? RenderKoreanReviewMarkers(
+        string oldText,string newText,int oldBase,int newBase,int oldDoc,int newDoc,
+        string pair,int pairOrder,string part,int itemOrder,
+        IReadOnlyList<WordSpan> a,IReadOnlyList<WordSpan> b,List<WordOp> ops)
+    {
         var result = new List<NativeMarker>();
         for (var k = 0; k < ops.Count; k++)
         {
@@ -2280,6 +2307,61 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             }
         }
         return result.Count is >= 2 and <= 8 ? result : null;
+    }
+
+    private static List<NativeMarker>? TryKoreanReviewDiffCSharp(
+        string oldText, string newText, int oldBase, int newBase, int oldDoc, int newDoc,
+        string pair, int pairOrder, string part, int itemOrder)
+    {
+        // Exact V5.19.4.4k gate: only compact Korean edits are morph-refined.
+        if (Math.Max(oldText.Length, newText.Length) > 96 ||
+            !KoreanPresence.IsMatch(oldText) || !KoreanPresence.IsMatch(newText))
+            return null;
+
+        var a = KoreanLexToken.Matches(oldText)
+            .Select(m => new WordSpan(m.Index, m.Index + m.Length, m.Value)).ToList();
+        var b = KoreanLexToken.Matches(newText)
+            .Select(m => new WordSpan(m.Index, m.Index + m.Length, m.Value)).ToList();
+        if (a.Count == 0 || b.Count == 0) return null;
+
+        const double gap = .68;
+        var dp = new double[a.Count + 1, b.Count + 1];
+        var prev = new char[a.Count + 1, b.Count + 1];
+        for (var i = 1; i <= a.Count; i++) { dp[i, 0] = dp[i - 1, 0] + gap; prev[i, 0] = 'D'; }
+        for (var j = 1; j <= b.Count; j++) { dp[0, j] = dp[0, j - 1] + gap; prev[0, j] = 'I'; }
+        for (var i = 1; i <= a.Count; i++)
+        for (var j = 1; j <= b.Count; j++)
+        {
+            var (_, cost) = KoreanWordRelation(a[i - 1].Text, b[j - 1].Text);
+            var match = dp[i - 1, j - 1] + cost;
+            var del = dp[i - 1, j] + gap;
+            var ins = dp[i, j - 1] + gap;
+            if (match <= del && match <= ins) { dp[i, j] = match; prev[i, j] = 'M'; }
+            else if (del <= ins) { dp[i, j] = del; prev[i, j] = 'D'; }
+            else { dp[i, j] = ins; prev[i, j] = 'I'; }
+        }
+
+        var ops = new List<WordOp>();
+        var x = a.Count; var y = b.Count;
+        while (x > 0 || y > 0)
+        {
+            var op = prev[x, y];
+            if (op == 'M')
+            {
+                var (kind, _) = KoreanWordRelation(a[x - 1].Text, b[y - 1].Text);
+                ops.Add(new WordOp(kind, x - 1, y - 1)); x--; y--;
+            }
+            else if (op == 'D') { ops.Add(new WordOp("delete", x - 1, null)); x--; }
+            else { ops.Add(new WordOp("insert", null, y - 1)); y--; }
+        }
+        ops.Reverse();
+        var exact = ops.Count(o => o.Kind == "equal");
+        var fuzzy = ops.Count(o => o.Kind == "fuzzy");
+        if (exact < 2 || fuzzy < 2) return null;
+
+        return RenderKoreanReviewMarkers(oldText,newText,oldBase,newBase,
+            oldDoc,newDoc,pair,pairOrder,part,itemOrder,a,b,ops);
+
     }
 
     private static (string Kind, double Cost) KoreanWordRelation(string a, string b)
@@ -3869,7 +3951,46 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         WordSetToken.Matches((value ?? string.Empty).ToLowerInvariant())
             .Select(x => x.Value).Where(x => x.Length > 0).ToHashSet(StringComparer.Ordinal);
 
-    private static double IndelRatio(string a, string b)
+    private static long _characterScoreRustMatches;
+    private static long _characterScoreRustMismatches;
+    internal static long CharacterScoreRustMatches =>
+        System.Threading.Interlocked.Read(ref _characterScoreRustMatches);
+    internal static long CharacterScoreRustMismatches =>
+        System.Threading.Interlocked.Read(ref _characterScoreRustMismatches);
+
+    private static double ScoreDocumentCharacters(
+        string a, string b, string mode, Func<string,string,double> managed)
+    {
+        a ??= string.Empty; b ??= string.Empty;
+        try
+        {
+            var rust=NativeCodeVersionComparer.ScoreDocumentCharacters(a,b,mode);
+            if (rust is null) return managed(a,b);
+            if (Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_REQUIRE_NATIVE")=="1" ||
+                Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_VERIFY_DOCUMENT_MATCHES")=="1")
+            {
+                var original=managed(a,b);
+                if (Math.Abs(rust.Value-original)>1e-12)
+                {
+                    System.Threading.Interlocked.Increment(ref _characterScoreRustMismatches);
+                    return original;
+                }
+            }
+            System.Threading.Interlocked.Increment(ref _characterScoreRustMatches);
+            return rust.Value;
+        }
+        catch(Exception ex) when(ex is InvalidDataException or
+            System.Text.Json.JsonException or ArgumentException or OverflowException)
+        {
+            System.Threading.Interlocked.Increment(ref _characterScoreRustMismatches);
+            return managed(a,b);
+        }
+    }
+
+    private static double IndelRatio(string a, string b) =>
+        ScoreDocumentCharacters(a,b,"indel",IndelRatioCSharp);
+
+    private static double IndelRatioCSharp(string a, string b)
     {
         a ??= string.Empty; b ??= string.Empty;
         if (a == b) return 1.0;
@@ -3942,7 +4063,10 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return 2.0 * lcs / Math.Max(1, a.Length + b.Length);
     }
 
-    private static double SequenceRatio(string a, string b)
+    private static double SequenceRatio(string a, string b) =>
+        ScoreDocumentCharacters(a,b,"sequence",SequenceRatioCSharp);
+
+    private static double SequenceRatioCSharp(string a, string b)
     {
         a ??= string.Empty; b ??= string.Empty;
         if (a == b) return 1.0;
@@ -3989,14 +4113,56 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return 2.0 * matches / (a.Length + b.Length);
     }
 
+    private static long _tokenScoreRustMatches;
+    private static long _tokenScoreRustMismatches;
+    internal static long TokenScoreRustMatches =>
+        System.Threading.Interlocked.Read(ref _tokenScoreRustMatches);
+    internal static long TokenScoreRustMismatches =>
+        System.Threading.Interlocked.Read(ref _tokenScoreRustMismatches);
+
     internal static double Similarity(string a, string b)
     {
-        var x = Normalize(a); var y = Normalize(b);
-        if (x == y) return 1; if (x.Length == 0 || y.Length == 0) return 0;
-        var aa = SimilarityToken.Matches(x).Select(m => m.Value).ToArray();
-        var bb = SimilarityToken.Matches(y).Select(m => m.Value).ToArray();
-        var lcs = LcsMatches(aa, bb).Count;
-        return 2.0 * lcs / Math.Max(1, aa.Length + bb.Length);
+        var x=Normalize(a);var y=Normalize(b);
+        if (x==y) return 1;
+        if (x.Length==0 || y.Length==0) return 0;
+        var aa=SimilarityToken.Matches(x).Select(m=>m.Value).ToArray();
+        var bb=SimilarityToken.Matches(y).Select(m=>m.Value).ToArray();
+        try
+        {
+            var native=NativeCodeVersionComparer.ScoreDocumentCharacters(
+                x,y,"token",aa,bb);
+            if (native is not null)
+            {
+                if (Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_REQUIRE_NATIVE")=="1" ||
+                    Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_VERIFY_DOCUMENT_MATCHES")=="1")
+                {
+                    var original=2.0*LcsMatches(aa,bb).Count/
+                        Math.Max(1,aa.Length+bb.Length);
+                    if (Math.Abs(original-native.Value)>1e-12)
+                    {
+                        System.Threading.Interlocked.Increment(ref _tokenScoreRustMismatches);
+                        return original;
+                    }
+                }
+                System.Threading.Interlocked.Increment(ref _tokenScoreRustMatches);
+                return native.Value;
+            }
+        }
+        catch(Exception ex) when(ex is InvalidDataException or
+            System.Text.Json.JsonException or ArgumentException or OverflowException)
+        {
+            System.Threading.Interlocked.Increment(ref _tokenScoreRustMismatches);
+        }
+        return 2.0*LcsMatches(aa,bb).Count/Math.Max(1,aa.Length+bb.Length);
+    }
+
+    internal static double SimilarityCSharp(string a,string b)
+    {
+        var x=Normalize(a);var y=Normalize(b);
+        if(x==y) return 1; if(x.Length==0 || y.Length==0) return 0;
+        var aa=SimilarityToken.Matches(x).Select(m=>m.Value).ToArray();
+        var bb=SimilarityToken.Matches(y).Select(m=>m.Value).ToArray();
+        return 2.0*LcsMatches(aa,bb).Count/Math.Max(1,aa.Length+bb.Length);
     }
 
     private static double Containment(string a,string b)
