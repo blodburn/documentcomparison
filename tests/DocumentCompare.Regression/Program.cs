@@ -958,7 +958,26 @@ var raceWSentinel=Encoding.UTF8.GetBytes("PREVIOUS_RACE_WORD");File.WriteAllByte
 var raceWTask=eng.ExportWordAsync(raceWA,raceWB,raceWO,"T",true,default,raceWCmp,0,1);
 var raceWPattern="."+Path.GetFileName(raceWO)+".*.tmp";
 for(var i=0;i<1500&&!Directory.GetFiles(dir,raceWPattern).Any()&&!raceWTask.IsCompleted;i++)await Task.Delay(1);
-using(var raceFs=new FileStream(raceWB,FileMode.Open,FileAccess.ReadWrite,FileShare.ReadWrite)){raceFs.Position=Math.Max(0,raceFs.Length-8);raceFs.WriteByte(0x20);}
+// The Word exporter may briefly hold an exclusive input read handle on
+// Windows. Retry the *mutation attempt* while export is still running,
+// rather than failing the test with an unrelated sharing violation.
+var raceWMutated=false;
+for(var attempt=0;attempt<2000 && !raceWMutated && !raceWTask.IsCompleted;attempt++)
+{
+    try
+    {
+        using var raceFs=new FileStream(raceWB,FileMode.Open,FileAccess.ReadWrite,
+            FileShare.ReadWrite|FileShare.Delete);
+        raceFs.Position=Math.Max(0,raceFs.Length-8);
+        raceFs.WriteByte(0x20);
+        raceWMutated=true;
+    }
+    catch(IOException)
+    {
+        await Task.Delay(2);
+    }
+}
+Check(raceWMutated,"Word input mutation never acquired a write window during active export");
 var raceWBlocked=false;try{await raceWTask;}catch(InvalidOperationException ex){raceWBlocked=ex.Message.Contains("내보내기 중 입력 파일이 변경")||ex.Message.Contains("입력 파일이 변경");}catch(InvalidDataException){raceWBlocked=true;}
 Check(raceWBlocked,"Word export committed after a compared source changed mid-export");
 Check(File.ReadAllBytes(raceWO).SequenceEqual(raceWSentinel),"Word race guard replaced the previous output");
