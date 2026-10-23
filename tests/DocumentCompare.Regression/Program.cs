@@ -3684,4 +3684,125 @@ if (NativeCodeVersionComparer.IsAvailable)
         "same-ordinal native size limit must retain the C# selection");
     Console.WriteLine($"PASS RUST SAME-ORDINAL DRAFTING CSHARP PARITY {ordinalCases}/{ordinalCases}");
 }
+
+// 179. Adjacent-level collapse/expansion selector exact parity.
+// C# remains authoritative for CollapsedLevelParentsEquivalent,
+// PartOrdinalAt, PartSimilarity and HasStableEdgeContext.
+if (NativeCodeVersionComparer.IsAvailable)
+{
+    var crossOwner = typeof(NativeComparisonEngine);
+    var crossCanonical = crossOwner.GetMethod("SelectCrossLevelCandidatesCSharp",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    var crossLive = crossOwner.GetMethod("SelectCrossLevelCandidates",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    var crossParser = crossOwner.GetMethod("ParsePartsCSharp",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    var crossMatcher = crossOwner.GetMethod("MatchParts",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    var crossMatchProp = crossOwner.GetProperty("CrossLevelRustParityMatches",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    var crossMismatchProp = crossOwner.GetProperty("CrossLevelRustParityMismatches",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    long CrossMatches()=>(long)crossMatchProp.GetValue(null)!;
+    long CrossMismatches()=>(long)crossMismatchProp.GetValue(null)!;
+    var crossMatchesStart=CrossMatches();
+    var crossMismatchesStart=CrossMismatches();
+    List<NativeCodeVersionComparer.DocumentMoveSelected> CrossRun(
+        System.Reflection.MethodInfo method, int oldCount,int newCount,
+        List<NativeCodeVersionComparer.DocumentCrossLevelCandidate> candidates) =>
+        ((System.Collections.IEnumerable)method.Invoke(
+            null,new object[]{oldCount,newCount,candidates})!)
+            .Cast<NativeCodeVersionComparer.DocumentMoveSelected>().ToList();
+
+    using (var frozen=System.Text.Json.JsonDocument.Parse(File.ReadAllText(
+        Path.Combine(AppContext.BaseDirectory,"Fixtures","document_cross_level_golden.json"))))
+        foreach(var fixture in frozen.RootElement.EnumerateArray())
+        {
+            var oldCount=fixture.GetProperty("oldCount").GetInt32();
+            var newCount=fixture.GetProperty("newCount").GetInt32();
+            var candidates=System.Text.Json.JsonSerializer.Deserialize<
+                List<NativeCodeVersionComparer.DocumentCrossLevelCandidate>>(
+                fixture.GetProperty("candidates").GetRawText(),
+                new System.Text.Json.JsonSerializerOptions{PropertyNameCaseInsensitive=true})!;
+            var expected=fixture.GetProperty("selected").EnumerateArray().Select(x=>
+                new NativeCodeVersionComparer.DocumentMoveSelected(
+                x.GetProperty("old").GetInt32(),x.GetProperty("new").GetInt32(),
+                x.GetProperty("score").GetDouble())).ToArray();
+            var managed=CrossRun(crossCanonical,oldCount,newCount,candidates);
+            var rust=NativeCodeVersionComparer.SelectCrossLevelDocumentParts(
+                oldCount,newCount,candidates);
+            Check(rust is not null && expected.Length==rust.Count &&
+                  expected.Length==managed.Count &&
+                  managed.Zip(expected).All(x=>x.First.Old==x.Second.Old &&
+                    x.First.New==x.Second.New &&
+                    Math.Abs(x.First.Score-x.Second.Score)<1e-12) &&
+                  rust.Zip(expected).All(x=>x.First.Old==x.Second.Old &&
+                    x.First.New==x.Second.New &&
+                    Math.Abs(x.First.Score-x.Second.Score)<1e-12),
+                "cross-level Golden mismatch: "+fixture.GetRawText());
+        }
+    var crossRandom=new Random(20261023);
+    var crossScores=new[]{0.0,.01,.3399,.34,.4999,.50,.7399,.74,.8599,.86,.95,1.0};
+    var crossCases=0;
+    for(var iteration=0;iteration<900;iteration++)
+    {
+        var oldCount=crossRandom.Next(0,31);
+        var newCount=crossRandom.Next(0,31);
+        var candidates=new List<NativeCodeVersionComparer.DocumentCrossLevelCandidate>();
+        for(var i=0;i<oldCount;i++)
+        for(var j=0;j<newCount;j++)
+            if(crossRandom.NextDouble()<.14)
+                candidates.Add(new(i,j,
+                    crossScores[crossRandom.Next(crossScores.Length)],
+                    crossScores[crossRandom.Next(crossScores.Length)],
+                    crossRandom.NextDouble()<.5,
+                    crossRandom.NextDouble()<.18));
+        var managed=CrossRun(crossCanonical,oldCount,newCount,candidates);
+        var rust=NativeCodeVersionComparer.SelectCrossLevelDocumentParts(
+            oldCount,newCount,candidates);
+        Check(rust is not null && rust.Count==managed.Count &&
+              rust.Zip(managed).All(pair=>
+                pair.First.Old==pair.Second.Old &&
+                pair.First.New==pair.Second.New &&
+                Math.Abs(pair.First.Score-pair.Second.Score)<1e-12),
+            "cross-level C# vs Rust candidate mismatch: "+iteration);
+        var live=CrossRun(crossLive,oldCount,newCount,candidates);
+        Check(managed.Count==live.Count &&
+              managed.Zip(live).All(pair=>
+                pair.First.Old==pair.Second.Old &&
+                pair.First.New==pair.Second.New &&
+                Math.Abs(pair.First.Score-pair.Second.Score)<1e-12),
+            "cross-level live fallback changed canonical selection: "+iteration);
+        crossCases++;
+    }
+    Check(CrossMatches()-crossMatchesStart==crossCases &&
+          CrossMismatches()==crossMismatchesStart,
+        "cross-level parity gate must accept exact native output");
+    // Actual MatchParts with one parent level dropped; ensure this new
+    // Rust stage executes without creating false cross-level pairings.
+    var oldCrossText="① 개인정보 처리에 관한 총괄 승인사항을 담당한다.\n"+
+        "1. 이용자의 정보를 계약 이행을 위해 처리하고 요청시 상세내역을 제공한다.\n"+
+        "2. 수집된 고객자료는 보유기간 종료시 신속하게 삭제하며 별도 로그를 기록한다.";
+    var newCrossText="(1) 이용자의 정보를 계약 이행을 위해 처리하고 요청시 상세내역을 안내한다.\n"+
+        "(2) 수집된 고객자료는 보유기간 종료시 안전하게 삭제하며 별도 로그를 기록한다.";
+    var oldCrossParts=crossParser.Invoke(null,new object[]{oldCrossText})!;
+    var newCrossParts=crossParser.Invoke(null,new object[]{newCrossText})!;
+    var preLive=CrossMatches();
+    var fullMatches=((System.Collections.IEnumerable)crossMatcher.Invoke(
+        null,new[]{oldCrossParts,newCrossParts})!).Cast<object>().ToList();
+    var paired=fullMatches.Select(p=>(
+        Old:(int)p.GetType().GetProperty("Old")!.GetValue(p)!,
+        New:(int)p.GetType().GetProperty("New")!.GetValue(p)!)).ToArray();
+    Check(paired.Contains((1,0)) && paired.Contains((2,1)) &&
+          !paired.Any(x=>x.Old==0 && x.New>=0) &&
+          CrossMatches()>preLive && CrossMismatches()==crossMismatchesStart,
+        "real collapsed parent must map former nested children only");
+    var tooMany=Enumerable.Range(0,257).Select(x=>
+        new NativeCodeVersionComparer.DocumentCrossLevelCandidate(x,0,.8,.8,true,true)).ToList();
+    Check(NativeCodeVersionComparer.SelectCrossLevelDocumentParts(257,1,tooMany) is null &&
+          CrossRun(crossLive,257,1,tooMany)
+            .SequenceEqual(CrossRun(crossCanonical,257,1,tooMany)),
+        "cross-level count budget must preserve managed fallback");
+    Console.WriteLine($"PASS RUST COLLAPSED LEVEL CSHARP PARITY {crossCases}/{crossCases}");
+}
 Console.WriteLine("ALL REGRESSIONS PASSED");

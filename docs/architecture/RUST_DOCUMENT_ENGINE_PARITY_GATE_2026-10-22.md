@@ -30,6 +30,7 @@ must not be inferred merely from matching current C# behavior.
 | Changed-label move candidate ranking and selection | C# SelectPartMoveCandidatesCSharp | Rust doc_move_candidates | 7 frozen Golden plus 900 direct cases; live gated |
 | Same-label sibling-shape fallback | C# SelectSameLabelCandidatesCSharp | Rust doc_same_label | 8 frozen Golden plus 850 direct cases; live guarded |
 | Same ordinal, different notation | C# SelectSameOrdinalCandidatesCSharp | Rust doc_same_ordinal | 8 frozen Golden plus 850 direct cases; live guarded |
+| Collapsed/expanded one-level selection | C# SelectCrossLevelCandidatesCSharp | Rust doc_cross_level | 8 frozen Golden and 900 direct cases; live guarded |
 | Full item fuzzy matching and movement | C# remaining MatchParts, CollapsedLevelParentsEquivalent etc. | Partially ported | No full replacement |
 | DOCX table cell/merge/row matching | C# structured reader and matcher | Not ported | No replacement |
 | Word formatting and tracked revisions | C# NativeOfficeExporter | Not ported | No replacement |
@@ -82,10 +83,11 @@ exports, A/B/C).
 4. Measure performance (five runs, identical inputs) before claiming Rust
    improves runtime or memory; maintain C# fallback until justified.
 
-STATUS: seven narrow document rules (whitespace changes, structural part
+STATUS: eight narrow document rules (whitespace changes, structural part
 segmentation, parent/child hierarchy, exact-body pairing, changed-label
-move selection, same-label sibling-shape fallback, and same-ordinal
-drafting convention) are ported with guarded live execution.
+move selection, same-label sibling-shape fallback, same-ordinal
+drafting convention, and adjacent-level collapse/expansion selection)
+are ported with guarded live execution.
 This is NOT a claim that the complete C# legal/Word engine has migrated
 to Rust or equals any missing historical Python implementation.
 
@@ -305,3 +307,46 @@ against BOTH C# and Rust, and checks an actual revised
 This does NOT migrate same-ordinal candidate eligibility, legal article
 lineage, collapsed parent matching, residual add/delete/replace judgment,
 DOCX table matching, A/B/C visualization, or Word tracked-change export.
+
+## Eighth narrow port: adjacent-level collapse/expansion candidates
+
+Rust core-rust/src/doc_cross_level.rs implements the candidate threshold,
+rank sorting, and greedy one-to-one pairing for document 항/호 structures
+that differ by exactly one hierarchy level.
+
+The C# document engine remains authoritative for:
+- Part segmentation, parent IDs, and level difference being exactly 1;
+- CollapsedLevelParentsEquivalent (the skipped/interposed parent MUST
+  remain unmatched and its grandparent must correspond);
+- PartOrdinalAt, PartSimilarity, Containment, and HasStableEdgeContext;
+- All pairing passes before/after the cross-level candidate stage.
+
+Rust accepts a cross-level pair when either
+(same logical ordinal AND (similarity>=.34 OR containment>=.50
+OR stable edge)), OR similarity>=.74, OR containment>=.86.
+Rank=max(similarity,.94*containment)+(sameOrdinal?.08:0).
+Selection sorts by rank descending, old/new index distance ascending,
+then original encounter order; each index is used at most once.
+Returned score=max(similarity,.56).
+
+The new optional ABI v1 FFI dc_select_document_cross_level_parts_utf8
+accepts bounded JSON (<=256 items per side, <=8192 candidates,
+<=1MiB input), and uses the existing Rust-owned result-free function.
+NativeComparisonEngine.SelectCrossLevelCandidatesCSharp independently
+computes the canonical source result, and the live wrapper adopts Rust
+ONLY when every ordered index and score matches within absolute 1e-12.
+A missing DLL/export, invalid input, FFI error or mismatch retains C#.
+CrossLevelRustParityMatches/Mismatches report acceptance/fallback.
+
+Frozen document_cross_level_golden.json includes 8 baseline cases
+(rank order, thresholds, stable tie, 1:1 ownership, missing evidence).
+Seeded direct C# vs Rust testing covers 900 candidate matrices.
+An actual flattened legal article verifies a removed wrapper is not
+erroneously matched to its children, while nested 1./2. map to new
+(1)/(2). Existing healthy-hierarchy tests prevent false flattening.
+
+Remaining managed functionality: collapsed-parent eligibility, residual
+candidate matching, definition-head heuristics, one-sided lists, final
+item add/delete/replace, full article lineage, Word table/row/cell
+correspondence, A/B/C mapping and Word tracked-change export.
+Passing this leaf gate does NOT prove full MatchParts parity.

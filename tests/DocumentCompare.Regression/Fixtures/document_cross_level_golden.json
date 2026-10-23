@@ -1,0 +1,219 @@
+[
+  {
+    "oldCount": 3,
+    "newCount": 4,
+    "candidates": [
+      {
+        "old": 1,
+        "new": 2,
+        "similarity": 0.36,
+        "containment": 0.2,
+        "sameOrdinal": true,
+        "edge": false
+      },
+      {
+        "old": 2,
+        "new": 3,
+        "similarity": 0.1,
+        "containment": 0.52,
+        "sameOrdinal": true,
+        "edge": false
+      },
+      {
+        "old": 0,
+        "new": 1,
+        "similarity": 0.9,
+        "containment": 0.2,
+        "sameOrdinal": false,
+        "edge": false
+      }
+    ],
+    "selected": [
+      {
+        "old": 0,
+        "new": 1,
+        "score": 0.9
+      },
+      {
+        "old": 2,
+        "new": 3,
+        "score": 0.56
+      },
+      {
+        "old": 1,
+        "new": 2,
+        "score": 0.56
+      }
+    ]
+  },
+  {
+    "oldCount": 1,
+    "newCount": 1,
+    "candidates": [
+      {
+        "old": 0,
+        "new": 0,
+        "similarity": 0.339,
+        "containment": 0.499,
+        "sameOrdinal": true,
+        "edge": false
+      }
+    ],
+    "selected": []
+  },
+  {
+    "oldCount": 1,
+    "newCount": 1,
+    "candidates": [
+      {
+        "old": 0,
+        "new": 0,
+        "similarity": 0.01,
+        "containment": 0.01,
+        "sameOrdinal": true,
+        "edge": true
+      }
+    ],
+    "selected": [
+      {
+        "old": 0,
+        "new": 0,
+        "score": 0.56
+      }
+    ]
+  },
+  {
+    "oldCount": 1,
+    "newCount": 1,
+    "candidates": [
+      {
+        "old": 0,
+        "new": 0,
+        "similarity": 0.739,
+        "containment": 0.859,
+        "sameOrdinal": false,
+        "edge": true
+      }
+    ],
+    "selected": []
+  },
+  {
+    "oldCount": 2,
+    "newCount": 2,
+    "candidates": [
+      {
+        "old": 0,
+        "new": 0,
+        "similarity": 0.82,
+        "containment": 0.1,
+        "sameOrdinal": false,
+        "edge": false
+      },
+      {
+        "old": 1,
+        "new": 0,
+        "similarity": 0.93,
+        "containment": 0.1,
+        "sameOrdinal": false,
+        "edge": false
+      },
+      {
+        "old": 0,
+        "new": 1,
+        "similarity": 0.78,
+        "containment": 0.1,
+        "sameOrdinal": false,
+        "edge": false
+      },
+      {
+        "old": 1,
+        "new": 1,
+        "similarity": 0.77,
+        "containment": 0.1,
+        "sameOrdinal": false,
+        "edge": false
+      }
+    ],
+    "selected": [
+      {
+        "old": 1,
+        "new": 0,
+        "score": 0.93
+      },
+      {
+        "old": 0,
+        "new": 1,
+        "score": 0.78
+      }
+    ]
+  },
+  {
+    "oldCount": 2,
+    "newCount": 2,
+    "candidates": [
+      {
+        "old": 0,
+        "new": 1,
+        "similarity": 0.75,
+        "containment": 0,
+        "sameOrdinal": false,
+        "edge": false
+      },
+      {
+        "old": 1,
+        "new": 1,
+        "similarity": 0.75,
+        "containment": 0,
+        "sameOrdinal": false,
+        "edge": false
+      },
+      {
+        "old": 0,
+        "new": 0,
+        "similarity": 0.75,
+        "containment": 0,
+        "sameOrdinal": false,
+        "edge": false
+      }
+    ],
+    "selected": [
+      {
+        "old": 1,
+        "new": 1,
+        "score": 0.75
+      },
+      {
+        "old": 0,
+        "new": 0,
+        "score": 0.75
+      }
+    ]
+  },
+  {
+    "oldCount": 1,
+    "newCount": 1,
+    "candidates": [
+      {
+        "old": 0,
+        "new": 0,
+        "similarity": 0.34,
+        "containment": 0.1,
+        "sameOrdinal": true,
+        "edge": false
+      }
+    ],
+    "selected": [
+      {
+        "old": 0,
+        "new": 0,
+        "score": 0.56
+      }
+    ]
+  },
+  {
+    "oldCount": 0,
+    "newCount": 0,
+    "candidates": [],
+    "selected": []
+  }
+]

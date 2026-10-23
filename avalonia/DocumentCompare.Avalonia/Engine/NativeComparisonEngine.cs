@@ -2397,6 +2397,73 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         }
     }
 
+    private static long _crossLevelRustParityMatches;
+    private static long _crossLevelRustParityMismatches;
+    internal static long CrossLevelRustParityMatches =>
+        System.Threading.Interlocked.Read(ref _crossLevelRustParityMatches);
+    internal static long CrossLevelRustParityMismatches =>
+        System.Threading.Interlocked.Read(ref _crossLevelRustParityMismatches);
+
+    private static List<NativeCodeVersionComparer.DocumentMoveSelected>
+        SelectCrossLevelCandidatesCSharp(int oldCount, int newCount,
+            IReadOnlyList<NativeCodeVersionComparer.DocumentCrossLevelCandidate> candidates)
+    {
+        var ranked = new List<(double Rank, int Old, int New, double Score)>();
+        foreach (var c in candidates)
+        {
+            if ((c.SameOrdinal &&
+                    (c.Similarity >= .34 || c.Containment >= .50 || c.Edge)) ||
+                c.Similarity >= .74 || c.Containment >= .86)
+            {
+                var rank = Math.Max(c.Similarity, .94 * c.Containment) +
+                    (c.SameOrdinal ? .08 : 0.0);
+                ranked.Add((rank, c.Old, c.New, c.Similarity));
+            }
+        }
+        var usedOld = new HashSet<int>();
+        var usedNew = new HashSet<int>();
+        var selected = new List<NativeCodeVersionComparer.DocumentMoveSelected>();
+        foreach (var entry in ranked.OrderByDescending(x => x.Rank)
+            .ThenBy(x => Math.Abs(x.Old - x.New)))
+            if (!usedOld.Contains(entry.Old) && !usedNew.Contains(entry.New))
+            {
+                usedOld.Add(entry.Old);
+                usedNew.Add(entry.New);
+                selected.Add(new NativeCodeVersionComparer.DocumentMoveSelected(
+                    entry.Old, entry.New, Math.Max(entry.Score, .56)));
+            }
+        return selected;
+    }
+
+    private static List<NativeCodeVersionComparer.DocumentMoveSelected>
+        SelectCrossLevelCandidates(int oldCount, int newCount,
+            IReadOnlyList<NativeCodeVersionComparer.DocumentCrossLevelCandidate> candidates)
+    {
+        var canonical = SelectCrossLevelCandidatesCSharp(oldCount, newCount, candidates);
+        try
+        {
+            var rust = NativeCodeVersionComparer.SelectCrossLevelDocumentParts(
+                oldCount, newCount, candidates);
+            if (rust is null) return canonical;
+            if (rust.Count != canonical.Count ||
+                rust.Where((entry, i) =>
+                    entry.Old != canonical[i].Old || entry.New != canonical[i].New ||
+                    Math.Abs(entry.Score - canonical[i].Score) > 1e-12).Any())
+            {
+                System.Threading.Interlocked.Increment(ref _crossLevelRustParityMismatches);
+                return canonical;
+            }
+            System.Threading.Interlocked.Increment(ref _crossLevelRustParityMatches);
+            return rust.ToList();
+        }
+        catch (Exception ex) when (ex is InvalidDataException or
+            System.Text.EncoderFallbackException or OverflowException)
+        {
+            System.Threading.Interlocked.Increment(ref _crossLevelRustParityMismatches);
+            return canonical;
+        }
+    }
+
     private static List<PartMatch> MatchParts(IReadOnlyList<NativePart> a, IReadOnlyList<NativePart> b)
     {
         var nodesA = BuildPartHierarchy(a); var nodesB = BuildPartHierarchy(b);
@@ -2507,24 +2574,24 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         // If one document omits an intermediate 항/호 layer, compare adjacent hierarchy levels
         // only after normal same-level matching has been exhausted.  The skipped parent must be
         // unmatched, which prevents a healthy nested hierarchy from being flattened accidentally.
-        var crossLevel = new List<(double Rank, int A, int B, double Score)>();
-        foreach (var i in Enumerable.Range(0, a.Count).Where(i => !usedA.Contains(i) && IsStructuralLabel(a[i].Label)))
-        foreach (var j in Enumerable.Range(0, b.Count).Where(j => !usedB.Contains(j) && IsStructuralLabel(b[j].Label)))
+        var crossLevel = new List<NativeCodeVersionComparer.DocumentCrossLevelCandidate>();
+        foreach (var i in Enumerable.Range(0, a.Count).Where(i =>
+            !usedA.Contains(i) && IsStructuralLabel(a[i].Label)))
+        foreach (var j in Enumerable.Range(0, b.Count).Where(j =>
+            !usedB.Contains(j) && IsStructuralLabel(b[j].Label)))
         {
             if (Math.Abs(nodesA[i].Level - nodesB[j].Level) != 1) continue;
+            // This C# check remains authoritative: only a single omitted
+            // parent that is itself unmatched can create cross-level pairs.
             if (!CollapsedLevelParentsEquivalent(i, j, nodesA, nodesB, result)) continue;
             var oa = PartOrdinalAt(a, i); var ob = PartOrdinalAt(b, j);
-            var score = PartSimilarity(a[i], b[j]); var contain = Containment(a[i].Core, b[j].Core);
-            var sameOrdinal = oa.HasValue && ob.HasValue && oa.Value == ob.Value;
-            var edge = HasStableEdgeContext(a[i].Core, b[j].Core);
-            if ((sameOrdinal && (score >= .34 || contain >= .50 || edge)) || score >= .74 || contain >= .86)
-            {
-                var rank = Math.Max(score, .94 * contain) + (sameOrdinal ? .08 : 0.0);
-                crossLevel.Add((rank, i, j, score));
-            }
+            crossLevel.Add(new(i, j, PartSimilarity(a[i], b[j]),
+                Containment(a[i].Core, b[j].Core),
+                oa.HasValue && ob.HasValue && oa.Value == ob.Value,
+                HasStableEdgeContext(a[i].Core, b[j].Core)));
         }
-        foreach (var x in crossLevel.OrderByDescending(x => x.Rank).ThenBy(x => Math.Abs(x.A - x.B)))
-            if (!usedA.Contains(x.A) && !usedB.Contains(x.B)) Take(x.A, x.B, Math.Max(x.Score, .56));
+        foreach (var pair in SelectCrossLevelCandidates(a.Count, b.Count, crossLevel))
+            Take(pair.Old, pair.New, pair.Score);
 
         foreach(var i in Enumerable.Range(0,a.Count).Where(i=>!usedA.Contains(i)&&a[i].Label=="본문"))
         {

@@ -1190,3 +1190,53 @@ pub unsafe extern "C" fn dc_select_document_same_ordinal_parts_utf8(
         Err(_) => 5,
     }
 }
+
+/// Greedy cross-level matching with a single omitted/interposed list parent.
+/// C# must prefilter candidates by collapsed-parent matching and level diff 1.
+/// # Safety
+/// Input is readable byte memory, output points to an exclusive writable
+/// DcAstJsonResult; returned data must be freed by dc_free_ast_json_result.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dc_select_document_cross_level_parts_utf8(
+    input: *const u8,
+    length: usize,
+    output: *mut DcAstJsonResult,
+) -> i32 {
+    if output.is_null() {
+        return 2;
+    }
+    // SAFETY: caller guarantees exclusive writable output.
+    unsafe { ptr::write(output, DcAstJsonResult::empty()) };
+    if length > 1024 * 1024 || (length > 0 && input.is_null()) {
+        return 2;
+    }
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let bytes = if length == 0 {
+            &[][..]
+        } else {
+            // SAFETY: caller guarantees readable input.
+            unsafe { slice::from_raw_parts(input, length) }
+        };
+        let payload: crate::doc_cross_level::Input =
+            serde_json::from_slice(bytes).map_err(|_| 1)?;
+        let selection = crate::doc_cross_level::select(
+            payload.old_count,
+            payload.new_count,
+            &payload.candidates,
+        )
+        .map_err(|_| 3)?;
+        serde_json::to_vec(&selection).map_err(|_| 4)
+    }));
+    match result {
+        Ok(Ok(json)) => {
+            let data = json.into_boxed_slice();
+            let length = data.len();
+            let data = Box::into_raw(data) as *mut u8;
+            // SAFETY: caller guarantees exclusive writable output.
+            unsafe { ptr::write(output, DcAstJsonResult { data, length }) };
+            0
+        }
+        Ok(Err(code)) => code,
+        Err(_) => 5,
+    }
+}

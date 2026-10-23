@@ -1,5 +1,6 @@
 pub mod ast;
 pub mod cross_file;
+pub mod doc_cross_level;
 pub mod doc_match_exact;
 pub mod doc_move_candidates;
 pub mod doc_parts;

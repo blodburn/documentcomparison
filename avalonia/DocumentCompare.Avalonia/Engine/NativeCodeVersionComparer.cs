@@ -127,6 +127,13 @@ public static class NativeCodeVersionComparer
     public sealed record DocumentSameOrdinalCandidate(
         int Old, int New, double Similarity, double Containment,
         bool Shape, bool Edge);
+    public sealed record DocumentCrossLevelCandidate(
+        int Old, int New, double Similarity, double Containment,
+        bool SameOrdinal, bool Edge);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int DocumentCrossLevelSelectionDelegate(
+        [In] byte[] input, nuint length, out NativeAstResult result);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int DocumentSameOrdinalSelectionDelegate(
@@ -183,6 +190,7 @@ public static class NativeCodeVersionComparer
         public readonly DocumentMoveSelectionDelegate? DocumentMoveSelection;
         public readonly DocumentSameLabelSelectionDelegate? DocumentSameLabelSelection;
         public readonly DocumentSameOrdinalSelectionDelegate? DocumentSameOrdinalSelection;
+        public readonly DocumentCrossLevelSelectionDelegate? DocumentCrossLevelSelection;
 
         public Exports(IntPtr handle)
         {
@@ -237,6 +245,11 @@ public static class NativeCodeVersionComparer
                 DocumentSameOrdinalSelection =
                     Marshal.GetDelegateForFunctionPointer<DocumentSameOrdinalSelectionDelegate>(
                         sameOrdinalExport);
+            if (NativeLibrary.TryGetExport(handle,
+                "dc_select_document_cross_level_parts_utf8", out var crossLevelExport))
+                DocumentCrossLevelSelection =
+                    Marshal.GetDelegateForFunctionPointer<DocumentCrossLevelSelectionDelegate>(
+                        crossLevelExport);
         }
     }
 
@@ -686,6 +699,63 @@ public static class NativeCodeVersionComparer
                     !double.IsFinite(item.Score) || item.Score is < .52 or > 1 ||
                     !candidates.Any(c => c.Old == item.Old && c.New == item.New))
                     throw new InvalidDataException("Rust 동일 논리 번호 인덱스 또는 점수 오류");
+            }
+            return parsed.Selected;
+        }
+        finally
+        {
+            exports.AstFree(ref output);
+        }
+    }
+
+    /// <summary>
+    /// Narrow Rust port of CrossLevel selection: the canonical C# matcher
+    /// has already checked parent collapse/expansion and semantic scores.
+    /// Callers must parity-check the ordered pairs and scores before use.
+    /// </summary>
+    public static IReadOnlyList<DocumentMoveSelected>? SelectCrossLevelDocumentParts(
+        int oldCount, int newCount, IReadOnlyList<DocumentCrossLevelCandidate> candidates)
+    {
+        ArgumentNullException.ThrowIfNull(candidates);
+        var exports = Native.Value;
+        if (exports?.DocumentCrossLevelSelection is null ||
+            oldCount is < 0 or > 256 || newCount is < 0 or > 256 ||
+            candidates.Count > 8192 ||
+            candidates.Any(c => c.Old < 0 || c.New < 0 ||
+                c.Old >= oldCount || c.New >= newCount ||
+                !double.IsFinite(c.Similarity) || !double.IsFinite(c.Containment) ||
+                c.Similarity is < 0 or > 1 || c.Containment is < 0 or > 1))
+            return null;
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(new {oldCount, newCount, candidates},
+            new JsonSerializerOptions {PropertyNamingPolicy = JsonNamingPolicy.CamelCase});
+        if (bytes.Length > 1024 * 1024) return null;
+        var status = exports.DocumentCrossLevelSelection(
+            bytes, (nuint)bytes.Length, out var output);
+        try
+        {
+            if (status is 2 or 3) return null;
+            if (status != 0)
+                throw new InvalidDataException($"Rust 교차 계층 대응 실패: {status}");
+            if (output.Data == IntPtr.Zero || output.Length == 0 ||
+                output.Length > 1024UL * 1024)
+                throw new InvalidDataException("Rust 교차 계층 결과 크기 오류");
+            var raw = new byte[checked((int)output.Length)];
+            Marshal.Copy(output.Data, raw, 0, raw.Length);
+            var parsed = JsonSerializer.Deserialize<DocumentMoveWire>(raw,
+                new JsonSerializerOptions {PropertyNameCaseInsensitive = true});
+            if (parsed?.Selected is null ||
+                parsed.Selected.Count > Math.Min(oldCount, newCount))
+                throw new InvalidDataException("Rust 교차 계층 결과 개수 오류");
+            var usedOld = new HashSet<int>();
+            var usedNew = new HashSet<int>();
+            foreach (var item in parsed.Selected)
+            {
+                if (item.Old < 0 || item.Old >= oldCount ||
+                    item.New < 0 || item.New >= newCount ||
+                    !usedOld.Add(item.Old) || !usedNew.Add(item.New) ||
+                    !double.IsFinite(item.Score) || item.Score is < .56 or > 1 ||
+                    !candidates.Any(c => c.Old == item.Old && c.New == item.New))
+                    throw new InvalidDataException("Rust 교차 계층 인덱스 또는 점수 오류");
             }
             return parsed.Selected;
         }
