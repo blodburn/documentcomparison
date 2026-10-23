@@ -220,11 +220,59 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return ValueTask.CompletedTask;
     }
 
+    private static long _unitParserRustMatches;
+    private static long _unitParserRustMismatches;
+    internal static long UnitParserRustMatches =>
+        System.Threading.Interlocked.Read(ref _unitParserRustMatches);
+    internal static long UnitParserRustMismatches =>
+        System.Threading.Interlocked.Read(ref _unitParserRustMismatches);
+
     private static List<NativeUnit> ParseUnits(string text, string mode)
     {
-        text = NormalizeLegalBoundaries(NativeDocumentReader.NormalizeNewlines(text));
-        var legal = mode.Equals("legal", StringComparison.OrdinalIgnoreCase) ||
-                    (!mode.Equals("general", StringComparison.OrdinalIgnoreCase) && LooksLegal(text));
+        text=NormalizeLegalBoundaries(NativeDocumentReader.NormalizeNewlines(text));
+        var legal=mode.Equals("legal",StringComparison.OrdinalIgnoreCase) ||
+            (!mode.Equals("general",StringComparison.OrdinalIgnoreCase) &&
+                LooksLegal(text));
+        try
+        {
+            var native=NativeCodeVersionComparer.ParseDocumentUnits(text,legal);
+            if (native is null) return ParseUnitsCSharp(text,mode);
+            var parsed=native.Select(u=>NativeUnit.Create(u.Index,u.Number,u.Title,
+                u.Header,u.Body,u.Section,u.Kind)).ToList();
+            if (Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_REQUIRE_NATIVE")=="1" ||
+                Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_VERIFY_DOCUMENT_MATCHES")=="1")
+            {
+                var reference=ParseUnitsCSharp(text,mode);
+                if(parsed.Count!=reference.Count ||
+                    parsed.Where((u,i)=>
+                        u.Index!=reference[i].Index ||
+                        u.Number!=reference[i].Number ||
+                        u.Title!=reference[i].Title ||
+                        u.Header!=reference[i].Header ||
+                        u.Body!=reference[i].Body ||
+                        u.Section!=reference[i].Section ||
+                        u.Kind!=reference[i].Kind).Any())
+                {
+                    System.Threading.Interlocked.Increment(ref _unitParserRustMismatches);
+                    return reference;
+                }
+            }
+            System.Threading.Interlocked.Increment(ref _unitParserRustMatches);
+            return parsed;
+        }
+        catch(Exception ex) when(ex is InvalidDataException or
+            System.Text.Json.JsonException or ArgumentException or OverflowException)
+        {
+            System.Threading.Interlocked.Increment(ref _unitParserRustMismatches);
+            return ParseUnitsCSharp(text,mode);
+        }
+    }
+
+    private static List<NativeUnit> ParseUnitsCSharp(string text, string mode)
+    {
+        text=NormalizeLegalBoundaries(NativeDocumentReader.NormalizeNewlines(text));
+        var legal=mode.Equals("legal",StringComparison.OrdinalIgnoreCase) ||
+            (!mode.Equals("general",StringComparison.OrdinalIgnoreCase) && LooksLegal(text));
         return legal ? ParseLegalUnits(text) : ParseGeneralUnits(text);
     }
 
@@ -1479,7 +1527,10 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     private static bool IsLowInformationTitle(string title) =>
         LowInformationTitleKeys.Contains(LineageNormalize(title));
 
-    private static string LineageNormalize(string value)
+    private static string LineageNormalize(string value) =>
+        NormalizeWithRust(value,"lineage",LineageNormalizeCSharp);
+
+    private static string LineageNormalizeCSharp(string value)
     {
         var s = (value ?? string.Empty).Normalize(NormalizationForm.FormC);
         s = Regex.Replace(s, @"(?i)^\s*Article\s+(?:\d+(?:[-.]\d+)*[A-Za-z]?|[IVXLCDM]+)\b", " ");
@@ -4007,7 +4058,58 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         }
     }
 
-    internal static string Normalize(string value)
+    private static long _normalizationRustMatches;
+    private static long _normalizationRustMismatches;
+    internal static long NormalizationRustMatches =>
+        System.Threading.Interlocked.Read(ref _normalizationRustMatches);
+    internal static long NormalizationRustMismatches =>
+        System.Threading.Interlocked.Read(ref _normalizationRustMismatches);
+
+    // Native FFI normalization occurs once per unique source fragment,
+    // rather than per comparison candidate within the same document.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<
+        (string Mode,string Value), string> NativeNormalizationCache = new();
+
+    private static string NormalizeWithRust(
+        string? value,string mode,Func<string,string> source)
+    {
+        var text=value ?? string.Empty;
+        if (text.Length>8192) return source(text);
+        var key=(mode,text);
+        if (NativeNormalizationCache.TryGetValue(key,out var cached))
+            return cached;
+        try
+        {
+            var native=NativeCodeVersionComparer.NormalizeDocumentText(text,mode);
+            if (native is null) return source(text);
+            if (Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_REQUIRE_NATIVE")=="1" ||
+                Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_VERIFY_DOCUMENT_MATCHES")=="1")
+            {
+                var original=source(text);
+                if (native!=original)
+                {
+                    System.Threading.Interlocked.Increment(ref _normalizationRustMismatches);
+                    return original;
+                }
+            }
+            if (NativeNormalizationCache.Count>16384)
+                NativeNormalizationCache.Clear();
+            NativeNormalizationCache.TryAdd(key,native);
+            System.Threading.Interlocked.Increment(ref _normalizationRustMatches);
+            return native;
+        }
+        catch(Exception ex) when(ex is InvalidDataException or
+            System.Text.Json.JsonException or ArgumentException or OverflowException)
+        {
+            System.Threading.Interlocked.Increment(ref _normalizationRustMismatches);
+            return source(text);
+        }
+    }
+
+    internal static string Normalize(string value) =>
+        NormalizeWithRust(value,"normalize",NormalizeCSharp);
+
+    private static string NormalizeCSharp(string value)
     {
         value = (value ?? string.Empty).Normalize(NormalizationForm.FormC);
         var sb = new StringBuilder(value.Length);
@@ -4061,7 +4163,10 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return sb.ToString().Trim();
     }
 
-    private static string CanonicalVisibleText(string value)
+    private static string CanonicalVisibleText(string value) =>
+        NormalizeWithRust(value,"visible",CanonicalVisibleTextCSharp);
+
+    private static string CanonicalVisibleTextCSharp(string value)
     {
         // Python V5.18.9 semantic no-op guard is deliberately separate from matching
         // normalization: preserve visible case/punctuation, ignore only invisible formatting

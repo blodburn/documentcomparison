@@ -154,6 +154,17 @@ public static class NativeCodeVersionComparer
     public sealed record DocumentTokenBlock(int A, int B, int Size);
     public sealed record DocumentReviewSpan(int Start,int End,int Role);
     public sealed record DocumentReviewSegment(string Text,string Style);
+    private sealed record DocumentNormalizedTextWire(string Text);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int DocumentNormalizeDelegate(
+        [In] byte[] input,nuint length,out NativeAstResult result);
+    public sealed record ParsedDocumentUnit(
+        int Index,string Number,string Title,string Header,
+        string Body,string Section,string Kind);
+    private sealed record DocumentUnitParserWire(List<ParsedDocumentUnit> Units);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int DocumentUnitParserDelegate(
+        [In] byte[] input,nuint length,out NativeAstResult result);
     public sealed record DocumentRowMatch(int Doc,int Base,int Other);
     public sealed record DocumentRowAddition(int Doc,int Other,int Slot,int UnitIndex);
     public sealed record DocumentRowMerge(
@@ -279,6 +290,8 @@ public static class NativeCodeVersionComparer
         public readonly DocumentKoreanWordDelegate? DocumentKoreanWord;
         public readonly DocumentReviewSegmentsDelegate? DocumentReviewSegments;
         public readonly DocumentRowAlignmentDelegate? DocumentRowAlignment;
+        public readonly DocumentUnitParserDelegate? DocumentUnitParser;
+        public readonly DocumentNormalizeDelegate? DocumentNormalize;
 
         public Exports(IntPtr handle)
         {
@@ -386,6 +399,16 @@ public static class NativeCodeVersionComparer
                 DocumentRowAlignment =
                     Marshal.GetDelegateForFunctionPointer<DocumentRowAlignmentDelegate>(
                         rowAlignmentExport);
+            if (NativeLibrary.TryGetExport(handle,
+                "dc_parse_document_units_utf8", out var unitParserExport))
+                DocumentUnitParser =
+                    Marshal.GetDelegateForFunctionPointer<DocumentUnitParserDelegate>(
+                        unitParserExport);
+            if (NativeLibrary.TryGetExport(handle,
+                "dc_normalize_document_text_utf8", out var normalizeExport))
+                DocumentNormalize =
+                    Marshal.GetDelegateForFunctionPointer<DocumentNormalizeDelegate>(
+                        normalizeExport);
         }
     }
 
@@ -1184,6 +1207,95 @@ public static class NativeCodeVersionComparer
     }
 
     private sealed record DocumentTokenBlocksWire(List<DocumentTokenBlock> Blocks);
+    /// <summary>
+    /// Unicode NFC/NFKC matching, article lineage and visible-text
+    /// normalization supplied by Rust on supported UTF-16 strings.
+    /// </summary>
+    public static string? NormalizeDocumentText(string text,string mode)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        var exports=Native.Value;
+        if (exports?.DocumentNormalize is null ||
+            text.Length>8192 ||
+            mode is not ("normalize" or "lineage" or "visible"))
+            return null;
+        // C# can carry invalid unpaired UTF-16 surrogates, while Rust
+        // strings cannot; those cases must remain on the managed path.
+        for(var i=0;i<text.Length;i++)
+        {
+            if (char.IsHighSurrogate(text[i]))
+            {
+                if (i+1>=text.Length || !char.IsLowSurrogate(text[i+1]))
+                    return null;
+                i++;
+            }
+            else if (char.IsLowSurrogate(text[i])) return null;
+        }
+        var bytes=JsonSerializer.SerializeToUtf8Bytes(new{text,mode});
+        if (bytes.Length>128*1024) return null;
+        var status=exports.DocumentNormalize(bytes,(nuint)bytes.Length,out var output);
+        try
+        {
+            if (status is 2 or 3) return null;
+            if (status!=0)
+                throw new InvalidDataException($"Rust Unicode 정규화 오류: {status}");
+            if (output.Data==IntPtr.Zero || output.Length==0 ||
+                output.Length>256UL*1024)
+                throw new InvalidDataException("Rust Unicode 정규화 응답 크기 오류");
+            var raw=new byte[checked((int)output.Length)];
+            Marshal.Copy(output.Data,raw,0,raw.Length);
+            var parsed=JsonSerializer.Deserialize<DocumentNormalizedTextWire>(raw,
+                new JsonSerializerOptions{PropertyNameCaseInsensitive=true});
+            if (parsed?.Text is null || parsed.Text.Length>65536)
+                throw new InvalidDataException("Rust Unicode 정규화 응답 무결성 오류");
+            return parsed.Text;
+        }
+        finally
+        {
+            exports.AstFree(ref output);
+        }
+    }
+
+
+    /// <summary>
+    /// Native legal and general text-to-unit parsing. The input text is
+    /// preprocessed by the existing flattened-article/newline guard.
+    /// </summary>
+    public static IReadOnlyList<ParsedDocumentUnit>? ParseDocumentUnits(
+        string text, bool legal)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        var exports=Native.Value;
+        if (exports?.DocumentUnitParser is null || text.Length>131072) return null;
+        var bytes=JsonSerializer.SerializeToUtf8Bytes(new{text,legal});
+        if (bytes.Length>1024*1024) return null;
+        var status=exports.DocumentUnitParser(bytes,(nuint)bytes.Length,out var output);
+        try
+        {
+            if (status is 2 or 3) return null;
+            if (status!=0) throw new InvalidDataException($"Rust 문서 단위 파싱 실패: {status}");
+            if (output.Data==IntPtr.Zero || output.Length==0 ||
+                output.Length>4UL*1024*1024)
+                throw new InvalidDataException("Rust 문서 단위 파싱 응답 크기 오류");
+            var raw=new byte[checked((int)output.Length)];
+            Marshal.Copy(output.Data,raw,0,raw.Length);
+            var parsed=JsonSerializer.Deserialize<DocumentUnitParserWire>(raw,
+                new JsonSerializerOptions{PropertyNameCaseInsensitive=true});
+            if (parsed?.Units is null || parsed.Units.Count>4096 ||
+                parsed.Units.Where((u,i)=>u.Index!=i ||
+                    u.Number is null || u.Title is null || u.Header is null ||
+                    u.Body is null || u.Section is null ||
+                    u.Kind is not ("article" or "section" or "block")).Any())
+                throw new InvalidDataException("Rust 문서 단위 파싱 결과 값 오류");
+            return parsed.Units;
+        }
+        finally
+        {
+            exports.AstFree(ref output);
+        }
+    }
+
+
     /// <summary>
     /// Rust A/B/C row ordering, baseline axis and cross-version addition
     /// placement. The original managed engine provides unit matches and

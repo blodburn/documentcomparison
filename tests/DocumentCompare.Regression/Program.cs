@@ -162,6 +162,10 @@ if (args.Length==1 && args[0]=="--smoke-native-production")
         "production Word review text segmentation must run in Rust");
     Check(GetRustCounter("RowAlignmentRustMatches")>0,
         "production A/B/C row positioning must run in Rust");
+    Check(GetRustCounter("UnitParserRustMatches")>0,
+        "production legal/general unit parsing must run in Rust");
+    Check(GetRustCounter("NormalizationRustMatches")>0,
+        "production NFC/NFKC matching must run in Rust");
     Console.WriteLine("PASS PRODUCTION RUST-FIRST ITEM, LINEAGE, TABLE, TOKEN, SCORE, KOREAN DP, SENTENCE AND REVIEW SEGMENTS");
     return;
 }
@@ -4601,5 +4605,138 @@ if (NativeCodeVersionComparer.IsAvailable)
     Check(rowCounter>0 && rowMismatch==0,
         "live document compare must actually adopt Rust A/B/C rows without drift");
     Console.WriteLine($"PASS RUST A/B/C ROW ALIGNMENT CSHARP PARITY {cases}/{cases}");
+}
+
+// Legal/general structural unit parsing parity. Inspect both complete
+// arrays, not only the number of recognized article headings.
+if (NativeCodeVersionComparer.IsAvailable)
+{
+    var engine=typeof(NativeComparisonEngine);
+    var sourceMethod=engine.GetMethod("ParseUnitsCSharp",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var nativeMethod=engine.GetMethod("ParseUnits",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var accepted=engine.GetProperty("UnitParserRustMatches",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var mismatched=engine.GetProperty("UnitParserRustMismatches",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    long Counter(System.Reflection.PropertyInfo p)=>(long)p.GetValue(null)!;
+    var acceptedStart=Counter(accepted);
+    var mismatchStart=Counter(mismatched);
+    var samples=new List<(string Text,string Mode)> {
+        ("제1조(목적)\n회사는 회원의 권리를 보장한다.\n제2조(보관)\n정보를 보관한다.","legal"),
+        ("Chapter 1. General\nArticle 1 (Purpose)\nBasic terms.\nArticle 2 (Rights)\nMember rights.","legal"),
+        ("제1장 총칙\n제1절 계약\n제1조(목적)\n기본 원칙\n제2조(개인정보)\n보호조항","legal"),
+        ("Preamble text\nArticle 1 (Introduction)\nPrivacy shall be ensured.\nArticle 2 (Terms)\nCompany must comply.","legal"),
+        ("TITLE\nThe introductory text.\nPRIVACY\nPersonal information rights.","general"),
+        ("1. Overview\nGeneral requirements.\n2. Background\nAdditional requirements.","general"),
+        ("Intro paragraph.\nSecond paragraph.\nThird paragraph.","general"),
+        ("Article IX (Use)\nOne.\nArticle X (Rights)\nTwo.","legal"),
+        ("제3조의2(개정)\n추가 사항이 포함됩니다.","legal"),
+        ("제1조(총칙) 내용\n① 개인정보 이용\n② 데이터 보호","legal"),
+        ("","legal"),("","general")
+    };
+    var rng=new Random(20261024);
+    var titles=new[]{"목적","의무","개인정보","계약","정의","권리","서비스","보관","지급","총칙"};
+    var lines=new[]{"회원은 필요한 내용을 확인합니다","회사는 개인정보를 적법하게 처리합니다",
+        "법률은 서비스의 범위를 정합니다","계약의 기본 조건을 명시합니다"};
+    for(var k=0;k<135;k++)
+    {
+        var parts=Enumerable.Range(1,rng.Next(1,9)).Select(i=>
+            $"제{i}조({titles[rng.Next(titles.Length)]})\n"+
+            lines[rng.Next(lines.Length)]);
+        samples.Add((string.Join("\n",parts),"legal"));
+    }
+    for(var k=0;k<135;k++)
+    {
+        var parts=Enumerable.Range(1,rng.Next(1,9)).Select(i=>
+            i%2==0?$"SECTION {i}\nBasic requirements for {i}.":
+                $"General paragraph number {i} shall be tested.");
+        samples.Add((string.Join("\n",parts),"general"));
+    }
+    var parserCases=0; var parserDivergence=0;
+    foreach(var item in samples)
+    {
+        var expected=((System.Collections.IEnumerable)sourceMethod.Invoke(null,
+            new object[]{item.Text,item.Mode})!).Cast<object>().ToArray();
+        var actual=((System.Collections.IEnumerable)nativeMethod.Invoke(null,
+            new object[]{item.Text,item.Mode})!).Cast<object>().ToArray();
+        string Key(object u)
+        {
+            var type=u.GetType();
+            return string.Join("|",new[]{"Index","Kind","Number","Title","Header","Body","Section"}
+                .Select(name=>type.GetProperty(name)!.GetValue(u)?.ToString()));
+        }
+        var different=expected.Length!=actual.Length ||
+            !expected.Select(Key).SequenceEqual(actual.Select(Key));
+        if(different)
+        {
+            parserDivergence++;
+            if(parserDivergence<=5)
+                Console.WriteLine("PARSER_DIFF "+item.Mode+" "+item.Text.Replace("\n"," ¶ ")+
+                    " REF="+string.Join(";",expected.Select(Key))+
+                    " LIVE="+string.Join(";",actual.Select(Key)));
+        }
+        parserCases++;
+    }
+    Check(parserDivergence==0 &&
+        Counter(mismatched)==mismatchStart &&
+        Counter(accepted)-acceptedStart==parserCases,
+        "Rust document parser must adopt every bounded legal/general unit case");
+    Console.WriteLine($"PASS RUST LEGAL/GENERAL UNIT PARSER PARITY {parserCases}/{parserCases}");
+}
+
+// Unicode normalization is part of the legal change/no-change contract.
+// Verify the exact FormC/FormKC, invisible character and article prefix
+// outputs for all three normalizer flavors before treating Rust as primary.
+if (NativeCodeVersionComparer.IsAvailable)
+{
+    var engineType=typeof(NativeComparisonEngine);
+    var methods=new[]{
+        (Mode:"normalize",Source:"NormalizeCSharp"),
+        (Mode:"lineage",Source:"LineageNormalizeCSharp"),
+        (Mode:"visible",Source:"CanonicalVisibleTextCSharp")
+    };
+    var rng=new Random(20261024);
+    var tokens=new[]{"AAA","ＡＢＣ","a\u0301","é","가","가","①",
+        "Article 4","제3조","동의","없이","\u200b","\u200d","\ufeff",
+        "\ufe0f"," ","\t","\n","\u00a0","(",")",",",":","9","–","!",
+        "İ","ı","Ä","Δ","ß","Ł","😀","😃"};
+    var corpus=new List<string>{
+        "동의없이","동의 없이","Article 3 (Personal Data)",
+        "제2조(개인정보 처리)","ＩＮＦＯ","A\u0301Ｂ","새\u200d문서",
+        "① ㈜ 목적"," 개인정보 \u00a0수집 ","İBİ","𝓐𝓑😀",
+        "제1조의2(개인정보)","Article IX Privacy","a\rb","a\nb",
+        string.Empty
+    };
+    for(var k=0;k<500;k++)
+        corpus.Add(string.Concat(Enumerable.Range(0,rng.Next(0,12))
+            .Select(_=>tokens[rng.Next(tokens.Length)])));
+    var differences=0;
+    var checkedNormalization=0;
+    foreach(var text in corpus)
+    foreach(var (mode,sourceName) in methods)
+    {
+        var method=engineType.GetMethod(sourceName,
+            BindingFlags.Static|BindingFlags.NonPublic)!;
+        var canonical=(string)method.Invoke(null,new object[]{text})!;
+        var native=NativeCodeVersionComparer.NormalizeDocumentText(text,mode);
+        Check(native is not null,"Rust normalizer unavailable for supported Unicode");
+        if(native!=canonical)
+        {
+            differences++;
+            if(differences<=9)
+                Console.WriteLine("NORM_DIFF mode="+mode+" text="+text+
+                    " source="+canonical+" rust="+native);
+        }
+        checkedNormalization++;
+    }
+    var accepted=(long)engineType.GetProperty("NormalizationRustMatches",
+        BindingFlags.NonPublic|BindingFlags.Static)!.GetValue(null)!;
+    var rejected=(long)engineType.GetProperty("NormalizationRustMismatches",
+        BindingFlags.NonPublic|BindingFlags.Static)!.GetValue(null)!;
+    Check(differences==0 && accepted>0 && rejected==0,
+        "Rust Unicode normalizer not parity-equivalent or native path not accepted");
+    Console.WriteLine($"PASS RUST UNICODE NORMALIZATION PARITY {checkedNormalization}/{checkedNormalization}");
 }
 Console.WriteLine("ALL REGRESSIONS PASSED");

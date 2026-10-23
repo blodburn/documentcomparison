@@ -604,3 +604,35 @@ document normalization, legal/general structural parsing, semantic
 unit/text review event construction, Word-specific data model
 adaptation and unmanaged C#-compatibility fallbacks remain.
 100%-completion claims require separately proving these behaviors.
+
+## Rust-first legal/general unit parser and full Unicode normalizers (2026-10-24)
+
+- rust/src/doc_unit_parser.rs now parses complete legal and generic text
+  streams into article, section, and body units. It handles article and
+  chapter/section numbering, generic heading detection, clause titles,
+  Roman numerals and false English article references. The caller keeps
+  one pre-processing step: newline normalization and recovery of
+  flattened inline strong article headers. All resulting units, metadata,
+  sections and display headers are checked in their entirety against
+  ParseUnitsCSharp. A 282-case deterministic legal/general fixture suite
+  requires every native result to be adopted with zero C# mismatches.
+- rust/src/doc_normalize.rs ports the canonical Normalizer, article
+  LineageNormalize and visible-text SemanticEqual normalization using
+  Unicode NFC/NFKC. It deliberately preserves .NET UTF-16 char
+  semantics for astral codepoints and uses simple one-codepoint invariant
+  lowercasing rather than Unicode full expanding casing. Unpaired UTF-16
+  surrogate strings use the existing C# fallback. The three complete
+  normalizer contracts were compared to the C# reference on 1548
+  deterministic and Unicode stress cases, with zero mismatches.
+- A bounded concurrent cache prevents repeated single-string native FFI
+  overhead in scoring and matching loops. The Windows production smoke
+  requires native parser and normalization calls to actually execute.
+- The native parser is available under the ABI v1 optional export
+  dc_parse_document_units_utf8; normalizers are exposed via
+  dc_normalize_document_text_utf8.
+
+The source contract is still not 100%-ported. C# owns final marker
+planning and text change event coalescing, the file state and IO/Word
+document adapter, and the model-building output facade. The optional
+C# compatibility fallbacks remain present and tested for older native
+DLLs and supported-input upper bounds.
