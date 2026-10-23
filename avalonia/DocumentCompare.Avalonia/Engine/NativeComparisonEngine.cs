@@ -2335,6 +2335,68 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         }
     }
 
+    private static long _sameOrdinalRustParityMatches;
+    private static long _sameOrdinalRustParityMismatches;
+    internal static long SameOrdinalRustParityMatches =>
+        System.Threading.Interlocked.Read(ref _sameOrdinalRustParityMatches);
+    internal static long SameOrdinalRustParityMismatches =>
+        System.Threading.Interlocked.Read(ref _sameOrdinalRustParityMismatches);
+
+    private static List<NativeCodeVersionComparer.DocumentMoveSelected>
+        SelectSameOrdinalCandidatesCSharp(int oldCount, int newCount,
+            IReadOnlyList<NativeCodeVersionComparer.DocumentSameOrdinalCandidate> candidates)
+    {
+        var selected = new List<NativeCodeVersionComparer.DocumentMoveSelected>();
+        var usedNew = new HashSet<int>();
+        for (var i = 0; i < oldCount; i++)
+        {
+            var options = candidates.Where(c => c.Old == i && !usedNew.Contains(c.New))
+                .OrderByDescending(c => c.Shape)
+                .ThenByDescending(c => Math.Max(c.Similarity, .94 * c.Containment))
+                .ToList();
+            if (options.Count == 0) continue;
+            var best = options[0];
+            if ((best.Shape && (best.Similarity >= .20 ||
+                    best.Containment >= .35 || best.Edge)) ||
+                best.Similarity >= .62 || best.Containment >= .76)
+            {
+                usedNew.Add(best.New);
+                selected.Add(new NativeCodeVersionComparer.DocumentMoveSelected(
+                    i, best.New, Math.Max(best.Similarity, best.Shape ? .58 : .52)));
+            }
+        }
+        return selected;
+    }
+
+    private static List<NativeCodeVersionComparer.DocumentMoveSelected>
+        SelectSameOrdinalCandidates(int oldCount, int newCount,
+            IReadOnlyList<NativeCodeVersionComparer.DocumentSameOrdinalCandidate> candidates)
+    {
+        var canonical = SelectSameOrdinalCandidatesCSharp(oldCount, newCount, candidates);
+        try
+        {
+            var rust = NativeCodeVersionComparer.SelectSameOrdinalDocumentParts(
+                oldCount, newCount, candidates);
+            if (rust is null) return canonical;
+            if (rust.Count != canonical.Count ||
+                rust.Where((pair, i) =>
+                    pair.Old != canonical[i].Old || pair.New != canonical[i].New ||
+                    Math.Abs(pair.Score - canonical[i].Score) > 1e-12).Any())
+            {
+                System.Threading.Interlocked.Increment(ref _sameOrdinalRustParityMismatches);
+                return canonical;
+            }
+            System.Threading.Interlocked.Increment(ref _sameOrdinalRustParityMatches);
+            return rust.ToList();
+        }
+        catch (Exception ex) when (ex is InvalidDataException or
+            System.Text.EncoderFallbackException or OverflowException)
+        {
+            System.Threading.Interlocked.Increment(ref _sameOrdinalRustParityMismatches);
+            return canonical;
+        }
+    }
+
     private static List<PartMatch> MatchParts(IReadOnlyList<NativePart> a, IReadOnlyList<NativePart> b)
     {
         var nodesA = BuildPartHierarchy(a); var nodesB = BuildPartHierarchy(b);
@@ -2398,24 +2460,30 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             foreach (var match in SelectPartMoveCandidates(a.Count, b.Count, moveCandidates))
                 Take(match.Old, match.New, match.Score);
 
-            // Same logical ordinal with a different drafting convention (① ↔ 1., (1) ↔ 1., etc.).
-            // Treat the sibling sequence as stronger structure evidence than the glyph family.
-            foreach (var i in Enumerable.Range(0, a.Count).Where(i => !usedA.Contains(i) && nodesA[i].Level == level && IsStructuralLabel(a[i].Label)))
+            // C# still determines logical ordinals, candidate eligibility,
+            // parent equivalence and sibling shape. Rust mirrors only
+            // rank/threshold/greedy selection, accepted on exact C# parity.
+            var sameOrdinalCandidates = new List<
+                NativeCodeVersionComparer.DocumentSameOrdinalCandidate>();
+            foreach (var i in Enumerable.Range(0, a.Count).Where(i =>
+                !usedA.Contains(i) && nodesA[i].Level == level &&
+                IsStructuralLabel(a[i].Label)))
             {
-                var ordinal = PartOrdinalAt(a, i); if (ordinal is null) continue;
-                var candidates = Enumerable.Range(0, b.Count)
-                    .Where(j => !usedB.Contains(j) && nodesB[j].Level == level && IsStructuralLabel(b[j].Label) &&
-                                PartOrdinalAt(b, j) == ordinal && a[i].Label != b[j].Label &&
-                                ParentsEquivalent(i, j, nodesA, nodesB, result))
-                    .Select(j => (J: j, S: PartSimilarity(a[i], b[j]), C: Containment(a[i].Core, b[j].Core),
-                                  Shape: OrdinalSiblingShapeEquivalent(i, j, a, b, nodesA, nodesB),
-                                  Edge: HasStableEdgeContext(a[i].Core, b[j].Core)))
-                    .OrderByDescending(x => x.Shape).ThenByDescending(x => Math.Max(x.S, .94 * x.C)).ToList();
-                if (candidates.Count == 0) continue;
-                var cand = candidates[0];
-                if ((cand.Shape && (cand.S >= .20 || cand.C >= .35 || cand.Edge)) || cand.S >= .62 || cand.C >= .76)
-                    Take(i, cand.J, Math.Max(cand.S, cand.Shape ? .58 : .52));
+                var ordinal = PartOrdinalAt(a, i);
+                if (ordinal is null) continue;
+                foreach (var j in Enumerable.Range(0, b.Count).Where(j =>
+                    !usedB.Contains(j) && nodesB[j].Level == level &&
+                    IsStructuralLabel(b[j].Label) &&
+                    PartOrdinalAt(b, j) == ordinal && a[i].Label != b[j].Label &&
+                    ParentsEquivalent(i, j, nodesA, nodesB, result)))
+                    sameOrdinalCandidates.Add(new(i, j, PartSimilarity(a[i], b[j]),
+                        Containment(a[i].Core, b[j].Core),
+                        OrdinalSiblingShapeEquivalent(i, j, a, b, nodesA, nodesB),
+                        HasStableEdgeContext(a[i].Core, b[j].Core)));
             }
+            foreach (var pair in SelectSameOrdinalCandidates(
+                a.Count, b.Count, sameOrdinalCandidates))
+                Take(pair.Old, pair.New, pair.Score);
 
             // Keep canonical C# similarity, sibling-shape and parent logic;
             // only greedy same-label candidate selection is mirrored in Rust.

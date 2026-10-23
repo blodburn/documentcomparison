@@ -1144,3 +1144,49 @@ pub unsafe extern "C" fn dc_select_document_same_label_parts_utf8(
         Err(_) => 5,
     }
 }
+
+/// Same logical ordinal, different numbering convention part selection.
+/// C# still provides eligible candidates and structural/semantic scores.
+/// # Safety
+/// Input pointer/length must designate readable bytes. Output must point
+/// to exclusive writable DcAstJsonResult; free via dc_free_ast_json_result.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dc_select_document_same_ordinal_parts_utf8(
+    input: *const u8,
+    length: usize,
+    output: *mut DcAstJsonResult,
+) -> i32 {
+    if output.is_null() {
+        return 2;
+    }
+    // SAFETY: writable exclusive result required by caller.
+    unsafe { ptr::write(output, DcAstJsonResult::empty()) };
+    if length > 1024 * 1024 || (length > 0 && input.is_null()) {
+        return 2;
+    }
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let bytes = if length == 0 {
+            &[][..]
+        } else {
+            // SAFETY: readable input bytes required by caller.
+            unsafe { slice::from_raw_parts(input, length) }
+        };
+        let data: crate::doc_same_ordinal::Input = serde_json::from_slice(bytes).map_err(|_| 1)?;
+        let result =
+            crate::doc_same_ordinal::select(data.old_count, data.new_count, &data.candidates)
+                .map_err(|_| 3)?;
+        serde_json::to_vec(&result).map_err(|_| 4)
+    }));
+    match result {
+        Ok(Ok(json)) => {
+            let allocation = json.into_boxed_slice();
+            let length = allocation.len();
+            let data = Box::into_raw(allocation) as *mut u8;
+            // SAFETY: writable exclusive result required by caller.
+            unsafe { ptr::write(output, DcAstJsonResult { data, length }) };
+            0
+        }
+        Ok(Err(status)) => status,
+        Err(_) => 5,
+    }
+}

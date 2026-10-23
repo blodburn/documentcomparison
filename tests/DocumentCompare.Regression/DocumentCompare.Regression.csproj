@@ -15,5 +15,6 @@
     <None Include="Fixtures/document_match_exact_golden.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="Fixtures/document_move_candidates_golden.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="Fixtures/document_same_label_golden.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Fixtures/document_same_ordinal_golden.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

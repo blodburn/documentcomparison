@@ -4,6 +4,7 @@ pub mod doc_match_exact;
 pub mod doc_move_candidates;
 pub mod doc_parts;
 pub mod doc_same_label;
+pub mod doc_same_ordinal;
 pub mod doc_whitespace;
 pub mod ffi;
 pub mod folder;

@@ -124,6 +124,13 @@ public static class NativeCodeVersionComparer
     public sealed record DocumentMoveSelected(int Old, int New, double Score);
     public sealed record DocumentSameLabelCandidate(
         int Old, int New, double Similarity, bool Shape, bool Edge);
+    public sealed record DocumentSameOrdinalCandidate(
+        int Old, int New, double Similarity, double Containment,
+        bool Shape, bool Edge);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int DocumentSameOrdinalSelectionDelegate(
+        [In] byte[] input, nuint length, out NativeAstResult result);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int DocumentSameLabelSelectionDelegate(
@@ -175,6 +182,7 @@ public static class NativeCodeVersionComparer
         public readonly ExactDocumentPartsDelegate? ExactDocumentParts;
         public readonly DocumentMoveSelectionDelegate? DocumentMoveSelection;
         public readonly DocumentSameLabelSelectionDelegate? DocumentSameLabelSelection;
+        public readonly DocumentSameOrdinalSelectionDelegate? DocumentSameOrdinalSelection;
 
         public Exports(IntPtr handle)
         {
@@ -224,6 +232,11 @@ public static class NativeCodeVersionComparer
                 DocumentSameLabelSelection =
                     Marshal.GetDelegateForFunctionPointer<DocumentSameLabelSelectionDelegate>(
                         sameLabelExport);
+            if (NativeLibrary.TryGetExport(handle,
+                "dc_select_document_same_ordinal_parts_utf8", out var sameOrdinalExport))
+                DocumentSameOrdinalSelection =
+                    Marshal.GetDelegateForFunctionPointer<DocumentSameOrdinalSelectionDelegate>(
+                        sameOrdinalExport);
         }
     }
 
@@ -624,6 +637,63 @@ public static class NativeCodeVersionComparer
 
 
 
+
+    /// <summary>
+    /// Parity-gated drafting-convention change: ① and 1. or (1) and 1.
+    /// share an ordinal only when C# has already approved corresponding
+    /// structural parents, hierarchy levels, and ordinal values.
+    /// </summary>
+    public static IReadOnlyList<DocumentMoveSelected>? SelectSameOrdinalDocumentParts(
+        int oldCount, int newCount, IReadOnlyList<DocumentSameOrdinalCandidate> candidates)
+    {
+        ArgumentNullException.ThrowIfNull(candidates);
+        var exports = Native.Value;
+        if (exports?.DocumentSameOrdinalSelection is null ||
+            oldCount is < 0 or > 256 || newCount is < 0 or > 256 ||
+            candidates.Count > 8192 ||
+            candidates.Any(x => x.Old < 0 || x.New < 0 ||
+                x.Old >= oldCount || x.New >= newCount ||
+                !double.IsFinite(x.Similarity) || !double.IsFinite(x.Containment) ||
+                x.Similarity is < 0 or > 1 || x.Containment is < 0 or > 1))
+            return null;
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(new {oldCount, newCount, candidates},
+            new JsonSerializerOptions {PropertyNamingPolicy = JsonNamingPolicy.CamelCase});
+        if (bytes.Length > 1024 * 1024) return null;
+        var status = exports.DocumentSameOrdinalSelection(
+            bytes, (nuint)bytes.Length, out var output);
+        try
+        {
+            if (status is 2 or 3) return null;
+            if (status != 0)
+                throw new InvalidDataException($"Rust 동일 논리 번호 대응 실패: {status}");
+            if (output.Data == IntPtr.Zero || output.Length == 0 ||
+                output.Length > 1024UL * 1024)
+                throw new InvalidDataException("Rust 동일 논리 번호 결과 크기 오류");
+            var raw = new byte[checked((int)output.Length)];
+            Marshal.Copy(output.Data, raw, 0, raw.Length);
+            var parsed = JsonSerializer.Deserialize<DocumentMoveWire>(raw,
+                new JsonSerializerOptions {PropertyNameCaseInsensitive = true});
+            if (parsed?.Selected is null ||
+                parsed.Selected.Count > Math.Min(oldCount, newCount))
+                throw new InvalidDataException("Rust 동일 논리 번호 대응 개수 오류");
+            var usedOld = new HashSet<int>();
+            var usedNew = new HashSet<int>();
+            foreach (var item in parsed.Selected)
+            {
+                if (item.Old < 0 || item.Old >= oldCount ||
+                    item.New < 0 || item.New >= newCount ||
+                    !usedOld.Add(item.Old) || !usedNew.Add(item.New) ||
+                    !double.IsFinite(item.Score) || item.Score is < .52 or > 1 ||
+                    !candidates.Any(c => c.Old == item.Old && c.New == item.New))
+                    throw new InvalidDataException("Rust 동일 논리 번호 인덱스 또는 점수 오류");
+            }
+            return parsed.Selected;
+        }
+        finally
+        {
+            exports.AstFree(ref output);
+        }
+    }
 
     /// <summary>
     /// Returns syntax-tree declaration changes only for Rust/C#. Unsupported

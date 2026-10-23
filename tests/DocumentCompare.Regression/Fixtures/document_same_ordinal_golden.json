@@ -1,0 +1,219 @@
+[
+  {
+    "oldCount": 3,
+    "newCount": 3,
+    "candidates": [
+      {
+        "old": 0,
+        "new": 0,
+        "similarity": 0.22,
+        "containment": 0.15,
+        "shape": true,
+        "edge": false
+      },
+      {
+        "old": 1,
+        "new": 1,
+        "similarity": 0.0,
+        "containment": 0.0,
+        "shape": true,
+        "edge": true
+      },
+      {
+        "old": 2,
+        "new": 2,
+        "similarity": 0.4,
+        "containment": 0.2,
+        "shape": true,
+        "edge": false
+      }
+    ],
+    "selected": [
+      {
+        "old": 0,
+        "new": 0,
+        "score": 0.58
+      },
+      {
+        "old": 1,
+        "new": 1,
+        "score": 0.58
+      },
+      {
+        "old": 2,
+        "new": 2,
+        "score": 0.58
+      }
+    ]
+  },
+  {
+    "oldCount": 1,
+    "newCount": 2,
+    "candidates": [
+      {
+        "old": 0,
+        "new": 0,
+        "similarity": 0.95,
+        "containment": 0.0,
+        "shape": false,
+        "edge": false
+      },
+      {
+        "old": 0,
+        "new": 1,
+        "similarity": 0,
+        "containment": 0,
+        "shape": true,
+        "edge": false
+      }
+    ],
+    "selected": []
+  },
+  {
+    "oldCount": 2,
+    "newCount": 2,
+    "candidates": [
+      {
+        "old": 0,
+        "new": 0,
+        "similarity": 0.1,
+        "containment": 0.76,
+        "shape": false,
+        "edge": false
+      },
+      {
+        "old": 1,
+        "new": 1,
+        "similarity": 0.62,
+        "containment": 0.1,
+        "shape": false,
+        "edge": false
+      }
+    ],
+    "selected": [
+      {
+        "old": 0,
+        "new": 0,
+        "score": 0.52
+      },
+      {
+        "old": 1,
+        "new": 1,
+        "score": 0.62
+      }
+    ]
+  },
+  {
+    "oldCount": 2,
+    "newCount": 2,
+    "candidates": [
+      {
+        "old": 0,
+        "new": 0,
+        "similarity": 0.8,
+        "containment": 0.4,
+        "shape": false,
+        "edge": false
+      },
+      {
+        "old": 0,
+        "new": 1,
+        "similarity": 0.8,
+        "containment": 0.4,
+        "shape": false,
+        "edge": false
+      },
+      {
+        "old": 1,
+        "new": 0,
+        "similarity": 0.9,
+        "containment": 0.0,
+        "shape": false,
+        "edge": false
+      },
+      {
+        "old": 1,
+        "new": 1,
+        "similarity": 0.7,
+        "containment": 0.0,
+        "shape": false,
+        "edge": false
+      }
+    ],
+    "selected": [
+      {
+        "old": 0,
+        "new": 0,
+        "score": 0.8
+      },
+      {
+        "old": 1,
+        "new": 1,
+        "score": 0.7
+      }
+    ]
+  },
+  {
+    "oldCount": 1,
+    "newCount": 1,
+    "candidates": [
+      {
+        "old": 0,
+        "new": 0,
+        "similarity": 0.1999,
+        "containment": 0.3499,
+        "shape": true,
+        "edge": false
+      }
+    ],
+    "selected": []
+  },
+  {
+    "oldCount": 1,
+    "newCount": 1,
+    "candidates": [
+      {
+        "old": 0,
+        "new": 0,
+        "similarity": 0.0,
+        "containment": 0.35,
+        "shape": true,
+        "edge": false
+      }
+    ],
+    "selected": [
+      {
+        "old": 0,
+        "new": 0,
+        "score": 0.58
+      }
+    ]
+  },
+  {
+    "oldCount": 1,
+    "newCount": 1,
+    "candidates": [
+      {
+        "old": 0,
+        "new": 0,
+        "similarity": 0.0,
+        "containment": 0.0,
+        "shape": true,
+        "edge": true
+      }
+    ],
+    "selected": [
+      {
+        "old": 0,
+        "new": 0,
+        "score": 0.58
+      }
+    ]
+  },
+  {
+    "oldCount": 0,
+    "newCount": 0,
+    "candidates": [],
+    "selected": []
+  }
+]

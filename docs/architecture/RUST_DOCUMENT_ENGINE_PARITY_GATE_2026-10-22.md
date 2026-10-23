@@ -29,6 +29,7 @@ must not be inferred merely from matching current C# behavior.
 | Exact normalized item pairing (first pass) | C# MatchExactPartKeysCSharp | Rust doc_match_exact | 9 frozen Golden + 710 direct C#/Rust; live guarded |
 | Changed-label move candidate ranking and selection | C# SelectPartMoveCandidatesCSharp | Rust doc_move_candidates | 7 frozen Golden plus 900 direct cases; live gated |
 | Same-label sibling-shape fallback | C# SelectSameLabelCandidatesCSharp | Rust doc_same_label | 8 frozen Golden plus 850 direct cases; live guarded |
+| Same ordinal, different notation | C# SelectSameOrdinalCandidatesCSharp | Rust doc_same_ordinal | 8 frozen Golden plus 850 direct cases; live guarded |
 | Full item fuzzy matching and movement | C# remaining MatchParts, CollapsedLevelParentsEquivalent etc. | Partially ported | No full replacement |
 | DOCX table cell/merge/row matching | C# structured reader and matcher | Not ported | No replacement |
 | Word formatting and tracked revisions | C# NativeOfficeExporter | Not ported | No replacement |
@@ -81,10 +82,10 @@ exports, A/B/C).
 4. Measure performance (five runs, identical inputs) before claiming Rust
    improves runtime or memory; maintain C# fallback until justified.
 
-STATUS: six narrow document rules (whitespace changes, structural part
+STATUS: seven narrow document rules (whitespace changes, structural part
 segmentation, parent/child hierarchy, exact-body pairing, changed-label
-move selection, and same-label sibling-shape fallback) are ported with
-guarded live execution.
+move selection, same-label sibling-shape fallback, and same-ordinal
+drafting convention) are ported with guarded live execution.
 This is NOT a claim that the complete C# legal/Word engine has migrated
 to Rust or equals any missing historical Python implementation.
 
@@ -265,3 +266,42 @@ drafting convention, cross-level matching, residual matching, final
 move/add/delete/replace classification, article lineage, DOCX table-cell
 alignment and Word tracked-change export. This is NOT full MatchParts
 or full document-engine Rust equivalence.
+
+## Seventh narrow port: same logical ordinal, different numbering notation
+
+C# MatchParts identifies pairs where the logical ordinal is identical but
+the displayed glyph differs, such as ① -> 1. or (1) -> 1. This is performed
+after strong content moves and before same-label sibling fallback.
+
+Rust core-rust/src/doc_same_ordinal.rs implements ONLY candidate ranking
+and greedy matching. C# still calculates PartOrdinalAt, parent equivalence,
+hierarchy level, OrdinalSiblingShapeEquivalent, PartSimilarity,
+Containment, and HasStableEdgeContext. For each unmatched old item in
+ascending index order, candidates are ordered with true Shape first, then
+max(Similarity, .94 * Containment), keeping original new-item order on ties.
+Only the top candidate is evaluated. It is accepted if:
+  - Shape AND (Similarity >= .20 OR Containment >= .35 OR stable edge), OR
+  - Similarity >= .62, OR
+  - Containment >= .76.
+Accepted score is max(Similarity, .58 when Shape else .52).
+Unused destinations are reserved greedily after acceptance.
+
+New optional ABI v1 FFI: dc_select_document_same_ordinal_parts_utf8.
+It is limited to 256 items per side, 8192 candidates and JSON <=1 MiB.
+C# computes an independent canonical candidate selection before Rust;
+only ordered indices and scores agreeing within absolute 1e-12 can be
+adopted. A missing native export, malformed result, failure, or
+mismatch retains the original managed result. The match/mismatch counters
+are SameOrdinalRustParityMatches and SameOrdinalRustParityMismatches.
+
+The checked-in document_same_ordinal_golden.json freezes 8 original C#
+contracts: matching by numbering convention, structural shape precedence,
+insufficient top-candidate evidence without second-chance selection,
+containment thresholds, tied scores, index exclusivity, boundary cases.
+The regression additionally tests 850 deterministic candidate matrices
+against BOTH C# and Rust, and checks an actual revised
+①② -> 1.2. document comparison through MatchParts.
+
+This does NOT migrate same-ordinal candidate eligibility, legal article
+lineage, collapsed parent matching, residual add/delete/replace judgment,
+DOCX table matching, A/B/C visualization, or Word tracked-change export.

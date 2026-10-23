@@ -3562,4 +3562,126 @@ if (NativeCodeVersionComparer.IsAvailable)
           "same-label stage must fall back to C# beyond native item limit");
     Console.WriteLine($"PASS RUST SAME-LABEL SIBLING SHAPE CSHARP PARITY {sameCases}/{sameCases}");
 }
+
+// 178. Same logical ordinal but different notation: ①↔1., (1)↔1.
+// Scores, ranks, shape precedence, thresholds, duplicates and greedy order
+// must exactly match the original C# stage before selecting Rust output.
+if (NativeCodeVersionComparer.IsAvailable)
+{
+    var ordinalType=typeof(NativeComparisonEngine);
+    var ordinalReference=ordinalType.GetMethod("SelectSameOrdinalCandidatesCSharp",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    var ordinalLive=ordinalType.GetMethod("SelectSameOrdinalCandidates",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    var ordinalParser=ordinalType.GetMethod("ParsePartsCSharp",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    var ordinalMatch=ordinalType.GetMethod("MatchParts",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    var ordinalMatchesProperty=ordinalType.GetProperty("SameOrdinalRustParityMatches",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    var ordinalMismatchesProperty=ordinalType.GetProperty("SameOrdinalRustParityMismatches",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    long OrdinalMatches()=>(long)ordinalMatchesProperty.GetValue(null)!;
+    long OrdinalMismatches()=>(long)ordinalMismatchesProperty.GetValue(null)!;
+    var ordinalInitialMatches=OrdinalMatches();
+    var ordinalInitialMismatches=OrdinalMismatches();
+
+    List<NativeCodeVersionComparer.DocumentMoveSelected> SelectOrdinal(
+        System.Reflection.MethodInfo method,int beforeCount,int afterCount,
+        List<NativeCodeVersionComparer.DocumentSameOrdinalCandidate> candidates) =>
+        ((System.Collections.IEnumerable)method.Invoke(null,
+            new object[]{beforeCount,afterCount,candidates})!)
+            .Cast<NativeCodeVersionComparer.DocumentMoveSelected>().ToList();
+
+    using (var goldenOrdinal=System.Text.Json.JsonDocument.Parse(File.ReadAllText(
+        Path.Combine(AppContext.BaseDirectory,"Fixtures","document_same_ordinal_golden.json"))))
+        foreach (var fixture in goldenOrdinal.RootElement.EnumerateArray())
+        {
+            var oldCount=fixture.GetProperty("oldCount").GetInt32();
+            var newCount=fixture.GetProperty("newCount").GetInt32();
+            var candidates=System.Text.Json.JsonSerializer.Deserialize<
+                List<NativeCodeVersionComparer.DocumentSameOrdinalCandidate>>(
+                    fixture.GetProperty("candidates").GetRawText(),
+                    new System.Text.Json.JsonSerializerOptions{PropertyNameCaseInsensitive=true})!;
+            var expected=fixture.GetProperty("selected").EnumerateArray().Select(x=>
+                new NativeCodeVersionComparer.DocumentMoveSelected(
+                    x.GetProperty("old").GetInt32(),x.GetProperty("new").GetInt32(),
+                    x.GetProperty("score").GetDouble())).ToArray();
+            var managed=SelectOrdinal(ordinalReference,oldCount,newCount,candidates);
+            var rust=NativeCodeVersionComparer.SelectSameOrdinalDocumentParts(
+                oldCount,newCount,candidates);
+            Check(rust is not null && managed.Count==expected.Length &&
+                  rust.Count==expected.Length &&
+                  managed.Zip(expected).All(x=>x.First.Old==x.Second.Old &&
+                      x.First.New==x.Second.New &&
+                      Math.Abs(x.First.Score-x.Second.Score)<1e-12) &&
+                  rust.Zip(expected).All(x=>x.First.Old==x.Second.Old &&
+                      x.First.New==x.Second.New &&
+                      Math.Abs(x.First.Score-x.Second.Score)<1e-12),
+                "committed same-ordinal C#/Rust Golden changed: "+fixture.GetRawText());
+        }
+
+    var ordinalRandom=new Random(20261023);
+    var ordinalValues=new[]{0.0,.1,.1999,.20,.3499,.35,.6199,.62,.7599,.76,.9,1.0};
+    var ordinalCases=0;
+    for (var iteration=0;iteration<850;iteration++)
+    {
+        var oldCount=ordinalRandom.Next(0,31);
+        var newCount=ordinalRandom.Next(0,31);
+        var candidates=new List<NativeCodeVersionComparer.DocumentSameOrdinalCandidate>();
+        for (var i=0;i<oldCount;i++)
+        for (var j=0;j<newCount;j++)
+            if (ordinalRandom.NextDouble()<.13)
+                candidates.Add(new(i,j,
+                    ordinalValues[ordinalRandom.Next(ordinalValues.Length)],
+                    ordinalValues[ordinalRandom.Next(ordinalValues.Length)],
+                    ordinalRandom.NextDouble()<.24,
+                    ordinalRandom.NextDouble()<.18));
+        var original=SelectOrdinal(ordinalReference,oldCount,newCount,candidates);
+        var rust=NativeCodeVersionComparer.SelectSameOrdinalDocumentParts(
+            oldCount,newCount,candidates);
+        Check(rust is not null && original.Count==rust.Count &&
+              original.Zip(rust).All(x=>
+                  x.First.Old==x.Second.Old &&
+                  x.First.New==x.Second.New &&
+                  Math.Abs(x.First.Score-x.Second.Score)<1e-12),
+            "same-ordinal matching diverged from managed baseline: "+iteration);
+        var live=SelectOrdinal(ordinalLive,oldCount,newCount,candidates);
+        Check(live.Count==original.Count &&
+              live.Zip(original).All(x=>
+                  x.First.Old==x.Second.Old &&
+                  x.First.New==x.Second.New &&
+                  Math.Abs(x.First.Score-x.Second.Score)<1e-12),
+            "live same-ordinal selection must only adopt fully matching Rust output");
+        ordinalCases++;
+    }
+    Check(OrdinalMatches()-ordinalInitialMatches==ordinalCases &&
+          OrdinalMismatches()==ordinalInitialMismatches,
+        "ordinal parity-gate must cover all direct C#/Rust cases");
+
+    var fromOrdinalText="① 개인정보를 수집하기 전에 이용목적과 처리항목을 안내한다.\n"+
+        "② 처리자가 업무상 필요한 경우 제한적으로만 자료에 접근한다.";
+    var toOrdinalText="1. 개인정보를 수집하기 전에 이용목적과 보유기간을 안내한다.\n"+
+        "2. 처리자가 업무상 필요한 경우 승인받은 후 자료에 접근한다.";
+    var beforeOrdinalParts=ordinalParser.Invoke(null,new object[]{fromOrdinalText})!;
+    var afterOrdinalParts=ordinalParser.Invoke(null,new object[]{toOrdinalText})!;
+    var priorOrdinalLive=OrdinalMatches();
+    var matchedOrdinal=((System.Collections.IEnumerable)ordinalMatch.Invoke(null,
+        new[]{beforeOrdinalParts,afterOrdinalParts})!).Cast<object>().ToList();
+    var ordinalPairs=matchedOrdinal.Select(m=>(
+        Old:(int)m.GetType().GetProperty("Old")!.GetValue(m)!,
+        New:(int)m.GetType().GetProperty("New")!.GetValue(m)!)).ToArray();
+    Check(ordinalPairs.Contains((0,0)) && ordinalPairs.Contains((1,1)) &&
+          OrdinalMatches()>priorOrdinalLive &&
+          OrdinalMismatches()==ordinalInitialMismatches,
+        "real ①② to 1.2. formatting and changed wording must keep ordinal pair identity");
+    var oversized=Enumerable.Range(0,257).Select(x=>
+        new NativeCodeVersionComparer.DocumentSameOrdinalCandidate(x,0,.9,.9,true,true)).ToList();
+    Check(NativeCodeVersionComparer.SelectSameOrdinalDocumentParts(
+              257,1,oversized) is null &&
+          SelectOrdinal(ordinalLive,257,1,oversized)
+              .SequenceEqual(SelectOrdinal(ordinalReference,257,1,oversized)),
+        "same-ordinal native size limit must retain the C# selection");
+    Console.WriteLine($"PASS RUST SAME-ORDINAL DRAFTING CSHARP PARITY {ordinalCases}/{ordinalCases}");
+}
 Console.WriteLine("ALL REGRESSIONS PASSED");
