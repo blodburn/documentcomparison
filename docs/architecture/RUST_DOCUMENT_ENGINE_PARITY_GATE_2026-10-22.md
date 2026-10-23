@@ -440,3 +440,84 @@ Word table/row/cell alignment, Korean fuzzy short-word changes, generic
 word/token spans outside long exact-sentence anchors, full A/B/C event
 construction. The broader NativeComparisonEngine.cs is NOT yet replaced
 or deleted, and the legacy data model and export contract remain managed.
+
+## Whole legal article lineage (Rust-first) — 2026-10-23
+
+Rust src/doc_unit_lineage.rs now owns the complete legal article / non-article
+unit correspondence flow previously executed by MatchUnitSequence:
+- mutual strong/unique title anchors, normalized-title safeguards,
+  boilerplate/low-information title exclusions and repeated-body ambiguity;
+- monotonic gap-cost dynamic programming, article renumbering and stable ties;
+- residual high-confidence non-monotonic article moves and inverted move
+  labeling; and
+- non-article/section DP pairing with original per-kind thresholds.
+
+NativeComparisonEngine supplies text-derived input scores
+(TitleSimilarity, BodySimilarity, UnitLineageSimilarity, non-article
+Similarity) and normalized metadata. It does not own the final pairing
+decision for bounded inputs (<=48 units per side and <=1024 comparisons).
+A missing DLL/export, invalid input or oversized document falls back to
+MatchUnitSequenceCSharp. In CI/verification mode it compares every index,
+score and mode with the original C# output and rejects differences.
+
+The test suite includes 120 real and deterministic legal-document
+before/after pairs, checking that *every* bounded case adopts Rust
+without mismatch. An independent production smoke uses moved/renumbered
+Korean articles with C# shadow verification turned off.
+
+This change is not the full migration of legal text similarity,
+Unicode normalization, and review marker creation.
+
+## Whole DOCX table/row/cell correspondence (Rust-first) — 2026-10-23
+
+Rust src/doc_table_alignment.rs now owns table-to-table correspondence
+ranked by unique normalized cell overlap and proximity, unique row/cell
+content anchors, moved rows and columns, repeated/ambiguous keys and
+same-size unanchored monotonic gap filling. It never pairs cells to prose
+and explicitly declines unsupported oversized input (>256 cells/side).
+
+The production MatchStructuredUnits retains ordinary non-table content
+matching and delegates table cell pairing to Rust. Every complete
+pair index, score and mode is independently compared with
+MatchStructuredUnitsCSharp in CI/verification mode; on any mismatch
+the original C# result wins. 19 actual DOCX table fixture comparisons
+were accepted by Rust with zero parity mismatch, including row reorder,
+column addition/deletion, tables inserted/moved, merged and nested cells.
+Rust independently verifies table reorders/ambiguous inserted columns.
+Production smoke asserts a moved real DOCX table uses the Rust path.
+
+The document reader and Word exporter remain unchanged C# contracts.
+
+## Generic sentence/word review anchors (Rust-first) — 2026-10-23
+
+Rust src/doc_token_match.rs now implements the exact longest-contiguous
+token matching-block algorithm used by DiffText/MatcherPairs/MatcherOpcodes.
+It preserves first-found longest-match ties, stack traversal ordering,
+contiguous-block merging and the terminal sentinel. C# remains responsible
+for lexical tokenization, UTF-16 offsets, marker text/style and any final
+display/excel representation. For <=512 tokens per side and <=100000
+candidate pairs, Rust is used first; older DLLs or unsupported inputs
+retain MatcherBlocksCSharp.
+
+The complete C# ordered matching-block result is re-executed and
+compared in CI mode. 700 seeded cases containing repeated common
+words, Korean and numbered items passed 1:1, with no mismatches.
+Production smoke confirms an actual nontrivial Word text rewrite uses
+the Rust anchor path without C# shadow mode.
+
+## Remaining C# concerns and release gate
+
+**Not entirely migrated:** ParseLegalUnits/ParseGeneralUnits (source
+document parsing and segment boundary extraction), text normalization,
+Unicode semantic equality, IndelRatio/SequenceRatio and final confidence
+scores, short-Korean-word morph DP, output marker construction (A/B/C
+review UI, changes column), and integration with Word/Excel exporting.
+These are intentionally preserved as C# while their Rust replacements
+are not equivalence-proven. NativeComparisonEngine.cs remains present
+and must not be deleted or called wholly rewritten.
+
+CI must pass: Rust fmt/clippy/tests, C# regression suite with native
+shadow parity, production Rust-first smoke (parts, legal-unit lineage,
+generic units, table rows, token anchors, preserved sentences),
+code C#/Rust parity, Windows portable single EXE. Keep the installed
+version at v5.21.15 and do not publish a Release without a request.

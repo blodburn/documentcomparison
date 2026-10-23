@@ -703,7 +703,67 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     // Table/row/column matching is structural, and never allows a table cell to match prose.
     // Exact unique content serves only as an anchor within an already matched table/row;
     // ambiguous repetitions are paired by their remaining position, never by global text similarity.
+    private static long _tableCellRustMatches;
+    private static long _tableCellRustMismatches;
+    internal static long TableCellRustMatches =>
+        System.Threading.Interlocked.Read(ref _tableCellRustMatches);
+    internal static long TableCellRustMismatches =>
+        System.Threading.Interlocked.Read(ref _tableCellRustMismatches);
+
     private static List<UnitMatch> MatchStructuredUnits(
+        IReadOnlyList<NativeUnit> a, IReadOnlyList<NativeUnit> b, CancellationToken token)
+    {
+        var oldCellIndices=Enumerable.Range(0,a.Count)
+            .Where(i=>a[i].TableCell is not null).ToList();
+        var newCellIndices=Enumerable.Range(0,b.Count)
+            .Where(j=>b[j].TableCell is not null).ToList();
+        if (oldCellIndices.Count>256 || newCellIndices.Count>256 ||
+            a.Count>4096 || b.Count>4096)
+            return MatchStructuredUnitsCSharp(a,b,token);
+        token.ThrowIfCancellationRequested();
+        try
+        {
+            var oldCells=oldCellIndices.Select(i=>new NativeCodeVersionComparer.DocumentTableCell(
+                i,a[i].TableCell!.Table,a[i].TableCell!.Row,
+                LineageNormalize(a[i].Body))).ToList();
+            var newCells=newCellIndices.Select(j=>new NativeCodeVersionComparer.DocumentTableCell(
+                j,b[j].TableCell!.Table,b[j].TableCell!.Row,
+                LineageNormalize(b[j].Body))).ToList();
+            var native=NativeCodeVersionComparer.MatchDocumentTableCells(oldCells,newCells);
+            if (native is null) return MatchStructuredUnitsCSharp(a,b,token);
+            var plainA=Enumerable.Range(0,a.Count).Where(i=>a[i].TableCell is null).ToList();
+            var plainB=Enumerable.Range(0,b.Count).Where(j=>b[j].TableCell is null).ToList();
+            var all=new List<UnitMatch>();
+            foreach(var m in MatchUnitSequence(plainA.Select(i=>a[i]).ToList(),
+                plainB.Select(j=>b[j]).ToList(),token))
+                all.Add(new UnitMatch(plainA[m.Base],plainB[m.Other],m.Score,m.Mode));
+            all.AddRange(native.Select(m=>new UnitMatch(m.Base,m.Other,1.0,"table-cell")));
+            all=all.OrderBy(m=>m.Base).ToList();
+            if (Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_REQUIRE_NATIVE")=="1" ||
+                Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_VERIFY_DOCUMENT_MATCHES")=="1")
+            {
+                var reference=MatchStructuredUnitsCSharp(a,b,token);
+                if (all.Count!=reference.Count || all.Where((m,i)=>
+                    m.Base!=reference[i].Base || m.Other!=reference[i].Other ||
+                    m.Mode!=reference[i].Mode ||
+                    Math.Abs(m.Score-reference[i].Score)>1e-12).Any())
+                {
+                    System.Threading.Interlocked.Increment(ref _tableCellRustMismatches);
+                    return reference;
+                }
+            }
+            System.Threading.Interlocked.Increment(ref _tableCellRustMatches);
+            return all;
+        }
+        catch(Exception ex) when(ex is InvalidDataException or
+            System.Text.Json.JsonException or ArgumentException or OverflowException)
+        {
+            System.Threading.Interlocked.Increment(ref _tableCellRustMismatches);
+            return MatchStructuredUnitsCSharp(a,b,token);
+        }
+    }
+
+    private static List<UnitMatch> MatchStructuredUnitsCSharp(
         IReadOnlyList<NativeUnit> a, IReadOnlyList<NativeUnit> b, CancellationToken token)
     {
         var result = new List<UnitMatch>();
@@ -796,7 +856,96 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return result.OrderBy(x => x.Base).ToList();
     }
 
-    private static List<UnitMatch> MatchUnitSequence(IReadOnlyList<NativeUnit> a, IReadOnlyList<NativeUnit> b, CancellationToken token)
+    private static long _unitLineageRustMatches;
+    private static long _unitLineageRustMismatches;
+    internal static long UnitLineageRustMatches =>
+        System.Threading.Interlocked.Read(ref _unitLineageRustMatches);
+    internal static long UnitLineageRustMismatches =>
+        System.Threading.Interlocked.Read(ref _unitLineageRustMismatches);
+
+    private static List<UnitMatch> MatchUnitSequence(
+        IReadOnlyList<NativeUnit> a, IReadOnlyList<NativeUnit> b, CancellationToken token)
+    {
+        // Tables have an independent structural matching contract; neither
+        // table cells nor their source offsets may be treated as article prose.
+        if (a.Any(x => x.TableCell is not null) || b.Any(x => x.TableCell is not null) ||
+            a.Count > 48 || b.Count > 48 || (long)a.Count * b.Count > 1024)
+            return MatchUnitSequenceCSharp(a,b,token);
+        var aa = a.Where(IsLegalArticle).ToArray();
+        var bb = b.Where(IsLegalArticle).ToArray();
+        if (aa.Length == 0 || bb.Length == 0)
+            return MatchGenericUnits(a,b,token);
+        token.ThrowIfCancellationRequested();
+        try
+        {
+            var oldUnits=a.Select(u=>new NativeCodeVersionComparer.DocumentUnitLineageUnit(
+                IsLegalArticle(u),u.Number,u.Title,
+                LineageNormalize(u.Title),LineageNormalize(u.Body),
+                IsLowInformationTitle(u.Title))).ToArray();
+            var newUnits=b.Select(u=>new NativeCodeVersionComparer.DocumentUnitLineageUnit(
+                IsLegalArticle(u),u.Number,u.Title,
+                LineageNormalize(u.Title),LineageNormalize(u.Body),
+                IsLowInformationTitle(u.Title))).ToArray();
+            var features=new List<NativeCodeVersionComparer.DocumentUnitLineageFeature>(
+                a.Count*b.Count);
+            for(var i=0;i<a.Count;i++)
+            for(var j=0;j<b.Count;j++)
+            {
+                if ((j & 31)==0) token.ThrowIfCancellationRequested();
+                var oldArticle=IsLegalArticle(a[i]);
+                var newArticle=IsLegalArticle(b[j]);
+                var score=0.0;
+                var threshold=2.0;
+                if (!oldArticle && !newArticle &&
+                    string.Equals(a[i].Kind,b[j].Kind,StringComparison.Ordinal))
+                {
+                    score=Similarity(a[i].Text,b[j].Text);
+                    threshold=.48;
+                    if (a[i].Kind=="section")
+                    {
+                        if (string.Equals(a[i].Number,b[j].Number,StringComparison.OrdinalIgnoreCase))
+                        {
+                            score=Math.Max(score,.88);
+                            threshold=.30;
+                        }
+                        else if (a[i].Title.Length>0 && b[j].Title.Length>0)
+                            score=Math.Max(score,.70*Similarity(a[i].Title,b[j].Title));
+                    }
+                }
+                features.Add(new(
+                    oldArticle && newArticle ? TitleSimilarity(a[i],b[j]) : 0,
+                    oldArticle && newArticle ? BodySimilarity(a[i],b[j]) : 0,
+                    oldArticle && newArticle ? UnitLineageSimilarity(a[i],b[j]) : 0,
+                    score,threshold));
+            }
+            var native=NativeCodeVersionComparer.MatchDocumentUnitLineage(
+                oldUnits,newUnits,features);
+            if (native is null) return MatchUnitSequenceCSharp(a,b,token);
+            if (Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_REQUIRE_NATIVE") == "1" ||
+                Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_VERIFY_DOCUMENT_MATCHES") == "1")
+            {
+                var source=MatchUnitSequenceCSharp(a,b,token);
+                if (native.Count!=source.Count ||
+                    native.Where((m,i) => m.Base!=source[i].Base ||
+                        m.Other!=source[i].Other || m.Mode!=source[i].Mode ||
+                        Math.Abs(m.Score-source[i].Score)>1e-12).Any())
+                {
+                    System.Threading.Interlocked.Increment(ref _unitLineageRustMismatches);
+                    return source;
+                }
+            }
+            System.Threading.Interlocked.Increment(ref _unitLineageRustMatches);
+            return native.Select(m=>new UnitMatch(m.Base,m.Other,m.Score,m.Mode)).ToList();
+        }
+        catch (Exception ex) when(ex is InvalidDataException or
+            System.Text.Json.JsonException or ArgumentException or OverflowException)
+        {
+            System.Threading.Interlocked.Increment(ref _unitLineageRustMismatches);
+            return MatchUnitSequenceCSharp(a,b,token);
+        }
+    }
+
+    private static List<UnitMatch> MatchUnitSequenceCSharp(IReadOnlyList<NativeUnit> a, IReadOnlyList<NativeUnit> b, CancellationToken token)
     {
         if (a.Any(x => x.TableCell is not null) || b.Any(x => x.TableCell is not null))
             return MatchStructuredUnits(a, b, token);
@@ -3247,7 +3396,45 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return result;
     }
 
-    private static List<(int A, int B, int Size)> MatcherBlocks(IReadOnlyList<string> a, IReadOnlyList<string> b)
+    private static long _tokenMatchRustMatches;
+    private static long _tokenMatchRustMismatches;
+    internal static long TokenMatchRustMatches =>
+        System.Threading.Interlocked.Read(ref _tokenMatchRustMatches);
+    internal static long TokenMatchRustMismatches =>
+        System.Threading.Interlocked.Read(ref _tokenMatchRustMismatches);
+
+    private static List<(int A, int B, int Size)> MatcherBlocks(
+        IReadOnlyList<string> a, IReadOnlyList<string> b)
+    {
+        try
+        {
+            var rust=NativeCodeVersionComparer.MatchDocumentTokenBlocks(a,b);
+            if (rust is null) return MatcherBlocksCSharp(a,b);
+            if (Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_REQUIRE_NATIVE")=="1" ||
+                Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_VERIFY_DOCUMENT_MATCHES")=="1")
+            {
+                var reference=MatcherBlocksCSharp(a,b);
+                if (rust.Count!=reference.Count ||
+                    rust.Where((x,i)=>x.A!=reference[i].A ||
+                        x.B!=reference[i].B || x.Size!=reference[i].Size).Any())
+                {
+                    System.Threading.Interlocked.Increment(ref _tokenMatchRustMismatches);
+                    return reference;
+                }
+            }
+            System.Threading.Interlocked.Increment(ref _tokenMatchRustMatches);
+            return rust.Select(x=>(x.A,x.B,x.Size)).ToList();
+        }
+        catch(Exception ex) when(ex is InvalidDataException or
+            System.Text.Json.JsonException or ArgumentException or OverflowException)
+        {
+            System.Threading.Interlocked.Increment(ref _tokenMatchRustMismatches);
+            return MatcherBlocksCSharp(a,b);
+        }
+    }
+
+    private static List<(int A, int B, int Size)> MatcherBlocksCSharp(
+        IReadOnlyList<string> a, IReadOnlyList<string> b)
     {
         var b2j = new Dictionary<string, List<int>>(StringComparer.Ordinal);
         for (var j = 0; j < b.Count; j++)

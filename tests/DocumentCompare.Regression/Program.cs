@@ -107,7 +107,44 @@ if (args.Length==1 && args[0]=="--smoke-native-production")
     Check(genericCmp.Rows.Count>=2 &&
           GetRustCounter("GenericUnitRustMatches")>beforeGeneric,
         "production general-document matcher must use Rust-first execution");
-    Console.WriteLine("PASS PRODUCTION RUST-FIRST MATCHPARTS, SENTENCE REVIEW AND GENERIC UNITS");
+    var lineageBefore=Path.Combine(dir,"rust-lineage-before.docx");
+    var lineageAfter=Path.Combine(dir,"rust-lineage-after.docx");
+    Make(lineageBefore,P("제1조(목적)")+P("본 약관은 이용 목적과 관련 의무를 규정한다.")+
+        P("제2조(보호)")+P("회사는 회원의 개인정보를 보호할 의무가 있다."));
+    Make(lineageAfter,P("제1조(보호)")+P("회사는 회원의 개인정보를 보호할 의무가 있다.")+
+        P("제2조(목적)")+P("본 약관은 이용 목적과 관련 의무를 규정한다."));
+    var initialLineage=GetRustCounter("UnitLineageRustMatches");
+    var lineageResult=await eng.CompareAsync(new[]{lineageBefore,lineageAfter},
+        0,"legal",true,true);
+    Check(lineageResult.Rows.Count>=2 &&
+        GetRustCounter("UnitLineageRustMatches")>initialLineage,
+        "production article movement/renumbering must execute the Rust lineage engine");
+    var tableBefore=Path.Combine(dir,"rust-table-before.docx");
+    var tableAfter=Path.Combine(dir,"rust-table-after.docx");
+    static string TableRow(string label,string value) =>
+        "<w:tr><w:tc>"+P(label)+"</w:tc><w:tc>"+P(value)+"</w:tc></w:tr>";
+    static string TableXml(string rows) =>
+        "<w:tbl><w:tblPr/><w:tblGrid><w:gridCol/><w:gridCol/></w:tblGrid>"+
+        rows+"</w:tbl>";
+    Make(tableBefore,TableXml(TableRow("ID1","A")+TableRow("ID2","B")));
+    Make(tableAfter,TableXml(TableRow("ID2","B")+TableRow("ID1","A")));
+    var initialTable=GetRustCounter("TableCellRustMatches");
+    var tableResult=await eng.CompareAsync(new[]{tableBefore,tableAfter},
+        0,"general",true,true);
+    Check(tableResult.Rows.Count==4 &&
+        GetRustCounter("TableCellRustMatches")>initialTable,
+        "production moved DOCX table rows must execute Rust cell correspondence");
+    var wordBefore=Path.Combine(dir,"rust-token-before.docx");
+    var wordAfter=Path.Combine(dir,"rust-token-after.docx");
+    Make(wordBefore,P("Members shall provide proof of identity and contact information."));
+    Make(wordAfter,P("Members shall provide updated identity documents and emergency contact information."));
+    var initialTokens=GetRustCounter("TokenMatchRustMatches");
+    var wordReview=await eng.CompareAsync(new[]{wordBefore,wordAfter},
+        0,"general",true,true);
+    Check(wordReview.Rows.Any(x=>x.Changed) &&
+        GetRustCounter("TokenMatchRustMatches")>initialTokens,
+        "production general word edits must use Rust token anchor matching");
+    Console.WriteLine("PASS PRODUCTION RUST-FIRST PARTS, LINEAGE, TABLE, TOKENS, SENTENCES AND GENERAL BLOCKS");
     return;
 }
 
@@ -4068,5 +4105,175 @@ if (NativeCodeVersionComparer.IsAvailable)
         65,1,Enumerable.Repeat(.95,65).ToArray()) is null,
         "unsupported large generic matcher must safely fall back to C#");
     Console.WriteLine($"PASS RUST GENERIC BLOCK CSHARP PARITY {cases}/{cases}");
+}
+
+// Whole article lineage and non-article block ordering: reference C#
+// against production Rust-first and check exact action/score/index parity.
+if (NativeCodeVersionComparer.IsAvailable)
+{
+    var t=typeof(NativeComparisonEngine);
+    var parser=t.GetMethod("ParseUnits",BindingFlags.NonPublic|BindingFlags.Static)!;
+    var original=t.GetMethod("MatchUnitSequenceCSharp",BindingFlags.NonPublic|BindingFlags.Static)!;
+    var active=t.GetMethod("MatchUnitSequence",BindingFlags.NonPublic|BindingFlags.Static)!;
+    var accepts=t.GetProperty("UnitLineageRustMatches",BindingFlags.NonPublic|BindingFlags.Static)!;
+    var rejects=t.GetProperty("UnitLineageRustMismatches",BindingFlags.NonPublic|BindingFlags.Static)!;
+    long Counter(System.Reflection.PropertyInfo property)=>(long)property.GetValue(null)!;
+    var acceptedBefore=Counter(accepts);
+    var rejectedBefore=Counter(rejects);
+    (int Base,int Other,double Score,string Mode)[] Invoke(
+        System.Reflection.MethodInfo method,object left,object right)=>
+        ((System.Collections.IEnumerable)method.Invoke(null,new[]{
+            left,right,(object)CancellationToken.None})!).Cast<object>()
+            .Select(x=>(Base:(int)x.GetType().GetProperty("Base")!.GetValue(x)!,
+                Other:(int)x.GetType().GetProperty("Other")!.GetValue(x)!,
+                Score:(double)x.GetType().GetProperty("Score")!.GetValue(x)!,
+                Mode:(string)x.GetType().GetProperty("Mode")!.GetValue(x)!)).ToArray();
+    var oldTexts=new[]{
+        "제1조(목적)\n이 약관은 서비스 이용과 개인정보 처리 기준을 정한다.\n제2조(개인정보 보호)\n이용자에게 처리방침을 고지한다.\n제3조(지급)\n정해진 수수료를 납부한다.",
+        "제1조(지급)\n정해진 수수료를 납부한다.\n제2조(목적)\n이 약관은 서비스 이용과 개인정보 처리 기준을 정한다.\n제3조(개인정보 보호)\n이용자에게 처리방침을 고지한다.",
+        "Article 1 (Purpose)\nThe service terms regulate the usage of member accounts.\nArticle 2 (Privacy)\nMembers receive information about data handling.\nArticle 3 (Payment)\nMembers pay the necessary charges.",
+        "제1조(총칙)\n본 약관은 회사와 회원 간의 서비스 이용 계약을 규율한다.\n제2조(총칙)\n회사는 회원의 권리를 보호한다.",
+        "제1조(개인정보)\n회원의 개인정보는 적법하게 처리됩니다.\n제2조(지급)\n회원은 모든 이용요금을 납부합니다.",
+        "전문\n이 문서는 개인정보 보호 의무에 대한 공통 기준을 정의한다.\n제1조(목적)\n개인정보를 보호한다.\n제2조(권리)\n회원의 권리를 보장한다.",
+    };
+    var randomLineage=new Random(20261023);
+    var titles=new[]{"목적","개인정보 보호","개인정보","지급","정의","권리","서비스 제공","총칙","보관","해지","변경"};
+    var bodies=new[]{"이용자의 동의를 받아야 한다.","회원에게 필요한 정보를 고지한다.",
+        "이용약관에 정한 목적을 위하여 처리한다.","관련 법령에 따라 환급 절차를 안내한다.",
+        "보유기간이 끝난 자료는 삭제한다.","회원은 서비스의 이용요금을 납부한다."};
+    var corpus=new List<string>(oldTexts);
+    for(var c=0;c<54;c++)
+    {
+        var units=Enumerable.Range(0,randomLineage.Next(2,8))
+            .Select(i=>$"제{i+1}조({titles[randomLineage.Next(titles.Length)]})\n"+
+                bodies[randomLineage.Next(bodies.Length)]);
+        corpus.Add(string.Join("\n",units));
+    }
+    var count=0;
+    foreach(var doc in corpus)
+    {
+        var list= new[] {doc,corpus[(count*13+7)%corpus.Count]};
+        foreach(var next in list)
+        {
+            var left=parser.Invoke(null,new object[]{doc,"legal"})!;
+            var right=parser.Invoke(null,new object[]{next,"legal"})!;
+            var csharp=Invoke(original,left,right);
+            var rust=Invoke(active,left,right);
+            Check(csharp.Length==rust.Length &&
+                csharp.Zip(rust).All(x=>
+                    x.First.Base==x.Second.Base && x.First.Other==x.Second.Other &&
+                    x.First.Mode==x.Second.Mode &&
+                    Math.Abs(x.First.Score-x.Second.Score)<1e-12),
+                "Rust article lineage mismatch on document pair "+count+
+                " source="+doc+" target="+next);
+            count++;
+        }
+    }
+    Check(Counter(rejects)==rejectedBefore,
+        "article lineage parity gate rejected "+(Counter(rejects)-rejectedBefore)+
+        " native outputs despite the regression corpus passing by C# fallback");
+    Check(Counter(accepts)-acceptedBefore==count,
+        "whole article lineage path did not use Rust for all supported cases "+
+        (Counter(accepts)-acceptedBefore)+"/"+count);
+    Console.WriteLine($"PASS RUST WHOLE ARTICLE LINEAGE CSHARP PARITY {count}/{count}");
+}
+
+// Canonical DOCX table-cell old/new pairing: regression Golden and
+// verification counters must show the *whole* current table test corpus
+// uses Rust without silently dropping back to managed correspondence.
+if (NativeCodeVersionComparer.IsAvailable)
+{
+    var tablePairs=NativeCodeVersionComparer.MatchDocumentTableCells(
+        new[]{
+            new NativeCodeVersionComparer.DocumentTableCell(0,0,0,"name"),
+            new NativeCodeVersionComparer.DocumentTableCell(1,0,0,"value"),
+            new NativeCodeVersionComparer.DocumentTableCell(2,0,1,"a"),
+            new NativeCodeVersionComparer.DocumentTableCell(3,0,1,"1"),
+            new NativeCodeVersionComparer.DocumentTableCell(4,0,2,"b"),
+            new NativeCodeVersionComparer.DocumentTableCell(5,0,2,"2")
+        },
+        new[]{
+            new NativeCodeVersionComparer.DocumentTableCell(0,0,0,"name"),
+            new NativeCodeVersionComparer.DocumentTableCell(1,0,0,"value"),
+            new NativeCodeVersionComparer.DocumentTableCell(2,0,1,"b"),
+            new NativeCodeVersionComparer.DocumentTableCell(3,0,1,"2"),
+            new NativeCodeVersionComparer.DocumentTableCell(4,0,2,"a"),
+            new NativeCodeVersionComparer.DocumentTableCell(5,0,2,"1")
+        });
+    Check(tablePairs is not null &&
+        tablePairs.Select(x=>(x.Base,x.Other))
+            .SequenceEqual(new[]{(0,0),(1,1),(2,4),(3,5),(4,2),(5,3)}),
+        "Rust Word table rows must retain row anchors after reorder");
+    var emptyUnmatched=NativeCodeVersionComparer.MatchDocumentTableCells(
+        new[]{
+            new NativeCodeVersionComparer.DocumentTableCell(0,0,0,"x"),
+            new NativeCodeVersionComparer.DocumentTableCell(1,0,0,"x")
+        },
+        new[]{
+            new NativeCodeVersionComparer.DocumentTableCell(0,0,0,"x"),
+            new NativeCodeVersionComparer.DocumentTableCell(1,0,0,"new"),
+            new NativeCodeVersionComparer.DocumentTableCell(2,0,0,"x")
+        });
+    Check(emptyUnmatched is not null && emptyUnmatched.Count==0,
+        "ambiguous duplicate table cells must not bridge an inserted column");
+    var tableType=typeof(NativeComparisonEngine);
+    var tableMatches=(long)tableType.GetProperty("TableCellRustMatches",
+        BindingFlags.Static|BindingFlags.NonPublic)!.GetValue(null)!;
+    var tableMismatches=(long)tableType.GetProperty("TableCellRustMismatches",
+        BindingFlags.Static|BindingFlags.NonPublic)!.GetValue(null)!;
+    Check(tableMatches>=15 && tableMismatches==0,
+        "Word DOCX table corpus must actually execute Rust with zero C# parity mismatches: "+
+        tableMatches+" accepted, "+tableMismatches+" rejected");
+    Console.WriteLine($"PASS RUST FULL DOCX TABLE CORRESPONDENCE {tableMatches} actual comparisons; 0 drift");
+}
+
+// Entire token-anchor longest-block matcher against frozen C# reference.
+if (NativeCodeVersionComparer.IsAvailable)
+{
+    var method=typeof(NativeComparisonEngine).GetMethod("MatcherBlocksCSharp",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var live=typeof(NativeComparisonEngine).GetMethod("MatcherBlocks",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var accepts=typeof(NativeComparisonEngine).GetProperty("TokenMatchRustMatches",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var rejects=typeof(NativeComparisonEngine).GetProperty("TokenMatchRustMismatches",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    long Count(System.Reflection.PropertyInfo p)=>(long)p.GetValue(null)!;
+    var start=Count(accepts);var mismatchStart=Count(rejects);
+    var tokens=new[]{"a","a","b","the","and","privacy","개인정보","보호","동의",
+        "없이","Article","1","2","3","x","y","z","of","③","④"};
+    var rng=new Random(20261023);
+    var checkedCases=0;
+    (int A,int B,int Size)[] CSharpBlockPairs(System.Reflection.MethodInfo fn,
+        string[] x,string[] y)=>
+        ((System.Collections.IEnumerable)fn.Invoke(null,new object[]{x,y})!)
+        .Cast<object>().Select(block=>{
+            var type=block.GetType();
+            return ((int)type.GetField("Item1")!.GetValue(block)!,
+                (int)type.GetField("Item2")!.GetValue(block)!,
+                (int)type.GetField("Item3")!.GetValue(block)!);
+        }).ToArray();
+    for(var n=0;n<700;n++)
+    {
+        var before=Enumerable.Range(0,rng.Next(0,38))
+            .Select(_=>tokens[rng.Next(tokens.Length)]).ToArray();
+        var after=Enumerable.Range(0,rng.Next(0,38))
+            .Select(_=>tokens[rng.Next(tokens.Length)]).ToArray();
+        var canonical=CSharpBlockPairs(method,before,after);
+        var rust=NativeCodeVersionComparer.MatchDocumentTokenBlocks(before,after);
+        Check(rust is not null && canonical.Length==rust.Count &&
+            canonical.Zip(rust).All(pair=>
+                pair.First.A==pair.Second.A &&
+                pair.First.B==pair.Second.B &&
+                pair.First.Size==pair.Second.Size),
+            "Rust token longest-block matching differs from C# baseline: "+n);
+        var direct=CSharpBlockPairs(live,before,after);
+        Check(direct.SequenceEqual(canonical),
+            "live Rust token matcher changed canonical word-review span: "+n);
+        checkedCases++;
+    }
+    Check(Count(accepts)-start==checkedCases && Count(rejects)==mismatchStart,
+        "Rust token matcher must be adopted for all bounded test pairs, zero mismatch");
+    Console.WriteLine($"PASS RUST TOKEN LONGEST BLOCK CSHARP PARITY {checkedCases}/{checkedCases}");
 }
 Console.WriteLine("ALL REGRESSIONS PASSED");

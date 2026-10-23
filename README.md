@@ -166,8 +166,9 @@ DocumentCompare/
 ~~~
 
 **Runtime:** The Avalonia UI, Word/DOCX reading and Word/Excel export
-remain in C#. Supported document matching and native comparison operations
-run in Rust first, with C# fallbacks where necessary. This directory
+remain in C#. Legal article lineage, item matching, table-row/cell correspondence,
+general block matching, token-anchor selection and supported sentence-review
+operations run in Rust first, with C# fallbacks where necessary. This directory
 separation does not imply that the C# comparison engine has been entirely
 ported to Rust.
 
