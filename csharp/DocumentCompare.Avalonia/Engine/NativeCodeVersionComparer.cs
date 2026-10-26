@@ -158,6 +158,20 @@ public static class NativeCodeVersionComparer
         int Index,string Action,string Message,int GapAnchor);
     public sealed record DocumentStructuralPart(
         string Label,int Level,string Family,int Start,int End);
+    public sealed record RawCompareCell(
+        int Span,string VerticalMerge,int ParagraphCount);
+    public sealed record RawCompareUnit(
+        int Index,string Kind,string Number,string Title,string Header,string Body,
+        RawCompareCell? Cell);
+    public sealed record RawCompareMarker(
+        string Kind,string OldText,string NewText,
+        int OldStart,int OldEnd,int NewStart,int NewEnd,
+        string Part,int ItemOrder,int HunkOrder);
+    public sealed record RawCompareResult(
+        List<RawCompareMarker> Markers,List<string> Structural);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int RawComparePairDelegate(
+        [In] byte[] input,nuint length,out NativeAstResult result);
     public sealed record DocumentPairPlanItem(
         int Old,int New,string OldLabel,string NewLabel,
         int OldLevel,int NewLevel,int? OldOrdinal,int? NewOrdinal,
@@ -359,6 +373,7 @@ public static class NativeCodeVersionComparer
         public readonly DocumentDiffHunksDelegate? DocumentDiffHunks;
         public readonly DocumentReviewDiffDelegate? DocumentReviewDiff;
         public readonly DocumentPairPlanDelegate? DocumentPairPlan;
+        public readonly RawComparePairDelegate? RawComparePair;
 
         public Exports(IntPtr handle)
         {
@@ -506,6 +521,11 @@ public static class NativeCodeVersionComparer
                 DocumentPairPlan =
                     Marshal.GetDelegateForFunctionPointer<DocumentPairPlanDelegate>(
                         pairPlanExport);
+            if (NativeLibrary.TryGetExport(handle,
+                "dc_compare_document_pair_raw_utf8", out var rawPairExport))
+                RawComparePair =
+                    Marshal.GetDelegateForFunctionPointer<RawComparePairDelegate>(
+                        rawPairExport);
         }
     }
 
@@ -1304,6 +1324,57 @@ public static class NativeCodeVersionComparer
     }
 
     private sealed record DocumentTokenBlocksWire(List<DocumentTokenBlock> Blocks);
+    /// <summary>
+    /// ComparePair Rust implementation accepting only raw unit text and
+    /// metadata: no C# matching/scoring/structural decisions are inputs.
+    /// Returns null for explicitly unsupported legacy special cases.
+    /// </summary>
+    public static RawCompareResult? CompareRawDocumentPair(
+        RawCompareUnit old,RawCompareUnit revised,bool includePunctuation)
+    {
+        ArgumentNullException.ThrowIfNull(old);
+        ArgumentNullException.ThrowIfNull(revised);
+        var exports=Native.Value;
+        if(exports?.RawComparePair is null ||
+            old.Body.Length>2048 || revised.Body.Length>2048 ||
+            old.Header.Length>512 || revised.Header.Length>512 ||
+            old.Title.Length>256 || revised.Title.Length>256)
+            return null;
+        var bytes=JsonSerializer.SerializeToUtf8Bytes(new{
+            old,revised,includePunctuation
+        },new JsonSerializerOptions{PropertyNamingPolicy=JsonNamingPolicy.CamelCase});
+        if(bytes.Length>1024*1024)return null;
+        var status=exports.RawComparePair(bytes,(nuint)bytes.Length,out var output);
+        try
+        {
+            if(status is 2 or 3)return null;
+            if(status!=0)
+                throw new InvalidDataException($"Rust 원문 조문 비교 실패: {status}");
+            if(output.Data==IntPtr.Zero || output.Length==0 ||
+                output.Length>2UL*1024*1024)
+                throw new InvalidDataException("Rust 원문 조문 비교 데이터 오류");
+            var data=new byte[checked((int)output.Length)];
+            Marshal.Copy(output.Data,data,0,data.Length);
+            var result=JsonSerializer.Deserialize<RawCompareResult>(data,
+                new JsonSerializerOptions{PropertyNameCaseInsensitive=true});
+            if(result?.Markers is null || result.Structural is null ||
+                result.Markers.Count>1024 || result.Structural.Count>256)
+                throw new InvalidDataException("Rust 원문 비교 마커 개수 오류");
+            foreach(var m in result.Markers)
+                if(m.Kind is not ("number" or "struct" or "change" or "delete" or "insert") ||
+                    m.Part is not ("body" or "header") ||
+                    m.OldStart<0 || m.OldEnd<m.OldStart ||
+                    m.NewStart<0 || m.NewEnd<m.NewStart ||
+                    m.OldEnd>(m.Part=="header"?old.Header.Length:old.Header.Length+1+old.Body.Length) ||
+                    m.NewEnd>(m.Part=="header"?revised.Header.Length:revised.Header.Length+1+revised.Body.Length) ||
+                    m.OldText is null || m.NewText is null)
+                    throw new InvalidDataException("Rust 원문 비교 마커 오프셋 오류");
+            return result;
+        }
+        finally{exports.AstFree(ref output);}
+    }
+
+
     /// <summary>
     /// Rust ownership of legal article, clause/part movement,
     /// whole-item rewrite and final status classification.

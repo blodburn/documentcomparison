@@ -2080,3 +2080,53 @@ pub unsafe extern "C" fn dc_plan_document_pair_utf8(
         Err(_) => 5,
     }
 }
+
+/// Self-contained document-pair classification and review events from raw
+/// unit text; unlike doc_pair_plan this endpoint accepts NO C# matching,
+/// pre-parsed clause boundaries, similarity scores or selected features.
+/// # Safety
+/// Caller supplies readable UTF-8 JSON, writable exclusive result and
+/// frees successful output with dc_free_ast_json_result.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dc_compare_document_pair_raw_utf8(
+    input: *const u8,
+    length: usize,
+    output: *mut DcAstJsonResult,
+) -> i32 {
+    if output.is_null() {
+        return 2;
+    }
+    // SAFETY: exclusive writable output guaranteed by caller.
+    unsafe { ptr::write(output, DcAstJsonResult::empty()) };
+    if length > 1024 * 1024 || (length > 0 && input.is_null()) {
+        return 2;
+    }
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let bytes = if length == 0 {
+            &[][..]
+        } else {
+            // SAFETY: readable byte extent guaranteed by caller.
+            unsafe { slice::from_raw_parts(input, length) }
+        };
+        let req: crate::doc_pair_raw::Input = serde_json::from_slice(bytes).map_err(|_| 1)?;
+        if !crate::doc_pair_raw::validate(&req) {
+            return Err(3);
+        }
+        let Some(answer) = crate::doc_pair_raw::compare(&req) else {
+            return Err(3);
+        };
+        serde_json::to_vec(&answer).map_err(|_| 4)
+    }));
+    match result {
+        Ok(Ok(raw)) => {
+            let b = raw.into_boxed_slice();
+            let length = b.len();
+            let data = Box::into_raw(b) as *mut u8;
+            // SAFETY: caller guarantees exclusive writable output.
+            unsafe { ptr::write(output, DcAstJsonResult { data, length }) };
+            0
+        }
+        Ok(Err(code)) => code,
+        Err(_) => 5,
+    }
+}

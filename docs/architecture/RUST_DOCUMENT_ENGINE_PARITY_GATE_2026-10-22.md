@@ -757,3 +757,36 @@ and the outer three-way flow, and creates UI/Word models.
 Older Rust DLLs retain tested C# compatibility fallback.
 Rust-only independent comparison across every input type remains
 a separate required completion gate.
+
+
+## Raw-input Rust ComparePair implementation — 2026-10-26
+
+- rust/src/doc_pair_raw.rs is a new source-only FFI document pair
+  implementation, exported as dc_compare_document_pair_raw_utf8. It receives
+  the original unit index, kind, article number, title, header and body text,
+  optional typed DOCX cell metadata, and punctuation preference; no
+  C#-computed part boundaries, matching scores or selected change decisions
+  are passed to Rust.
+- It uses the independent Rust structural parser and hierarchy engine,
+  Unicode normalization, lexical matching/review events, whitespace boundary
+  review, preserved sentence anchors and UTF-16 marker positioning. It
+  supports verified article renumbering, single/plain blocks, equal-order list
+  items, list notation changes, a collapsed wrapper case, and Word table-cell
+  paragraph count, merge and text review changes.
+- NativeComparisonEngine.ComparePair executes this native endpoint before the
+  legacy C# ComparePairCore and maps its typed events to the stable Word/UI
+  NativeMarker presentation model. The global C# item-move index is now lazy
+  and is not computed for a successful ordinary native comparison. On absent
+  or older native libraries or unsupported input the pre-existing C#
+  implementation remains available for correctness.
+- All 1,528 exercised pair comparisons in the project regression corpus
+  adopted the source-only Rust output with zero unsupported inputs and
+  zero final-marker/message parity mismatches. This includes Word table
+  cells and three-way document comparisons. Regression asserts these
+  counters, and no longer requires the old C#-feature-based Rust planner.
+- Not full independent-source retirement: the current raw endpoint has
+  finite fragment/part budgets, conservative handling of ambiguous
+  reorder/merge cases, and a C# compatibility implementation is still
+  present for unexercised document forms. The outer unit-lineage alignment,
+  DOCX reader/exporter and UI model are not independently implemented by
+  this raw pair endpoint. A full Rust-only engine cannot yet be claimed.

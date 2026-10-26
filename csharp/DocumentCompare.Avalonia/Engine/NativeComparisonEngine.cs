@@ -140,7 +140,11 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             baseIndex = Math.Clamp(baseIndex, 0, paths.Count - 1);
             var aligned = BuildRows(docs, baseIndex, linked.Token);
             var tableMoves = FindTableMovement(aligned, paths.Count, baseIndex, includeAC);
-            var globalParts = BuildGlobalPartIndex(docs);
+            // The source-only Rust ComparePair consumes no managed global
+            // item index. Build this only for explicit compatibility fallback
+            // or managed parity verification.
+            var globalParts = new Lazy<List<Dictionary<string,List<PartLocation>>>>(
+                ()=>BuildGlobalPartIndex(docs));
             progress?.Report(45);
             var rows = new List<ComparisonRowVm>(aligned.Count);
             for (var i = 0; i < aligned.Count; i++)
@@ -1670,7 +1674,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     }
 
     private static ComparisonRowVm BuildRow(int id, NativeUnit?[] members, int docCount, int baseIndex, bool includeAC, bool includePunctuation,
-        IReadOnlyList<Dictionary<string, List<PartLocation>>> globalParts,
+        Lazy<List<Dictionary<string,List<PartLocation>>>> globalParts,
         IReadOnlyDictionary<(int OldDoc, int NewDoc, int OldIndex, int NewIndex), string> tableMoves)
     {
         var nativeMarkers = new List<NativeMarker>();
@@ -1734,6 +1738,108 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         };
     }
 
+    // The raw Rust ComparePair call precedes *all* C# ParseParts,
+    // MatchParts, score, hierarchy, structural event and DiffText calls.
+    // Only raw unit text/metadata cross the native boundary.
+    private static long _rawPairRustMatches;
+    private static long _rawPairRustUnsupported;
+    private static long _rawPairRustMismatches;
+    internal static long RawPairRustMatches =>
+        System.Threading.Interlocked.Read(ref _rawPairRustMatches);
+    internal static long RawPairRustUnsupported =>
+        System.Threading.Interlocked.Read(ref _rawPairRustUnsupported);
+    internal static long RawPairRustMismatches =>
+        System.Threading.Interlocked.Read(ref _rawPairRustMismatches);
+
+    private static List<string> ComposeRawStructuralMessages(
+        List<string> existing,List<string> fresh)
+    {
+        if(fresh.Count>0 && fresh[0].Contains(" · 상태: ",
+            StringComparison.Ordinal))
+            return fresh.Take(1).Concat(existing)
+                .Concat(fresh.Skip(1)).ToList();
+        return existing.Concat(fresh).ToList();
+    }
+
+    private static List<NativeMarker>? ComparePairRawRust(
+        NativeUnit old,NativeUnit revised,int oldDoc,int newDoc,
+        string pair,int pairOrder,bool includePunctuation,
+        List<string> structural,
+        Lazy<List<Dictionary<string,List<PartLocation>>>> globalParts)
+    {
+        try
+        {
+            static NativeCodeVersionComparer.RawCompareCell? Cell(DocxComparisonCell? c)=>
+                c is null ? null : new(c.Span,c.VerticalMerge,c.ParagraphCount);
+            var source=new NativeCodeVersionComparer.RawCompareUnit(
+                old.Index,old.Kind,old.Number,old.Title,old.Header,old.Body,
+                Cell(old.TableCell));
+            var target=new NativeCodeVersionComparer.RawCompareUnit(
+                revised.Index,revised.Kind,revised.Number,revised.Title,
+                revised.Header,revised.Body,Cell(revised.TableCell));
+            var result=NativeCodeVersionComparer.CompareRawDocumentPair(
+                source,target,includePunctuation);
+            if(result is null)
+            {
+                System.Threading.Interlocked.Increment(ref _rawPairRustUnsupported);
+                return null;
+            }
+            var markers=new List<NativeMarker>(result.Markers.Count);
+            foreach(var m in result.Markers)
+            {
+                var r=m.Kind switch
+                {
+                    "number"=>NativeMarker.ArticleNumberChange(pair,pairOrder,
+                        oldDoc,newDoc,m.OldText,m.NewText,
+                        m.OldStart,m.OldEnd,m.NewStart,m.NewEnd),
+                    "struct"=>NativeMarker.StructuralChange(pair,pairOrder,
+                        oldDoc,newDoc,m.OldText,m.NewText,
+                        m.OldStart,m.OldEnd,m.NewStart,m.NewEnd,
+                        m.Part,m.ItemOrder,m.HunkOrder),
+                    "change"=>NativeMarker.Change(pair,pairOrder,oldDoc,newDoc,
+                        m.OldText,m.NewText,m.OldStart,m.OldEnd,
+                        m.NewStart,m.NewEnd,m.Part,m.ItemOrder,m.HunkOrder),
+                    "delete"=>NativeMarker.Delete(pair,pairOrder,oldDoc,newDoc,
+                        m.OldText,m.OldStart,m.OldEnd,m.NewStart,
+                        m.Part,m.ItemOrder,m.HunkOrder),
+                    "insert"=>NativeMarker.Insert(pair,pairOrder,oldDoc,newDoc,
+                        m.NewText,m.OldStart,m.NewStart,m.NewEnd,
+                        m.Part,m.ItemOrder,m.HunkOrder),
+                    _=>throw new InvalidDataException("Unexpected Rust raw marker")
+                };
+                markers.Add(r);
+            }
+            var newMessages=result.Structural.Select(m=>$"{pair} · {m}").ToList();
+            if(Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_REQUIRE_NATIVE")=="1" ||
+                Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_VERIFY_DOCUMENT_MATCHES")=="1")
+            {
+                var referenceMessages=new List<string>(structural);
+                var reference=ComparePairCore(old,revised,oldDoc,newDoc,
+                    pair,pairOrder,includePunctuation,referenceMessages,
+                    globalParts.Value,false,out _);
+                if(markers.Count!=reference.Count ||
+                    markers.Where((m,i)=>!SameReplacementMarker(m,reference[i])).Any() ||
+                    !ComposeRawStructuralMessages(structural,newMessages)
+                        .SequenceEqual(referenceMessages))
+                {
+                    System.Threading.Interlocked.Increment(ref _rawPairRustMismatches);
+                    return null;
+                }
+            }
+            var merged=ComposeRawStructuralMessages(structural,newMessages);
+            structural.Clear();
+            structural.AddRange(merged);
+            System.Threading.Interlocked.Increment(ref _rawPairRustMatches);
+            return markers;
+        }
+        catch(Exception ex) when(ex is InvalidDataException or
+            System.Text.Json.JsonException or ArgumentException or OverflowException)
+        {
+            System.Threading.Interlocked.Increment(ref _rawPairRustMismatches);
+            return null;
+        }
+    }
+
     private static long _pairPlanRustMatches;
     private static long _pairPlanRustMismatches;
     internal static long PairPlanRustMatches =>
@@ -1744,22 +1850,25 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     private static List<NativeMarker> ComparePair(
         NativeUnit old,NativeUnit revised,int oldDoc,int newDoc,
         string pair,int pairOrder,bool includePunctuation,List<string> structural,
-        IReadOnlyList<Dictionary<string,List<PartLocation>>> globalParts)
+        Lazy<List<Dictionary<string,List<PartLocation>>>> globalParts)
     {
+        var sourceOwned=ComparePairRawRust(old,revised,oldDoc,newDoc,pair,
+            pairOrder,includePunctuation,structural,globalParts);
+        if(sourceOwned is not null)return sourceOwned;
         try
         {
             var nativeMessages=new List<string>(structural);
             var actual=ComparePairCore(old,revised,oldDoc,newDoc,pair,pairOrder,
-                includePunctuation,nativeMessages,globalParts,true,out var nativeUsed);
+                includePunctuation,nativeMessages,globalParts.Value,true,out var nativeUsed);
             if(!nativeUsed)
                 return ComparePairCore(old,revised,oldDoc,newDoc,pair,pairOrder,
-                    includePunctuation,structural,globalParts,false,out _);
+                    includePunctuation,structural,globalParts.Value,false,out _);
             if(Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_REQUIRE_NATIVE")=="1" ||
                 Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_VERIFY_DOCUMENT_MATCHES")=="1")
             {
                 var referenceMessages=new List<string>(structural);
                 var reference=ComparePairCore(old,revised,oldDoc,newDoc,pair,
-                    pairOrder,includePunctuation,referenceMessages,globalParts,false,out _);
+                    pairOrder,includePunctuation,referenceMessages,globalParts.Value,false,out _);
                 if(actual.Count!=reference.Count ||
                     actual.Where((m,i)=>!SameReplacementMarker(m,reference[i])).Any() ||
                     !nativeMessages.SequenceEqual(referenceMessages))
@@ -1780,7 +1889,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         {
             System.Threading.Interlocked.Increment(ref _pairPlanRustMismatches);
             return ComparePairCore(old,revised,oldDoc,newDoc,pair,pairOrder,
-                includePunctuation,structural,globalParts,false,out _);
+                includePunctuation,structural,globalParts.Value,false,out _);
         }
     }
 

@@ -85,8 +85,7 @@ if (args.Length==1 && args[0]=="--smoke-native-production")
     var newOnly="다만, 관련 법령 및 이 약관에 따른 청약철회·환급 등 회원의 권리는 제한되지 않습니다.";
     Make(oldDoc,P("제26조(수수료의 지급)")+P(commonA+" "+oldOnly+" "+commonB));
     Make(newDoc,P("제27조(수수료의 지급)")+P(commonA+" "+commonB+" "+newOnly));
-    var initialFull=GetRustCounter("WholeMatchRustParityMatches");
-    var initialSentence=GetRustCounter("SentenceReviewRustMatches");
+    var initialRaw=GetRustCounter("RawPairRustMatches");
     var compared=await eng.CompareAsync(new[]{oldDoc,newDoc},0,"legal",true,true);
     var article=compared.Rows.Single(x=>x.Members[0]?.Number=="26");
     Check(article.Markers.Count(m=>m.Part=="header"&&m.Message.Contains("27"))==1 &&
@@ -95,9 +94,9 @@ if (args.Length==1 && args[0]=="--smoke-native-production")
           article.Markers.Where(m=>m.Part=="body")
               .All(m=>!m.Text.Contains(commonA)&&!m.Text.Contains(commonB)),
         "production Rust-first legal article markers differ from exact expected result");
-    Check(GetRustCounter("WholeMatchRustParityMatches")>initialFull &&
-          GetRustCounter("SentenceReviewRustMatches")>initialSentence,
-        "production Rust-first execution did not adopt both native engine stages");
+    Check(GetRustCounter("RawPairRustMatches")>initialRaw &&
+          GetRustCounter("RawPairRustUnsupported")==0,
+        "production raw-input Rust ComparePair did not own article and sentence review");
     var generalBefore=Path.Combine(dir,"rust-general-old.docx");
     var generalAfter=Path.Combine(dir,"rust-general-new.docx");
     Make(generalBefore,P("Basic introductory paragraph")+P("General privacy terms"));
@@ -138,12 +137,12 @@ if (args.Length==1 && args[0]=="--smoke-native-production")
     var wordAfter=Path.Combine(dir,"rust-token-after.docx");
     Make(wordBefore,P("Members shall provide proof of identity and contact information."));
     Make(wordAfter,P("Members shall provide updated identity documents and emergency contact information."));
-    var initialFullReview=GetRustCounter("FullDiffRustMatches");
+    var initialFullReview=GetRustCounter("RawPairRustMatches");
     var wordReview=await eng.CompareAsync(new[]{wordBefore,wordAfter},
         0,"general",true,true);
     Check(wordReview.Rows.Any(x=>x.Changed) &&
-        GetRustCounter("FullDiffRustMatches")>initialFullReview,
-        "production general word edits must use complete Rust review event planner");
+        GetRustCounter("RawPairRustMatches")>initialFullReview,
+        "production general word edits must use source-owned Rust ComparePair");
     Check(GetRustCounter("CharacterScoreRustMatches")>0 &&
         GetRustCounter("TokenScoreRustMatches")>0,
         "production Rust-first character and token similarity scores were never used");
@@ -166,13 +165,12 @@ if (args.Length==1 && args[0]=="--smoke-native-production")
         "production legal/general unit parsing must run in Rust");
     Check(GetRustCounter("NormalizationRustMatches")>0,
         "production NFC/NFKC matching must run in Rust");
-    Check(GetRustCounter("ReplacementCoalesceRustMatches")>0,
-        "production legal replacement selection must run in Rust");
-    Check(GetRustCounter("FullDiffRustMatches")>0,
-        "production generic DiffText event planner must run in Rust");
-    Check(GetRustCounter("PairPlanRustMatches")>0 &&
-        GetRustCounter("PairPlanRustMismatches")==0,
-        "production article/part classification must adopt Rust plans without drift");
+    // Direct source-only ComparePair invokes its Rust review and coalescing
+    // algorithms internally, so the old per-FFI facade counters no longer
+    // represent actual native ownership in the production path.
+    Check(GetRustCounter("RawPairRustMatches")>0 &&
+        GetRustCounter("RawPairRustMismatches")==0,
+        "production article/part comparison must adopt source-only Rust ComparePair without drift");
     Console.WriteLine("PASS PRODUCTION RUST-FIRST ITEM, LINEAGE, TABLE, TOKEN, SCORE, KOREAN DP, SENTENCE AND REVIEW SEGMENTS");
     return;
 }
@@ -5067,6 +5065,18 @@ var pairPlanNativeDrift=(long)typeof(NativeComparisonEngine).GetProperty(
     "PairPlanRustMismatches",BindingFlags.Static|BindingFlags.NonPublic)!
     .GetValue(null)!;
 Console.WriteLine($"RUST PAIR PLAN REVIEW source-complete adopted={pairPlanNativeUses} drift={pairPlanNativeDrift}");
-Check(pairPlanNativeUses>0 && pairPlanNativeDrift==0,
-    "actual ComparePair must adopt Rust structural/message decisions without fallback");
+Check(pairPlanNativeDrift==0,
+    "legacy structural plan fallback unexpectedly diverged");
+var rawPairNative=(long)typeof(NativeComparisonEngine).GetProperty(
+    "RawPairRustMatches",BindingFlags.NonPublic|BindingFlags.Static)!
+    .GetValue(null)!;
+var rawPairUnsupported=(long)typeof(NativeComparisonEngine).GetProperty(
+    "RawPairRustUnsupported",BindingFlags.NonPublic|BindingFlags.Static)!
+    .GetValue(null)!;
+var rawPairDrift=(long)typeof(NativeComparisonEngine).GetProperty(
+    "RawPairRustMismatches",BindingFlags.NonPublic|BindingFlags.Static)!
+    .GetValue(null)!;
+Console.WriteLine($"RUST RAW COMPAREPAIR owned={rawPairNative} unsupported={rawPairUnsupported} parityDrift={rawPairDrift}");
+Check(rawPairNative>0 && rawPairUnsupported==0 && rawPairDrift==0,
+    "source-only Rust ComparePair must handle every non-table regression pair with zero fallback and drift");
 Console.WriteLine("ALL REGRESSIONS PASSED");
