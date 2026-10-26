@@ -1794,3 +1794,98 @@ pub unsafe extern "C" fn dc_normalize_document_text_utf8(
         Err(_) => 5,
     }
 }
+
+/// Document review deletion/insertion coalescing decisions.
+/// # Safety
+/// Caller provides a readable input region and exclusive writable output;
+/// frees returned JSON with dc_free_ast_json_result.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dc_coalesce_document_replacements_utf8(
+    input: *const u8,
+    length: usize,
+    output: *mut DcAstJsonResult,
+) -> i32 {
+    if output.is_null() {
+        return 2;
+    }
+    // SAFETY: caller guarantees writable exclusive output.
+    unsafe { ptr::write(output, DcAstJsonResult::empty()) };
+    if length > 1024 * 1024 || (length > 0 && input.is_null()) {
+        return 2;
+    }
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let bytes = if length == 0 {
+            &[][..]
+        } else {
+            // SAFETY: caller guarantees input bytes are readable.
+            unsafe { slice::from_raw_parts(input, length) }
+        };
+        let request: crate::doc_replacement_coalesce::Input =
+            serde_json::from_slice(bytes).map_err(|_| 1)?;
+        if !crate::doc_replacement_coalesce::validate(&request) {
+            return Err(3);
+        }
+        serde_json::to_vec(&crate::doc_replacement_coalesce::select(&request)).map_err(|_| 4)
+    }));
+    match result {
+        Ok(Ok(raw)) => {
+            let buffer = raw.into_boxed_slice();
+            let length = buffer.len();
+            let data = Box::into_raw(buffer) as *mut u8;
+            // SAFETY: caller guarantees exclusive writable output.
+            unsafe { ptr::write(output, DcAstJsonResult { data, length }) };
+            0
+        }
+        Ok(Err(code)) => code,
+        Err(_) => 5,
+    }
+}
+
+/// Review event punctuation pieces and Hangul shared-prefix trimming.
+/// # Safety
+/// Caller provides readable input bytes, exclusive writable result, and
+/// frees successful output using dc_free_ast_json_result.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dc_review_document_text_pieces_utf8(
+    input: *const u8,
+    length: usize,
+    output: *mut DcAstJsonResult,
+) -> i32 {
+    if output.is_null() {
+        return 2;
+    }
+    // SAFETY: caller guarantees exclusive writable output.
+    unsafe { ptr::write(output, DcAstJsonResult::empty()) };
+    if length > 1024 * 1024 || (length > 0 && input.is_null()) {
+        return 2;
+    }
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let bytes = if length == 0 {
+            &[][..]
+        } else {
+            // SAFETY: caller guarantees readable input bytes.
+            unsafe { slice::from_raw_parts(input, length) }
+        };
+        let request: crate::doc_review_pieces::Input =
+            serde_json::from_slice(bytes).map_err(|_| 1)?;
+        if !crate::doc_review_pieces::validate(&request) {
+            return Err(3);
+        }
+        let Some(result) = crate::doc_review_pieces::process(&request) else {
+            return Err(3);
+        };
+        serde_json::to_vec(&result).map_err(|_| 4)
+    }));
+    match result {
+        Ok(Ok(raw)) => {
+            let buf = raw.into_boxed_slice();
+            let length = buf.len();
+            let data = Box::into_raw(buf) as *mut u8;
+            // SAFETY: caller guarantees exclusive writable output.
+            unsafe { ptr::write(output, DcAstJsonResult { data, length }) };
+            0
+        }
+        Ok(Err(code)) => code,
+        Err(_) => 5,
+    }
+}

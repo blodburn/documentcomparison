@@ -166,6 +166,8 @@ if (args.Length==1 && args[0]=="--smoke-native-production")
         "production legal/general unit parsing must run in Rust");
     Check(GetRustCounter("NormalizationRustMatches")>0,
         "production NFC/NFKC matching must run in Rust");
+    Check(GetRustCounter("ReplacementCoalesceRustMatches")>0,
+        "production legal replacement selection must run in Rust");
     Console.WriteLine("PASS PRODUCTION RUST-FIRST ITEM, LINEAGE, TABLE, TOKEN, SCORE, KOREAN DP, SENTENCE AND REVIEW SEGMENTS");
     return;
 }
@@ -4738,5 +4740,158 @@ if (NativeCodeVersionComparer.IsAvailable)
     Check(differences==0 && accepted>0 && rejected==0,
         "Rust Unicode normalizer not parity-equivalent or native path not accepted");
     Console.WriteLine($"PASS RUST UNICODE NORMALIZATION PARITY {checkedNormalization}/{checkedNormalization}");
+}
+
+// Rust-first end-to-end deletion/addition -> replacement decisions.
+// Compare all action, text, label, source/target endpoints and positions
+// against the preserved managed method on randomized competing candidates.
+if (NativeCodeVersionComparer.IsAvailable)
+{
+    var engine=typeof(NativeComparisonEngine);
+    var nativeMarker=engine.GetNestedType("NativeMarker",
+        BindingFlags.NonPublic)!;
+    var listType=typeof(List<>).MakeGenericType(nativeMarker);
+    var original=engine.GetMethod("CoalesceLocationReplacementsCSharp",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    var active=engine.GetMethod("CoalesceLocationReplacements",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    var markerDel=nativeMarker.GetMethod("Delete",
+        BindingFlags.Static|BindingFlags.Public)!;
+    var markerAdd=nativeMarker.GetMethod("Insert",
+        BindingFlags.Static|BindingFlags.Public)!;
+    var markerChange=nativeMarker.GetMethod("Change",
+        BindingFlags.Static|BindingFlags.Public)!;
+    var matches=engine.GetProperty("ReplacementCoalesceRustMatches",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    var mismatches=engine.GetProperty("ReplacementCoalesceRustMismatches",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    var beforeMatch=(long)matches.GetValue(null)!;
+    var beforeMismatch=(long)mismatches.GetValue(null)!;
+    var rng=new Random(20261026);
+    var corpusSize=650;
+    object? Prop(object o,string name)=>o.GetType().GetProperty(name)!.GetValue(o);
+    bool Same(object a,object b)
+    {
+        foreach(var name in new[]{"Action","Text","CharStart","CharEnd","Part",
+            "Message","Pair","PairOrder","ItemOrder","HunkOrder","RelativeDoc",
+            "TargetDoc","StructuralNumber"})
+            if(!Equals(Prop(a,name),Prop(b,name))) return false;
+        var ea=((System.Collections.IEnumerable)Prop(a,"Endpoints")!).Cast<object>()
+            .Select(x=>(Prop(x,"TargetDoc"),Prop(x,"CharStart"),Prop(x,"CharEnd")));
+        var eb=((System.Collections.IEnumerable)Prop(b,"Endpoints")!).Cast<object>()
+            .Select(x=>(Prop(x,"TargetDoc"),Prop(x,"CharStart"),Prop(x,"CharEnd")));
+        return ea.SequenceEqual(eb);
+    }
+    for(var trial=0;trial<corpusSize;trial++)
+    {
+        var input=(System.Collections.IList)Activator.CreateInstance(listType)!;
+        var n=rng.Next(1,10);
+        for(var k=0;k<n;k++)
+        {
+            var oldStart=rng.Next(0,175);
+            var oldEnd=oldStart+rng.Next(1,22);
+            var newStart=rng.Next(0,175);
+            var newEnd=newStart+rng.Next(1,22);
+            var item=rng.Next(-1,6);
+            var part=rng.Next(6)==0?"header":"body";
+            var text="변경 "+rng.Next(0,120)+ (rng.Next(4)==0?"!":"");
+            if(rng.Next(2)==0)
+                input.Add(markerDel.Invoke(null,new object[]{
+                    "A↔B",0,0,1,text,oldStart,oldEnd,newStart,part,item,k}));
+            else
+                input.Add(markerAdd.Invoke(null,new object[]{
+                    "A↔B",0,0,1,text,oldStart,newStart,newEnd,part,item,k}));
+        }
+        if(trial%7==0)
+            input.Add(markerChange.Invoke(null,new object[]{
+                "A↔B",0,0,1,"old","new",3,6,10,13,"body",0,77}));
+        var reference=((System.Collections.IEnumerable)original.Invoke(null,
+            new object[]{input,0,1})!).Cast<object>().ToArray();
+        var rust=((System.Collections.IEnumerable)active.Invoke(null,
+            new object[]{input,0,1})!).Cast<object>().ToArray();
+        Check(reference.Length==rust.Length &&
+            reference.Zip(rust).All(x=>Same(x.First,x.Second)),
+            "Rust replacement coalescing changed final marker sequence "+trial);
+    }
+    var afterMatch=(long)matches.GetValue(null)!;
+    var afterMismatch=(long)mismatches.GetValue(null)!;
+    Check(afterMatch-beforeMatch==corpusSize &&
+        afterMismatch==beforeMismatch,
+        "Rust replacement decision must be adopted with zero fallback for "+
+        corpusSize+" bounded direct regressions: accepted="+
+        (afterMatch-beforeMatch)+" mismatches="+(afterMismatch-beforeMismatch));
+    Console.WriteLine($"PASS RUST DOCUMENT REPLACEMENT COALESCE CSHARP PARITY {corpusSize}/{corpusSize}");
+}
+
+// Rust change-span splitting and Hangul shared-prefix clipping.
+// Compare exact pieces and UTF-16 offsets against the original C# code.
+if (NativeCodeVersionComparer.IsAvailable)
+{
+    var owner=typeof(NativeComparisonEngine);
+    var csharpPieces=owner.GetMethod("EventPartsCSharp",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    var rustPieces=owner.GetMethod("EventParts",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    var csharpHangul=owner.GetMethod("TrimSharedHangulPrefixCSharp",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    var rustHangul=owner.GetMethod("TrimSharedHangulPrefix",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    var acceptedParts=owner.GetProperty("ReviewPiecesRustMatches",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    var rejectedParts=owner.GetProperty("ReviewPiecesRustMismatches",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    var acceptedTrim=owner.GetProperty("HangulTrimRustMatches",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    var rejectedTrim=owner.GetProperty("HangulTrimRustMismatches",
+        BindingFlags.Static|BindingFlags.NonPublic)!;
+    long Value(System.Reflection.PropertyInfo prop)=>(long)prop.GetValue(null)!;
+    var startParts=Value(acceptedParts);
+    var startTrim=Value(acceptedTrim);
+    var mismatchedParts=Value(rejectedParts);
+    var mismatchedTrim=Value(rejectedTrim);
+    var rng=new Random(20261026);
+    var texts=new[]{"동의 없이","동의없이","개인정보","법률의 개정 사항",
+        "!","?","?",":",";",",","   ","\t","\n","A","B","123",
+        "\u00a0","·","가","나","한글",".",", punctuation",")"};
+    for(var i=0;i<450;i++)
+    {
+        var full=string.Concat(Enumerable.Range(0,rng.Next(1,13))
+            .Select(_=>texts[rng.Next(texts.Length)]));
+        var lo=rng.Next(0,full.Length+4);
+        var hi=rng.Next(lo,full.Length+5);
+        var canonical=((System.Collections.IEnumerable)csharpPieces.Invoke(null,
+            new object[]{full,lo,hi})!).Cast<object>()
+            .Select(o=>(Start:(int)o.GetType().GetProperty("Start")!.GetValue(o)!,
+                End:(int)o.GetType().GetProperty("End")!.GetValue(o)!,
+                Text:(string)o.GetType().GetProperty("Text")!.GetValue(o)!)).ToArray();
+        var native=((System.Collections.IEnumerable)rustPieces.Invoke(null,
+            new object[]{full,lo,hi})!).Cast<object>()
+            .Select(o=>(Start:(int)o.GetType().GetProperty("Start")!.GetValue(o)!,
+                End:(int)o.GetType().GetProperty("End")!.GetValue(o)!,
+                Text:(string)o.GetType().GetProperty("Text")!.GetValue(o)!)).ToArray();
+        Check(canonical.SequenceEqual(native),
+            "Rust event sentence punctuation split differs at trial "+i);
+    }
+    var bases=new[]{"개인정보","개인동의","동의 없이","동의없이",
+        "한글문장","개인정보 동의","가나","가나다","계약조항","개인서류",
+        "a b","ab","Article 1","제1조","개인\u00a0정보"};
+    for(var i=0;i<450;i++)
+    {
+        var prefix=bases[rng.Next(bases.Length)];
+        var old=prefix+texts[rng.Next(texts.Length)];
+        var revised=(i%3==0?prefix:bases[rng.Next(bases.Length)])+
+            texts[rng.Next(texts.Length)];
+        var canonical=(ValueTuple<string,string,int,int>)csharpHangul.Invoke(null,
+            new object[]{old,revised})!;
+        var native=(ValueTuple<string,string,int,int>)rustHangul.Invoke(null,
+            new object[]{old,revised})!;
+        Check(canonical.Equals(native),"Rust Hangul shared-prefix offset differs: "+i);
+    }
+    Check(Value(acceptedParts)-startParts==450 &&
+        Value(acceptedTrim)-startTrim==450 &&
+        Value(rejectedParts)==mismatchedParts &&
+        Value(rejectedTrim)==mismatchedTrim,
+        "Rust review piece/trim did not execute on every bounded case or fell back");
+    Console.WriteLine("PASS RUST DOCUMENT EVENT PIECES + HANGUL PREFIX CSHARP PARITY 900/900");
 }
 Console.WriteLine("ALL REGRESSIONS PASSED");

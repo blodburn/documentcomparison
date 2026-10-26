@@ -9,6 +9,8 @@ pub mod doc_match_full;
 pub mod doc_move_candidates;
 pub mod doc_normalize;
 pub mod doc_parts;
+pub mod doc_replacement_coalesce;
+pub mod doc_review_pieces;
 pub mod doc_row_alignment;
 pub mod doc_same_label;
 pub mod doc_same_ordinal;

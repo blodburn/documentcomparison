@@ -1861,7 +1861,99 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return result;
     }
 
-    private static List<NativeMarker> CoalesceLocationReplacements(List<NativeMarker> events, int oldDoc, int newDoc)
+    private static long _replacementCoalesceRustMatches;
+    private static long _replacementCoalesceRustMismatches;
+    internal static long ReplacementCoalesceRustMatches =>
+        System.Threading.Interlocked.Read(ref _replacementCoalesceRustMatches);
+    internal static long ReplacementCoalesceRustMismatches =>
+        System.Threading.Interlocked.Read(ref _replacementCoalesceRustMismatches);
+
+    private static List<NativeMarker> CoalesceLocationReplacements(
+        List<NativeMarker> events,int oldDoc,int newDoc)
+    {
+        if(events.Count>4096) return CoalesceLocationReplacementsCSharp(events,oldDoc,newDoc);
+        try
+        {
+            var wires=new List<NativeCodeVersionComparer.DocumentReplacementMarker>();
+            for(var i=0;i<events.Count;i++)
+            {
+                var e=events[i];
+                if(e.RelativeDoc!=newDoc ||
+                    (e.Action!="삭제" && e.Action!="추가"))
+                    continue;
+                var oldEp=e.Endpoints.FirstOrDefault(x=>x.TargetDoc==oldDoc);
+                var newEp=e.Endpoints.FirstOrDefault(x=>x.TargetDoc==newDoc);
+                if(oldEp is null || newEp is null) continue;
+                var kind=e.Action=="삭제" ? "delete" : "add";
+                wires.Add(new(i,kind,e.Part,CanonicalVisibleText(e.Text),
+                    e.Text.Any(char.IsLetterOrDigit),e.Text.Length,e.ItemOrder,
+                    oldEp.CharStart,oldEp.CharEnd,newEp.CharStart,newEp.CharEnd));
+            }
+            var native=NativeCodeVersionComparer.CoalesceDocumentReplacements(wires);
+            if(native is null)
+                return CoalesceLocationReplacementsCSharp(events,oldDoc,newDoc);
+            var replacements=new Dictionary<int,NativeMarker>();
+            var usedA=new HashSet<int>();
+            foreach(var pair in native)
+            {
+                var deletion=events[pair.Deletion];
+                var addition=events[pair.Addition];
+                var oldEp=deletion.Endpoints.First(x=>x.TargetDoc==oldDoc);
+                var newEp=addition.Endpoints.First(x=>x.TargetDoc==newDoc);
+                replacements.Add(pair.Deletion,NativeMarker.Change(
+                    addition.Pair,addition.PairOrder,oldDoc,newDoc,
+                    deletion.Text.Trim(),addition.Text.Trim(),
+                    oldEp.CharStart,oldEp.CharEnd,newEp.CharStart,newEp.CharEnd,
+                    addition.Part,Math.Min(deletion.ItemOrder,addition.ItemOrder),
+                    Math.Min(deletion.HunkOrder,addition.HunkOrder)));
+                usedA.Add(pair.Addition);
+            }
+            var result=new List<NativeMarker>();
+            for(var i=0;i<events.Count;i++)
+            {
+                if(replacements.TryGetValue(i,out var item)) result.Add(item);
+                else if(!usedA.Contains(i)) result.Add(events[i]);
+            }
+            if(Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_REQUIRE_NATIVE")=="1" ||
+                Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_VERIFY_DOCUMENT_MATCHES")=="1")
+            {
+                var baseline=CoalesceLocationReplacementsCSharp(events,oldDoc,newDoc);
+                if(result.Count!=baseline.Count ||
+                    result.Where((marker,i)=>!SameReplacementMarker(marker,baseline[i])).Any())
+                {
+                    System.Threading.Interlocked.Increment(ref _replacementCoalesceRustMismatches);
+                    return baseline;
+                }
+            }
+            System.Threading.Interlocked.Increment(ref _replacementCoalesceRustMatches);
+            return result;
+        }
+        catch(Exception ex) when(ex is InvalidDataException or
+            System.Text.Json.JsonException or ArgumentException or OverflowException)
+        {
+            System.Threading.Interlocked.Increment(ref _replacementCoalesceRustMismatches);
+            return CoalesceLocationReplacementsCSharp(events,oldDoc,newDoc);
+        }
+    }
+
+    private static bool SameReplacementMarker(NativeMarker a,NativeMarker b)
+    {
+        return a.Action==b.Action && a.Text==b.Text &&
+            a.CharStart==b.CharStart && a.CharEnd==b.CharEnd &&
+            a.Part==b.Part && a.Message==b.Message &&
+            a.Pair==b.Pair && a.PairOrder==b.PairOrder &&
+            a.ItemOrder==b.ItemOrder && a.HunkOrder==b.HunkOrder &&
+            a.RelativeDoc==b.RelativeDoc && a.TargetDoc==b.TargetDoc &&
+            a.StructuralNumber==b.StructuralNumber &&
+            a.Endpoints.Count==b.Endpoints.Count &&
+            a.Endpoints.Zip(b.Endpoints).All(x=>
+                x.First.TargetDoc==x.Second.TargetDoc &&
+                x.First.CharStart==x.Second.CharStart &&
+                x.First.CharEnd==x.Second.CharEnd);
+    }
+
+    private static List<NativeMarker> CoalesceLocationReplacementsCSharp(
+        List<NativeMarker> events, int oldDoc, int newDoc)
     {
         static MarkerEndpointVm? Endpoint(NativeMarker e, int doc) => e.Endpoints.FirstOrDefault(x => x.TargetDoc == doc);
         static int SpanDistance(int pos, MarkerEndpointVm ep)
@@ -1923,7 +2015,43 @@ public sealed class NativeComparisonEngine : IComparisonEngine
 
     private sealed record EventPiece(int Start, int End, string Text);
 
-    private static List<EventPiece> EventParts(string fullText, int start, int end)
+    private static long _reviewPiecesRustMatches;
+    private static long _reviewPiecesRustMismatches;
+    internal static long ReviewPiecesRustMatches =>
+        System.Threading.Interlocked.Read(ref _reviewPiecesRustMatches);
+    internal static long ReviewPiecesRustMismatches =>
+        System.Threading.Interlocked.Read(ref _reviewPiecesRustMismatches);
+
+    private static List<EventPiece> EventParts(string fullText,int start,int end)
+    {
+        try
+        {
+            var rust=NativeCodeVersionComparer.ReviewDocumentTextPieces(
+                "events",fullText,string.Empty,start,end);
+            if(rust is null) return EventPartsCSharp(fullText,start,end);
+            var answer=rust.Pieces.Select(x=>new EventPiece(x.Start,x.End,x.Text)).ToList();
+            if(Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_REQUIRE_NATIVE")=="1" ||
+                Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_VERIFY_DOCUMENT_MATCHES")=="1")
+            {
+                var reference=EventPartsCSharp(fullText,start,end);
+                if(!answer.SequenceEqual(reference))
+                {
+                    System.Threading.Interlocked.Increment(ref _reviewPiecesRustMismatches);
+                    return reference;
+                }
+            }
+            System.Threading.Interlocked.Increment(ref _reviewPiecesRustMatches);
+            return answer;
+        }
+        catch(Exception ex) when(ex is InvalidDataException or
+            System.Text.Json.JsonException or ArgumentException or OverflowException)
+        {
+            System.Threading.Interlocked.Increment(ref _reviewPiecesRustMismatches);
+            return EventPartsCSharp(fullText,start,end);
+        }
+    }
+
+    private static List<EventPiece> EventPartsCSharp(string fullText, int start, int end)
     {
         // Python V3.4 _v34_event_parts: keep a logical phrase together, splitting only a
         // detached leading sentence delimiter separated from lexical text by whitespace.
@@ -2303,7 +2431,45 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return result;
     }
 
-    private static (string Old, string New, int OldDelta, int NewDelta) TrimSharedHangulPrefix(string oldText, string newText)
+    private static long _hangulTrimRustMatches;
+    private static long _hangulTrimRustMismatches;
+    internal static long HangulTrimRustMatches =>
+        System.Threading.Interlocked.Read(ref _hangulTrimRustMatches);
+    internal static long HangulTrimRustMismatches =>
+        System.Threading.Interlocked.Read(ref _hangulTrimRustMismatches);
+
+    private static (string Old, string New, int OldDelta, int NewDelta)
+        TrimSharedHangulPrefix(string oldText,string newText)
+    {
+        try
+        {
+            var native=NativeCodeVersionComparer.ReviewDocumentTextPieces(
+                "hangul",oldText,newText,0,0);
+            if(native is null) return TrimSharedHangulPrefixCSharp(oldText,newText);
+            var result=(native.Old,native.New,native.OldDelta,native.NewDelta);
+            if(Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_REQUIRE_NATIVE")=="1" ||
+                Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_VERIFY_DOCUMENT_MATCHES")=="1")
+            {
+                var reference=TrimSharedHangulPrefixCSharp(oldText,newText);
+                if(result!=reference)
+                {
+                    System.Threading.Interlocked.Increment(ref _hangulTrimRustMismatches);
+                    return reference;
+                }
+            }
+            System.Threading.Interlocked.Increment(ref _hangulTrimRustMatches);
+            return result;
+        }
+        catch(Exception ex) when(ex is InvalidDataException or
+            System.Text.Json.JsonException or ArgumentException or OverflowException)
+        {
+            System.Threading.Interlocked.Increment(ref _hangulTrimRustMismatches);
+            return TrimSharedHangulPrefixCSharp(oldText,newText);
+        }
+    }
+
+    private static (string Old, string New, int OldDelta, int NewDelta)
+        TrimSharedHangulPrefixCSharp(string oldText, string newText)
     {
         var n = Math.Min(oldText.Length, newText.Length); var i = 0;
         while (i < n && oldText[i] == newText[i]) i++;

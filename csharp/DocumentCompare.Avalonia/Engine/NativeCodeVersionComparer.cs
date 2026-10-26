@@ -152,6 +152,24 @@ public static class NativeCodeVersionComparer
     public sealed record DocumentTableCell(int Index, int Table, int Row, string Key);
     public sealed record DocumentTablePair(int Base, int Other);
     public sealed record DocumentTokenBlock(int A, int B, int Size);
+    public sealed record DocumentReplacementMarker(
+        int Index,string Kind,string Part,string Visible,bool Lexical,
+        int TextLength,int ItemOrder,int OldStart,int OldEnd,int NewStart,int NewEnd);
+    public sealed record DocumentReplacementPair(int Deletion,int Addition);
+    public sealed record DocumentReviewEventPiece(int Start,int End,string Text);
+    public sealed record DocumentReviewPieceResult(
+        List<DocumentReviewEventPiece> Pieces,string Old,string New,
+        int OldDelta,int NewDelta);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int DocumentReviewPieceDelegate(
+        [In] byte[] input,nuint length,out NativeAstResult result);
+
+    private sealed record DocumentReplacementPairsWire(
+        List<DocumentReplacementPair> Pairs);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int DocumentReplacementCoalesceDelegate(
+        [In] byte[] input,nuint length,out NativeAstResult result);
+
     public sealed record DocumentReviewSpan(int Start,int End,int Role);
     public sealed record DocumentReviewSegment(string Text,string Style);
     private sealed record DocumentNormalizedTextWire(string Text);
@@ -292,6 +310,8 @@ public static class NativeCodeVersionComparer
         public readonly DocumentRowAlignmentDelegate? DocumentRowAlignment;
         public readonly DocumentUnitParserDelegate? DocumentUnitParser;
         public readonly DocumentNormalizeDelegate? DocumentNormalize;
+        public readonly DocumentReplacementCoalesceDelegate? DocumentReplacementCoalesce;
+        public readonly DocumentReviewPieceDelegate? DocumentReviewPiece;
 
         public Exports(IntPtr handle)
         {
@@ -409,6 +429,16 @@ public static class NativeCodeVersionComparer
                 DocumentNormalize =
                     Marshal.GetDelegateForFunctionPointer<DocumentNormalizeDelegate>(
                         normalizeExport);
+            if (NativeLibrary.TryGetExport(handle,
+                "dc_coalesce_document_replacements_utf8", out var coalesceExport))
+                DocumentReplacementCoalesce =
+                    Marshal.GetDelegateForFunctionPointer<DocumentReplacementCoalesceDelegate>(
+                        coalesceExport);
+            if (NativeLibrary.TryGetExport(handle,
+                "dc_review_document_text_pieces_utf8", out var reviewPieceExport))
+                DocumentReviewPiece =
+                    Marshal.GetDelegateForFunctionPointer<DocumentReviewPieceDelegate>(
+                        reviewPieceExport);
         }
     }
 
@@ -1207,6 +1237,113 @@ public static class NativeCodeVersionComparer
     }
 
     private sealed record DocumentTokenBlocksWire(List<DocumentTokenBlock> Blocks);
+    /// <summary>
+    /// Rust review event splitting and Hangul-prefix trimming, with exact
+    /// UTF-16 boundaries and input-preserving validation.
+    /// </summary>
+    public static DocumentReviewPieceResult? ReviewDocumentTextPieces(
+        string mode,string text,string other,int start,int end)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        ArgumentNullException.ThrowIfNull(other);
+        var exports=Native.Value;
+        if(exports?.DocumentReviewPiece is null ||
+            mode is not ("events" or "hangul") ||
+            text.Length>131072 || other.Length>131072 ||
+            start<0 || end<0 || start>131072 || end>131072)
+            return null;
+        var bytes=JsonSerializer.SerializeToUtf8Bytes(new{mode,text,other,start,end});
+        if(bytes.Length>1024*1024) return null;
+        var status=exports.DocumentReviewPiece(bytes,(nuint)bytes.Length,out var output);
+        try
+        {
+            if(status is 2 or 3) return null;
+            if(status!=0)
+                throw new InvalidDataException($"Rust 변경 문구 분할 실패: {status}");
+            if(output.Data==IntPtr.Zero || output.Length==0 ||
+                output.Length>1024UL*1024)
+                throw new InvalidDataException("Rust 변경 문구 분할 응답 크기 오류");
+            var raw=new byte[checked((int)output.Length)];
+            Marshal.Copy(output.Data,raw,0,raw.Length);
+            var parsed=JsonSerializer.Deserialize<DocumentReviewPieceResult>(raw,
+                new JsonSerializerOptions{PropertyNameCaseInsensitive=true});
+            if(parsed?.Pieces is null || parsed.Pieces.Count>2 ||
+                parsed.Old is null || parsed.New is null ||
+                parsed.OldDelta<0 || parsed.NewDelta<0 ||
+                parsed.OldDelta>text.Length || parsed.NewDelta>other.Length ||
+                parsed.Pieces.Any(x=>x.Text is null || x.Start<0 ||
+                    x.End<x.Start || x.End>text.Length ||
+                    text.Substring(x.Start,x.End-x.Start)!=x.Text))
+                throw new InvalidDataException("Rust 변경 문구 분할 위치 오류");
+            if(mode=="hangul" &&
+                (parsed.Pieces.Count!=0 ||
+                    text[parsed.OldDelta..]!=parsed.Old ||
+                    other[parsed.NewDelta..]!=parsed.New))
+                throw new InvalidDataException("Rust 한글 접두사 오프셋 오류");
+            return parsed;
+        }
+        finally
+        {
+            exports.AstFree(ref output);
+        }
+    }
+
+
+    /// <summary>
+    /// Exact Rust-first replacement pairing for nearby deletion/insertion
+    /// markers, using managed-compatible text normalization and UTF-16 spans.
+    /// </summary>
+    public static IReadOnlyList<DocumentReplacementPair>? CoalesceDocumentReplacements(
+        IReadOnlyList<DocumentReplacementMarker> markers)
+    {
+        ArgumentNullException.ThrowIfNull(markers);
+        var exports=Native.Value;
+        if(exports?.DocumentReplacementCoalesce is null ||
+            markers.Count>384 || markers.Any(m=>m.Index<0 || m.Index>=4096 ||
+                m.TextLength<0 || m.TextLength>131072 ||
+                m.Kind is not ("delete" or "add") ||
+                m.Part is null || m.Visible is null ||
+                m.Part.Length>512 || m.Visible.Length>131072))
+            return null;
+        var bytes=JsonSerializer.SerializeToUtf8Bytes(new{markers},
+            new JsonSerializerOptions{PropertyNamingPolicy=JsonNamingPolicy.CamelCase});
+        if(bytes.Length>1024*1024) return null;
+        var status=exports.DocumentReplacementCoalesce(bytes,(nuint)bytes.Length,out var output);
+        try
+        {
+            if(status is 2 or 3) return null;
+            if(status!=0)
+                throw new InvalidDataException($"Rust 변경 교체 병합 실패: {status}");
+            if(output.Data==IntPtr.Zero || output.Length==0 ||
+                output.Length>1024UL*1024)
+                throw new InvalidDataException("Rust 변경 교체 병합 응답 크기 오류");
+            var raw=new byte[checked((int)output.Length)];
+            Marshal.Copy(output.Data,raw,0,raw.Length);
+            var parsed=JsonSerializer.Deserialize<DocumentReplacementPairsWire>(raw,
+                new JsonSerializerOptions{PropertyNameCaseInsensitive=true});
+            if(parsed?.Pairs is null ||
+                parsed.Pairs.Count>markers.Count/2)
+                throw new InvalidDataException("Rust 변경 교체 병합 쌍 오류");
+            var dels=markers.Where(x=>x.Kind=="delete").Select(x=>x.Index).ToHashSet();
+            var adds=markers.Where(x=>x.Kind=="add").Select(x=>x.Index).ToHashSet();
+            var usedD=new HashSet<int>();
+            var usedA=new HashSet<int>();
+            var previous=-1;
+            foreach(var pair in parsed.Pairs)
+                if(pair.Deletion<=previous ||
+                    !dels.Contains(pair.Deletion) || !adds.Contains(pair.Addition) ||
+                    !usedD.Add(pair.Deletion) || !usedA.Add(pair.Addition))
+                    throw new InvalidDataException("Rust 변경 교체 병합 중복 인덱스");
+                else previous=pair.Deletion;
+            return parsed.Pairs;
+        }
+        finally
+        {
+            exports.AstFree(ref output);
+        }
+    }
+
+
     /// <summary>
     /// Unicode NFC/NFKC matching, article lineage and visible-text
     /// normalization supplied by Rust on supported UTF-16 strings.

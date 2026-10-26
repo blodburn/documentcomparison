@@ -636,3 +636,38 @@ planning and text change event coalescing, the file state and IO/Word
 document adapter, and the model-building output facade. The optional
 C# compatibility fallbacks remain present and tested for older native
 DLLs and supported-input upper bounds.
+
+## Rust-first final change event coalescing and review phrase spans (2026-10-26)
+
+The remaining review/event workflow gained two production Rust-first
+engines. Both use optional ABI-v1 exports and must pass exact managed
+result parity under DOCUMENTCOMPARE_REQUIRE_NATIVE=1.
+
+- doc_replacement_coalesce.rs receives typed deletion/addition markers
+  with their canonical visible text, UTF-16 lengths, positions, legal
+  item numbers and counterpart endpoint coordinates. Rust owns the
+  candidate distance/tolerance/structure test, score/order, exclusive
+  one-to-one replacement selection and the exact legacy C# short-circuit
+  reservation rule. The C# facade only converts chosen pairs to the
+  already-established NativeMarker.Change models; a zero-mismatch
+  650-case randomized test checks the complete emitted marker stream
+  (actions, text, messages, indices, ordering and endpoints) against
+  CoalesceLocationReplacementsCSharp. It is used by the actual
+  ComparePair and Word review path.
+- doc_review_pieces.rs implements EventParts punctuation/whitespace
+  splitting and TrimSharedHangulPrefix shared lexical prefix clipping.
+  Both preserve .NET UTF-16 text boundaries and return an unsupported
+  status if a supplied span bisects a surrogate pair. All downstream
+  action constructors remain unchanged. 450 seeded piece vectors
+  plus 450 Hangul-prefix cases must select native code without any
+  C# parity fallback.
+- The existing C# normalization and surrogate fallback protects
+  unsupported inputs and remains the parity reference.
+- New entrypoints: dc_coalesce_document_replacements_utf8 and
+  dc_review_document_text_pieces_utf8.
+
+**Not 100% standalone Rust yet:** DiffText marker action planning,
+MapBoundary's semantic anchor projection, global cross-unit change
+classification, and final output model/Word review adaptation still
+execute in C#. Do not delete the managed engine or label the entire
+source file fully migrated solely from these narrower passing tests.
