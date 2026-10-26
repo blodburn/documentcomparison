@@ -2444,6 +2444,28 @@ Check(!Directory.EnumerateFiles(parallelStore.Root,".staging-*",SearchOption.All
       "parallel imports left temporary data in the content store");
 Console.WriteLine("PASS CONCURRENT SNAPSHOT IMPORT");
 
+// Windows content store move/open share recovery must tolerate a brief
+// exclusive writer without masking persistent IO errors or hash corruption.
+if (OperatingSystem.IsWindows())
+{
+    var sharingFile=Path.Combine(dir,"snapshot-sharing-race.cs");
+    File.WriteAllText(sharingFile,"class SnapshotSharing {}");
+    using var writer=new FileStream(sharingFile,FileMode.Open,
+        FileAccess.ReadWrite,FileShare.None);
+    using var startedHash=new ManualResetEventSlim();
+    var deferredHash=Task.Run(()=>{
+        startedHash.Set();
+        return VersionSnapshotStore.HashFile(sharingFile);
+    });
+    Check(startedHash.Wait(TimeSpan.FromSeconds(5)),
+        "Windows snapshot lock contention task did not begin");
+    await Task.Delay(40);
+    writer.Dispose();
+    Check(await deferredHash==VersionSnapshotStore.HashFile(sharingFile),
+        "Windows snapshot hash should retry transient sharing violation");
+    Console.WriteLine("PASS WINDOWS SNAPSHOT SHARING RACE RECOVERY");
+}
+
 // 159. Concurrent saves of the same project commit a complete manifest and sidecar.
 var parallelProjectPath=Path.Combine(dir,"parallel-version.dcv.json");
 var parallelProject=new VersionHistoryProjectVm

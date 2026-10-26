@@ -132,7 +132,26 @@ public sealed class VersionSnapshotStore
 
     public static string HashFile(string path)
     {
-        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-        return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+        // On Windows, concurrent content-addressed imports can publish a
+        // blob through File.Move at the same instant another importer opens
+        // it for verification. This is a transient sharing/rename window,
+        // not evidence of corruption. Keep write-sharing disabled so the
+        // snapshot cannot change while being hashed; permit rename/delete
+        // sharing, and retry only Windows sharing/lock violations.
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                using var stream = new FileStream(path, FileMode.Open,
+                    FileAccess.Read, FileShare.Read | FileShare.Delete);
+                return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+            }
+            catch (IOException ex) when (OperatingSystem.IsWindows() &&
+                attempt < 10 &&
+                (ex.HResult & 0xFFFF) is 32 or 33)
+            {
+                Thread.Sleep(Math.Min(5 << attempt, 80));
+            }
+        }
     }
 }
