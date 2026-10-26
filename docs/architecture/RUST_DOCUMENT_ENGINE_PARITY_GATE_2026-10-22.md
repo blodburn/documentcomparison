@@ -790,3 +790,28 @@ a separate required completion gate.
   present for unexercised document forms. The outer unit-lineage alignment,
   DOCX reader/exporter and UI model are not independently implemented by
   this raw pair endpoint. A full Rust-only engine cannot yet be claimed.
+
+## 2026-10-26 — Production ComparePair C# retirement
+
+The former C# ComparePairCore algorithm has now been deleted from the
+production assembly, together with its feature-based ComparePair fallback,
+BuildGlobalPartIndex, PartLocation, TryUniqueMovedPart, unused structure
+description/review helpers, the PlanDocumentPair managed FFI bridge,
+the obsolete Rust doc_pair_plan.rs module, and its legacy export.
+The C# ComparePair function is now strictly an input/output adapter that
+passes the raw text and DOCX cell metadata to
+dc_compare_document_pair_raw_utf8 and converts returned typed markers to
+UI/Word models. If Rust is unavailable or rejects the input, an explicit
+NotSupportedException is raised without running a C# comparison.
+
+Regression contains a source-structure retirement assertion so reintroducing
+the removed C# core, global part index, or obsolete feature planner fails.
+The actual document corpus comparison runs source-only Rust for 1,528
+pair invocations, with zero fallback and zero unsupported cases in those tests.
+
+Important functional limit: removing the managed fallback does not expand
+Rust's documented length/shape limits. Documents beyond supported input
+budgets or unknown reorder/merge patterns now fail explicitly instead of
+being handled by the former C# core. Thus the C# dependency is removed from
+ComparePair, but full feature completeness for all possible inputs remains
+a separate acceptance criterion.

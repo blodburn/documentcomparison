@@ -169,11 +169,22 @@ if (args.Length==1 && args[0]=="--smoke-native-production")
     // algorithms internally, so the old per-FFI facade counters no longer
     // represent actual native ownership in the production path.
     Check(GetRustCounter("RawPairRustMatches")>0 &&
-        GetRustCounter("RawPairRustMismatches")==0,
-        "production article/part comparison must adopt source-only Rust ComparePair without drift");
+        GetRustCounter("RawPairRustUnsupported")==0,
+        "production article/part comparison must be Rust-only without C# fallback");
     Console.WriteLine("PASS PRODUCTION RUST-FIRST ITEM, LINEAGE, TABLE, TOKEN, SCORE, KOREAN DP, SENTENCE AND REVIEW SEGMENTS");
     return;
 }
+
+// Retirement gate: the production document pair decision is exclusively
+// Rust-owned. Reintroducing any managed ComparePair fallback is a regression.
+Check(typeof(NativeComparisonEngine).GetMethod("ComparePairCore",
+        BindingFlags.NonPublic|BindingFlags.Static) is null &&
+      typeof(NativeComparisonEngine).GetMethod("BuildGlobalPartIndex",
+        BindingFlags.NonPublic|BindingFlags.Static) is null &&
+      typeof(NativeCodeVersionComparer).GetMethod("PlanDocumentPair",
+        BindingFlags.Public|BindingFlags.Static) is null,
+    "C# legacy ComparePair/feature-planner dependency was reintroduced");
+Console.WriteLine("PASS RUST-ONLY COMPAREPAIR RETIREMENT (no managed core/index/feature-plan)");
 
 // 1. Hidden runs: screen and Word export must use the same visible-text policy.
 var ha=Path.Combine(dir,"hiddenA.docx");var hb=Path.Combine(dir,"hiddenB.docx");var ho=Path.Combine(dir,"hiddenOut.docx");
@@ -3947,17 +3958,12 @@ var feeNew=Path.Combine(dir,"fee-27-after.docx");
 Make(feeOld,P("제26조(수수료의 지급)")+P(feeOldBody));
 Make(feeNew,P("제27조(수수료의 지급)")+P(feeNewBody));
 var nativeSentenceProperty=typeof(NativeComparisonEngine).GetProperty(
-    "SentenceReviewRustMatches",BindingFlags.NonPublic|BindingFlags.Static)!;
-var nativeSentenceMismatchProperty=typeof(NativeComparisonEngine).GetProperty(
-    "SentenceReviewRustMismatches",BindingFlags.NonPublic|BindingFlags.Static)!;
+    "RawPairRustMatches",BindingFlags.NonPublic|BindingFlags.Static)!;
 long SentenceNativeAccepted()=>(long)nativeSentenceProperty.GetValue(null)!;
-long SentenceNativeRejected()=>(long)nativeSentenceMismatchProperty.GetValue(null)!;
 var beforeFeeRustSentence=SentenceNativeAccepted();
-var beforeFeeRustMismatch=SentenceNativeRejected();
 var feeResult=await eng.CompareAsync(new[]{feeOld,feeNew},0,"legal",true,true);
-Check(SentenceNativeAccepted()>beforeFeeRustSentence &&
-      SentenceNativeRejected()==beforeFeeRustMismatch,
-    "v5.21.9 fee article sentence diff must execute Rust with full C# parity");
+Check(SentenceNativeAccepted()>beforeFeeRustSentence,
+    "v5.21.9 fee article sentence diff must execute Rust-owned ComparePair");
 var feeRow=feeResult.Rows.Single(r=>r.Members[0]?.Number=="26");
 var feeBodyMarkers=feeRow.Markers.Where(m=>m.Part=="body").ToList();
 var deletedFeeSentence="회원은 언제든지 서비스를 통하여 제공되는 상품과 용역의 가격을 수정할 수 있습니다.";
@@ -5058,25 +5064,13 @@ if (NativeCodeVersionComparer.IsAvailable)
         "Rust complete generic DiffText changed original event markers");
     Console.WriteLine($"PASS RUST FULL GENERIC DIFFTEXT EVENTS 350/350");
 }
-var pairPlanNativeUses=(long)typeof(NativeComparisonEngine).GetProperty(
-    "PairPlanRustMatches",BindingFlags.Static|BindingFlags.NonPublic)!
-    .GetValue(null)!;
-var pairPlanNativeDrift=(long)typeof(NativeComparisonEngine).GetProperty(
-    "PairPlanRustMismatches",BindingFlags.Static|BindingFlags.NonPublic)!
-    .GetValue(null)!;
-Console.WriteLine($"RUST PAIR PLAN REVIEW source-complete adopted={pairPlanNativeUses} drift={pairPlanNativeDrift}");
-Check(pairPlanNativeDrift==0,
-    "legacy structural plan fallback unexpectedly diverged");
 var rawPairNative=(long)typeof(NativeComparisonEngine).GetProperty(
     "RawPairRustMatches",BindingFlags.NonPublic|BindingFlags.Static)!
     .GetValue(null)!;
 var rawPairUnsupported=(long)typeof(NativeComparisonEngine).GetProperty(
     "RawPairRustUnsupported",BindingFlags.NonPublic|BindingFlags.Static)!
     .GetValue(null)!;
-var rawPairDrift=(long)typeof(NativeComparisonEngine).GetProperty(
-    "RawPairRustMismatches",BindingFlags.NonPublic|BindingFlags.Static)!
-    .GetValue(null)!;
-Console.WriteLine($"RUST RAW COMPAREPAIR owned={rawPairNative} unsupported={rawPairUnsupported} parityDrift={rawPairDrift}");
-Check(rawPairNative>0 && rawPairUnsupported==0 && rawPairDrift==0,
-    "source-only Rust ComparePair must handle every non-table regression pair with zero fallback and drift");
+Console.WriteLine($"RUST RAW COMPAREPAIR owned={rawPairNative} unsupported={rawPairUnsupported}");
+Check(rawPairNative>0 && rawPairUnsupported==0,
+    "Rust-only ComparePair must handle every regression pair without C# fallback");
 Console.WriteLine("ALL REGRESSIONS PASSED");

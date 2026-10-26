@@ -140,17 +140,12 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             baseIndex = Math.Clamp(baseIndex, 0, paths.Count - 1);
             var aligned = BuildRows(docs, baseIndex, linked.Token);
             var tableMoves = FindTableMovement(aligned, paths.Count, baseIndex, includeAC);
-            // The source-only Rust ComparePair consumes no managed global
-            // item index. Build this only for explicit compatibility fallback
-            // or managed parity verification.
-            var globalParts = new Lazy<List<Dictionary<string,List<PartLocation>>>>(
-                ()=>BuildGlobalPartIndex(docs));
             progress?.Report(45);
             var rows = new List<ComparisonRowVm>(aligned.Count);
             for (var i = 0; i < aligned.Count; i++)
             {
                 linked.Token.ThrowIfCancellationRequested();
-                rows.Add(BuildRow(i + 1, aligned[i], paths.Count, baseIndex, includeAC, includePunctuation, globalParts, tableMoves));
+                rows.Add(BuildRow(i + 1, aligned[i], paths.Count, baseIndex, includeAC, includePunctuation, tableMoves));
                 if ((i & 7) == 0) progress?.Report(45 + (int)(50.0 * (i + 1) / Math.Max(1, aligned.Count)));
             }
             ApplySectionHeaders(rows, paths.Count);
@@ -1598,36 +1593,6 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return Math.Min(1.0, score);
     }
 
-    private sealed record PartLocation(int UnitIndex, string Label, string Header);
-
-    private static List<Dictionary<string, List<PartLocation>>> BuildGlobalPartIndex(IReadOnlyList<List<NativeUnit>> docs)
-    {
-        var result = new List<Dictionary<string, List<PartLocation>>>(docs.Count);
-        foreach (var doc in docs)
-        {
-            var index = new Dictionary<string, List<PartLocation>>(StringComparer.Ordinal);
-            foreach (var unit in doc)
-            foreach (var part in ParseParts(unit.Body))
-            {
-                var key = LineageNormalize(part.Core);
-                if (key.Length < 4) continue;
-                if (!index.TryGetValue(key, out var list)) index[key] = list = new List<PartLocation>();
-                list.Add(new PartLocation(unit.Index, part.Label, unit.HeaderOrBody));
-            }
-            result.Add(index);
-        }
-        return result;
-    }
-
-    private static bool TryUniqueMovedPart(Dictionary<string, List<PartLocation>> index, string key, int currentUnitIndex, out PartLocation location)
-    {
-        location = null!;
-        if (key.Length < 4 || !index.TryGetValue(key, out var list) || list.Count != 1) return false;
-        if (list[0].UnitIndex == currentUnitIndex) return false;
-        location = list[0];
-        return true;
-    }
-
     private static Dictionary<(int OldDoc, int NewDoc, int OldIndex, int NewIndex), string> FindTableMovement(
         IReadOnlyList<NativeUnit?[]> rows, int docCount, int baseIndex, bool includeAC)
     {
@@ -1674,7 +1639,6 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     }
 
     private static ComparisonRowVm BuildRow(int id, NativeUnit?[] members, int docCount, int baseIndex, bool includeAC, bool includePunctuation,
-        Lazy<List<Dictionary<string,List<PartLocation>>>> globalParts,
         IReadOnlyDictionary<(int OldDoc, int NewDoc, int OldIndex, int NewIndex), string> tableMoves)
     {
         var nativeMarkers = new List<NativeMarker>();
@@ -1713,7 +1677,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             }
             if (tableMoves.TryGetValue((oldDoc, newDoc, old.Index, revised.Index), out var movement))
                 structural.Add($"{pair} · {movement}: {old.Header} → {revised.Header}");
-            nativeMarkers.AddRange(ComparePair(old, revised, oldDoc, newDoc, pair, order, includePunctuation, structural, globalParts));
+            nativeMarkers.AddRange(ComparePair(old, revised, oldDoc, newDoc, pair, order, includePunctuation, structural));
         }
         nativeMarkers.Sort(NativeMarkerComparer.Instance);
         for (var i = 0; i < nativeMarkers.Count; i++) nativeMarkers[i].Num = i + 1;
@@ -1738,18 +1702,14 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         };
     }
 
-    // The raw Rust ComparePair call precedes *all* C# ParseParts,
-    // MatchParts, score, hierarchy, structural event and DiffText calls.
-    // Only raw unit text/metadata cross the native boundary.
+    // Production ComparePair is Rust-owned. C# only maps the typed native
+    // response into the existing UI/Word result representation.
     private static long _rawPairRustMatches;
     private static long _rawPairRustUnsupported;
-    private static long _rawPairRustMismatches;
     internal static long RawPairRustMatches =>
         System.Threading.Interlocked.Read(ref _rawPairRustMatches);
     internal static long RawPairRustUnsupported =>
         System.Threading.Interlocked.Read(ref _rawPairRustUnsupported);
-    internal static long RawPairRustMismatches =>
-        System.Threading.Interlocked.Read(ref _rawPairRustMismatches);
 
     private static List<string> ComposeRawStructuralMessages(
         List<string> existing,List<string> fresh)
@@ -1761,386 +1721,60 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return existing.Concat(fresh).ToList();
     }
 
-    private static List<NativeMarker>? ComparePairRawRust(
-        NativeUnit old,NativeUnit revised,int oldDoc,int newDoc,
-        string pair,int pairOrder,bool includePunctuation,
-        List<string> structural,
-        Lazy<List<Dictionary<string,List<PartLocation>>>> globalParts)
-    {
-        try
-        {
-            static NativeCodeVersionComparer.RawCompareCell? Cell(DocxComparisonCell? c)=>
-                c is null ? null : new(c.Span,c.VerticalMerge,c.ParagraphCount);
-            var source=new NativeCodeVersionComparer.RawCompareUnit(
-                old.Index,old.Kind,old.Number,old.Title,old.Header,old.Body,
-                Cell(old.TableCell));
-            var target=new NativeCodeVersionComparer.RawCompareUnit(
-                revised.Index,revised.Kind,revised.Number,revised.Title,
-                revised.Header,revised.Body,Cell(revised.TableCell));
-            var result=NativeCodeVersionComparer.CompareRawDocumentPair(
-                source,target,includePunctuation);
-            if(result is null)
-            {
-                System.Threading.Interlocked.Increment(ref _rawPairRustUnsupported);
-                return null;
-            }
-            var markers=new List<NativeMarker>(result.Markers.Count);
-            foreach(var m in result.Markers)
-            {
-                var r=m.Kind switch
-                {
-                    "number"=>NativeMarker.ArticleNumberChange(pair,pairOrder,
-                        oldDoc,newDoc,m.OldText,m.NewText,
-                        m.OldStart,m.OldEnd,m.NewStart,m.NewEnd),
-                    "struct"=>NativeMarker.StructuralChange(pair,pairOrder,
-                        oldDoc,newDoc,m.OldText,m.NewText,
-                        m.OldStart,m.OldEnd,m.NewStart,m.NewEnd,
-                        m.Part,m.ItemOrder,m.HunkOrder),
-                    "change"=>NativeMarker.Change(pair,pairOrder,oldDoc,newDoc,
-                        m.OldText,m.NewText,m.OldStart,m.OldEnd,
-                        m.NewStart,m.NewEnd,m.Part,m.ItemOrder,m.HunkOrder),
-                    "delete"=>NativeMarker.Delete(pair,pairOrder,oldDoc,newDoc,
-                        m.OldText,m.OldStart,m.OldEnd,m.NewStart,
-                        m.Part,m.ItemOrder,m.HunkOrder),
-                    "insert"=>NativeMarker.Insert(pair,pairOrder,oldDoc,newDoc,
-                        m.NewText,m.OldStart,m.NewStart,m.NewEnd,
-                        m.Part,m.ItemOrder,m.HunkOrder),
-                    _=>throw new InvalidDataException("Unexpected Rust raw marker")
-                };
-                markers.Add(r);
-            }
-            var newMessages=result.Structural.Select(m=>$"{pair} · {m}").ToList();
-            if(Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_REQUIRE_NATIVE")=="1" ||
-                Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_VERIFY_DOCUMENT_MATCHES")=="1")
-            {
-                var referenceMessages=new List<string>(structural);
-                var reference=ComparePairCore(old,revised,oldDoc,newDoc,
-                    pair,pairOrder,includePunctuation,referenceMessages,
-                    globalParts.Value,false,out _);
-                if(markers.Count!=reference.Count ||
-                    markers.Where((m,i)=>!SameReplacementMarker(m,reference[i])).Any() ||
-                    !ComposeRawStructuralMessages(structural,newMessages)
-                        .SequenceEqual(referenceMessages))
-                {
-                    System.Threading.Interlocked.Increment(ref _rawPairRustMismatches);
-                    return null;
-                }
-            }
-            var merged=ComposeRawStructuralMessages(structural,newMessages);
-            structural.Clear();
-            structural.AddRange(merged);
-            System.Threading.Interlocked.Increment(ref _rawPairRustMatches);
-            return markers;
-        }
-        catch(Exception ex) when(ex is InvalidDataException or
-            System.Text.Json.JsonException or ArgumentException or OverflowException)
-        {
-            System.Threading.Interlocked.Increment(ref _rawPairRustMismatches);
-            return null;
-        }
-    }
-
-    private static long _pairPlanRustMatches;
-    private static long _pairPlanRustMismatches;
-    internal static long PairPlanRustMatches =>
-        System.Threading.Interlocked.Read(ref _pairPlanRustMatches);
-    internal static long PairPlanRustMismatches =>
-        System.Threading.Interlocked.Read(ref _pairPlanRustMismatches);
-
     private static List<NativeMarker> ComparePair(
         NativeUnit old,NativeUnit revised,int oldDoc,int newDoc,
-        string pair,int pairOrder,bool includePunctuation,List<string> structural,
-        Lazy<List<Dictionary<string,List<PartLocation>>>> globalParts)
+        string pair,int pairOrder,bool includePunctuation,
+        List<string> structural)
     {
-        var sourceOwned=ComparePairRawRust(old,revised,oldDoc,newDoc,pair,
-            pairOrder,includePunctuation,structural,globalParts);
-        if(sourceOwned is not null)return sourceOwned;
-        try
+        static NativeCodeVersionComparer.RawCompareCell? Cell(DocxComparisonCell? c)=>
+            c is null ? null : new(c.Span,c.VerticalMerge,c.ParagraphCount);
+        var source=new NativeCodeVersionComparer.RawCompareUnit(
+            old.Index,old.Kind,old.Number,old.Title,old.Header,old.Body,
+            Cell(old.TableCell));
+        var target=new NativeCodeVersionComparer.RawCompareUnit(
+            revised.Index,revised.Kind,revised.Number,revised.Title,
+            revised.Header,revised.Body,Cell(revised.TableCell));
+        var result=NativeCodeVersionComparer.CompareRawDocumentPair(
+            source,target,includePunctuation);
+        if(result is null)
         {
-            var nativeMessages=new List<string>(structural);
-            var actual=ComparePairCore(old,revised,oldDoc,newDoc,pair,pairOrder,
-                includePunctuation,nativeMessages,globalParts.Value,true,out var nativeUsed);
-            if(!nativeUsed)
-                return ComparePairCore(old,revised,oldDoc,newDoc,pair,pairOrder,
-                    includePunctuation,structural,globalParts.Value,false,out _);
-            if(Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_REQUIRE_NATIVE")=="1" ||
-                Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_VERIFY_DOCUMENT_MATCHES")=="1")
+            System.Threading.Interlocked.Increment(ref _rawPairRustUnsupported);
+            throw new NotSupportedException(
+                "Rust ComparePair 처리 불가: native DLL 없음 또는 비교 입력 지원 범위 초과. " +
+                $"종류={old.Kind}/{revised.Kind}, 본문 길이={old.Body.Length}/{revised.Body.Length}. " +
+                "C# 비교 엔진으로 대체하지 않습니다.");
+        }
+        var markers=new List<NativeMarker>(result.Markers.Count);
+        foreach(var m in result.Markers)
+        {
+            var converted=m.Kind switch
             {
-                var referenceMessages=new List<string>(structural);
-                var reference=ComparePairCore(old,revised,oldDoc,newDoc,pair,
-                    pairOrder,includePunctuation,referenceMessages,globalParts.Value,false,out _);
-                if(actual.Count!=reference.Count ||
-                    actual.Where((m,i)=>!SameReplacementMarker(m,reference[i])).Any() ||
-                    !nativeMessages.SequenceEqual(referenceMessages))
-                {
-                    System.Threading.Interlocked.Increment(ref _pairPlanRustMismatches);
-                    structural.Clear();
-                    structural.AddRange(referenceMessages);
-                    return reference;
-                }
-            }
-            structural.Clear();
-            structural.AddRange(nativeMessages);
-            System.Threading.Interlocked.Increment(ref _pairPlanRustMatches);
-            return actual;
+                "number"=>NativeMarker.ArticleNumberChange(pair,pairOrder,
+                    oldDoc,newDoc,m.OldText,m.NewText,
+                    m.OldStart,m.OldEnd,m.NewStart,m.NewEnd),
+                "struct"=>NativeMarker.StructuralChange(pair,pairOrder,
+                    oldDoc,newDoc,m.OldText,m.NewText,
+                    m.OldStart,m.OldEnd,m.NewStart,m.NewEnd,
+                    m.Part,m.ItemOrder,m.HunkOrder),
+                "change"=>NativeMarker.Change(pair,pairOrder,oldDoc,newDoc,
+                    m.OldText,m.NewText,m.OldStart,m.OldEnd,
+                    m.NewStart,m.NewEnd,m.Part,m.ItemOrder,m.HunkOrder),
+                "delete"=>NativeMarker.Delete(pair,pairOrder,oldDoc,newDoc,
+                    m.OldText,m.OldStart,m.OldEnd,m.NewStart,
+                    m.Part,m.ItemOrder,m.HunkOrder),
+                "insert"=>NativeMarker.Insert(pair,pairOrder,oldDoc,newDoc,
+                    m.NewText,m.OldStart,m.NewStart,m.NewEnd,
+                    m.Part,m.ItemOrder,m.HunkOrder),
+                _=>throw new InvalidDataException("Rust ComparePair 응답 형식 오류")
+            };
+            markers.Add(converted);
         }
-        catch(Exception ex) when(ex is InvalidDataException or
-            System.Text.Json.JsonException or ArgumentException or OverflowException)
-        {
-            System.Threading.Interlocked.Increment(ref _pairPlanRustMismatches);
-            return ComparePairCore(old,revised,oldDoc,newDoc,pair,pairOrder,
-                includePunctuation,structural,globalParts.Value,false,out _);
-        }
-    }
-
-    private static List<NativeMarker> ComparePairCore(
-        NativeUnit old, NativeUnit revised, int oldDoc, int newDoc, string pair, int pairOrder,
-        bool includePunctuation, List<string> structural,
-        IReadOnlyList<Dictionary<string, List<PartLocation>>> globalParts,
-        bool useRustPlan,out bool nativeUsed)
-    {
-        nativeUsed=false;
-        if (old.TableCell is { } oldCell && revised.TableCell is { } newCell)
-        {
-            if (oldCell.Span != newCell.Span || oldCell.VerticalMerge != newCell.VerticalMerge)
-                structural.Add($"{pair} · 표 셀 병합 변경: {old.Header} → {revised.Header}");
-            if (oldCell.ParagraphCount != newCell.ParagraphCount)
-                structural.Add($"{pair} · 셀 내부 문단 수 변경: {oldCell.ParagraphCount} → {newCell.ParagraphCount}");
-            return DiffText(old.Body, revised.Body, old.Header.Length + 1, revised.Header.Length + 1,
-                oldDoc, newDoc, pair, pairOrder, "body", includePunctuation, 0);
-        }
-        var result = new List<NativeMarker>();
-        var articleMoved = false; var titleChanged = false; var bodyChanged = false; var structureChanged = false;
-        var oldParts=ParseParts(old.Body);var newParts=ParseParts(revised.Body);
-        var matched=MatchParts(oldParts,newParts);
-        var usedOld=matched.Select(m=>m.Old).ToHashSet();
-        var usedNew=matched.Select(m=>m.New).ToHashSet();
-        var oldNodes=BuildPartHierarchy(oldParts);
-        var newNodes=BuildPartHierarchy(newParts);
-        var bodyOffsetOld=old.Header.Length+1;
-        var bodyOffsetNew=revised.Header.Length+1;
-        var structuralMessages=useRustPlan ? new List<string>() :
-            DescribePartStructure(oldParts,newParts,oldNodes,newNodes);
-        NativeCodeVersionComparer.DocumentPairPlanResult? plan=null;
-        if(useRustPlan)
-        {
-            var unmatchedOld=Enumerable.Range(0,oldParts.Count)
-                .Where(i=>!usedOld.Contains(i)).Select(i=>
-                {
-                    var part=oldParts[i];
-                    var present=!string.IsNullOrWhiteSpace(part.Core);
-                    PartLocation target=null!;
-                    var moved=present&&TryUniqueMovedPart(
-                        globalParts[newDoc],LineageNormalize(part.Core),
-                        revised.Index,out target);
-                    return new NativeCodeVersionComparer.DocumentUnmatchedPart(
-                        i,present,moved,$"{old.HeaderOrBody} {part.Label}",
-                        moved ? $"{target.Header} {target.Label}" : string.Empty);
-                }).ToArray();
-            var unmatchedNew=Enumerable.Range(0,newParts.Count)
-                .Where(i=>!usedNew.Contains(i)).Select(i=>
-                {
-                    var part=newParts[i];
-                    var present=!string.IsNullOrWhiteSpace(part.Core);
-                    PartLocation source=null!;
-                    var moved=present&&TryUniqueMovedPart(
-                        globalParts[oldDoc],LineageNormalize(part.Core),
-                        old.Index,out source);
-                    return new NativeCodeVersionComparer.DocumentUnmatchedPart(
-                        i,present,moved,
-                        moved ? $"{source.Header} {source.Label}" : string.Empty,
-                        $"{revised.HeaderOrBody} {part.Label}");
-                }).ToArray();
-            var features=matched.OrderBy(x=>x.Old).Select(m=>
-            {
-                var ap=oldParts[m.Old];var bp=newParts[m.New];
-                var same=SemanticEqual(ap.Core,bp.Core);
-                return new NativeCodeVersionComparer.DocumentPairPlanItem(
-                    m.Old,m.New,ap.Label,bp.Label,
-                    oldNodes[m.Old].Level,newNodes[m.New].Level,
-                    PartOrdinalAt(oldParts,m.Old),PartOrdinalAt(newParts,m.New),
-                    ParentsEquivalent(m.Old,m.New,oldNodes,newNodes,matched),
-                    same,same || HasStableEdgeContext(ap.Core,bp.Core),
-                    same || HasSubstantialSharedSentence(ap.Core,bp.Core),
-                    same || HasReviewAnchors(ap.Core,bp.Core),m.Score);
-            }).ToArray();
-            plan=NativeCodeVersionComparer.PlanDocumentPair(
-                pair,old.Kind,revised.Kind,old.Number,revised.Number,
-                old.Title,revised.Title,old.Header,revised.Header,
-                IsLegalArticle(old)&&IsLegalArticle(revised),
-                SemanticEqual(CleanArticleTitle(old.Title),
-                    CleanArticleTitle(revised.Title)),
-                HeaderEquivalent(old,revised),
-                SemanticEqual(old.Header,revised.Header),
-                oldParts.Select((p,i)=>new NativeCodeVersionComparer.DocumentStructuralPart(
-                    p.Label,oldNodes[i].Level,oldNodes[i].Family,
-                    p.Start,p.End)).ToArray(),
-                newParts.Select((p,i)=>new NativeCodeVersionComparer.DocumentStructuralPart(
-                    p.Label,newNodes[i].Level,newNodes[i].Family,
-                    p.Start,p.End)).ToArray(),
-                oldParts.Count,newParts.Count,features,
-                unmatchedOld,unmatchedNew);
-            if(plan is null)return ComparePairCore(old,revised,oldDoc,newDoc,
-                pair,pairOrder,includePunctuation,structural,globalParts,
-                false,out nativeUsed);
-            structuralMessages=plan.StructureMessages;
-            nativeUsed=true;
-        }
-        if (IsLegalArticle(old) && IsLegalArticle(revised))
-        {
-            if (plan?.ArticleMoved ??
-                !string.Equals(old.Number,revised.Number,StringComparison.OrdinalIgnoreCase))
-            {
-                articleMoved = true;
-                var os = HeaderNumberSpan(old); var ns = HeaderNumberSpan(revised);
-                if (os is not null && ns is not null)
-                    result.Add(NativeMarker.ArticleNumberChange(pair, pairOrder, oldDoc, newDoc,
-                        old.Number, revised.Number, os.Value.Start, os.Value.End, ns.Value.Start, ns.Value.End));
-                structural.Add(plan?.NumberMessage ??
-                    $"{pair} · 조 이동/재번호화: {old.Header} → {revised.Header}");
-            }
-            if (plan?.TitleChanged ??
-                !SemanticEqual(CleanArticleTitle(old.Title),
-                    CleanArticleTitle(revised.Title)))
-            {
-                titleChanged = true;
-                var ot = HeaderTitleSpan(old); var nt = HeaderTitleSpan(revised);
-                result.AddRange(DiffText(old.Title, revised.Title, ot.Start, nt.Start,
-                    oldDoc, newDoc, pair, pairOrder, "header", includePunctuation, -1));
-                structural.Add(plan?.TitleMessage ??
-                    $"{pair} · 조 제목 변경: {old.Title} → {revised.Title}");
-            }
-        }
-        else if (plan?.TitleChanged ??
-            (!HeaderEquivalent(old,revised) &&
-            !SemanticEqual(old.Header,revised.Header) &&
-            (old.Header.Length>0 || revised.Header.Length>0)))
-        {
-            titleChanged = true;
-            result.AddRange(DiffText(old.Header, revised.Header, 0, 0, oldDoc, newDoc, pair, pairOrder, "header", includePunctuation, -1));
-        }
-
-        foreach(var msg in structuralMessages)
-        { structureChanged=true;structural.Add($"{pair} · {msg}"); }
-
-        var matchDecisionIndex=0;
-        foreach (var m in matched.OrderBy(x => x.Old))
-        {
-            var ap = oldParts[m.Old]; var bp = newParts[m.New];
-            var decision=plan is null ? null : plan.Decisions[matchDecisionIndex++];
-
-            var parentMoved = !ParentsEquivalent(m.Old, m.New, oldNodes, newNodes, matched);
-            var labelsDiffer = decision?.LabelChanged ??
-                (IsStructuralLabel(ap.Label) && IsStructuralLabel(bp.Label) &&
-                    ap.Label!=bp.Label);
-            var sameOrdinal = labelsDiffer && PartOrdinalAt(oldParts, m.Old) is int ao && PartOrdinalAt(newParts, m.New) is int bo && ao == bo;
-            var levelChanged = oldNodes[m.Old].Level != newNodes[m.New].Level;
-            var notationChanged = labelsDiffer && sameOrdinal;
-            var labelMoved = labelsDiffer && !sameOrdinal;
-            var itemMoved = parentMoved || labelMoved;
-            var contentChanged=decision?.ContentChanged ??
-                !SemanticEqual(ap.Core,bp.Core);
-            if (labelsDiffer)
-                result.Add(NativeMarker.StructuralChange(pair, pairOrder, oldDoc, newDoc, ap.Label, bp.Label,
-                    bodyOffsetOld + ap.Start, bodyOffsetOld + ap.Start + ap.Label.Length,
-                    bodyOffsetNew + bp.Start, bodyOffsetNew + bp.Start + bp.Label.Length, "body", m.Old, -2));
-            if(decision is not null)
-            {
-                if(decision.Message.Length>0)structural.Add(decision.Message);
-            }
-            else if (notationChanged || levelChanged)
-                structural.Add($"{pair} · 항/호 표기{(levelChanged ? "/레벨" : string.Empty)} 변경: {ap.Label} → {bp.Label}");
-            else if (itemMoved)
-                structural.Add($"{pair} · {(contentChanged ? "항/호 이동+변경" : "항/호 이동")}: {ap.Label} → {bp.Label}");
-            if (!contentChanged) continue;
-            bodyChanged = true;
-            // A low overall similarity score must not swallow substantial
-            // unchanged legal text when a sentence is deleted and another
-            // is appended. In that case keep the surviving sentence as a
-            // review anchor and emit only actual deletion/insertion spans.
-            var wholePlainRewrite = decision is null &&
-                ap.Label == "본문" && bp.Label == "본문" &&
-                oldParts.Count == 1 && newParts.Count == 1 && m.Score < .72 &&
-                !HasStableEdgeContext(ap.Core, bp.Core) &&
-                !HasSubstantialSharedSentence(ap.Core, bp.Core);
-            var wholeItemRewrite = decision is null &&
-                IsStructuralLabel(ap.Label) && IsStructuralLabel(bp.Label) &&
-                m.Score <= .56 && !HasReviewAnchors(ap.Core, bp.Core) &&
-                !HasStableEdgeContext(ap.Core, bp.Core);
-            if (decision?.Rewrite ?? (wholePlainRewrite || wholeItemRewrite))
-                result.Add(NativeMarker.Change(pair, pairOrder, oldDoc, newDoc, ap.Core.Trim(), bp.Core.Trim(),
-                    bodyOffsetOld + ap.CoreStart, bodyOffsetOld + ap.CoreEnd,
-                    bodyOffsetNew + bp.CoreStart, bodyOffsetNew + bp.CoreEnd, "body", m.Old, 0));
-            else
-                result.AddRange(DiffText(ap.Core, bp.Core, bodyOffsetOld + ap.CoreStart, bodyOffsetNew + bp.CoreStart,
-                    oldDoc, newDoc, pair, pairOrder, "body", includePunctuation, m.Old));
-        }
-
-        foreach (var i in Enumerable.Range(0, oldParts.Count).Where(i => !usedOld.Contains(i)))
-        {
-            var part = oldParts[i]; if (string.IsNullOrWhiteSpace(part.Core)) continue;
-            if(plan is not null)
-            {
-                var chosen=plan.UnmatchedOld.First(x=>x.Index==i);
-                if(chosen.Action=="skip")continue;
-                if(chosen.Action=="move"){structural.Add(chosen.Message);continue;}
-            }
-            else
-            {
-                var key=LineageNormalize(part.Core);
-                if(TryUniqueMovedPart(globalParts[newDoc],key,revised.Index,out var to))
-                {structural.Add($"{pair} · 항/호 이동: {old.HeaderOrBody} {part.Label} → {to.Header} {to.Label}");continue;}
-            }
-            bodyChanged = true;
-            var newAnchor=bodyOffsetNew+(plan is null ?
-                StructuralGapAnchor(oldParts,newParts,matched,i,sourceIsNew:false) :
-                plan.UnmatchedOld.First(x=>x.Index==i).GapAnchor);
-            result.Add(NativeMarker.Delete(pair, pairOrder, oldDoc, newDoc, part.Core.Trim(),
-                bodyOffsetOld + part.Start, bodyOffsetOld + part.CoreEnd, newAnchor, "body", i));
-        }
-        foreach (var j in Enumerable.Range(0, newParts.Count).Where(j => !usedNew.Contains(j)))
-        {
-            var part = newParts[j]; if (string.IsNullOrWhiteSpace(part.Core)) continue;
-            if(plan is not null)
-            {
-                var chosen=plan.UnmatchedNew.First(x=>x.Index==j);
-                if(chosen.Action=="skip")continue;
-                if(chosen.Action=="move"){structural.Add(chosen.Message);continue;}
-            }
-            else
-            {
-                var key=LineageNormalize(part.Core);
-                if(TryUniqueMovedPart(globalParts[oldDoc],key,old.Index,out var from))
-                {structural.Add($"{pair} · 항/호 이동: {from.Header} {from.Label} → {revised.HeaderOrBody} {part.Label}");continue;}
-            }
-            bodyChanged = true;
-            var oldAnchor=bodyOffsetOld+(plan is null ?
-                StructuralGapAnchor(newParts,oldParts,matched,j,sourceIsNew:true) :
-                plan.UnmatchedNew.First(x=>x.Index==j).GapAnchor);
-            result.Add(NativeMarker.Insert(pair, pairOrder, oldDoc, newDoc, part.Core.Trim(), oldAnchor,
-                bodyOffsetNew + part.Start, bodyOffsetNew + part.CoreEnd, "body", j));
-        }
-        result = CoalesceLocationReplacements(result, oldDoc, newDoc);
-        if(plan is not null)
-        {
-            if(plan.Status.Length>0)structural.Insert(0,plan.Status);
-        }
-        else
-        {
-        var substantive = titleChanged || bodyChanged || structureChanged;
-        if (articleMoved) structural.Insert(0, $"{pair} · 상태: {(substantive ? "조 이동+변경" : "조 이동")}");
-        else if (IsLegalArticle(old) && IsLegalArticle(revised))
-        {
-            if (structureChanged) structural.Insert(0, $"{pair} · 상태: 조 구조변경");
-            else if (titleChanged || bodyChanged) structural.Insert(0, $"{pair} · 상태: 조 변경");
-        }
-        else if (titleChanged || bodyChanged || structureChanged)
-        {
-            var unitLabel = old.Kind == "section" || revised.Kind == "section" ? "장/절" : "본문 블록";
-            structural.Insert(0, $"{pair} · 상태: {unitLabel} 변경");
-        }
-        }
-        return result;
+        var newMessages=result.Structural.Select(m=>$"{pair} · {m}").ToList();
+        var combined=ComposeRawStructuralMessages(structural,newMessages);
+        structural.Clear();
+        structural.AddRange(combined);
+        System.Threading.Interlocked.Increment(ref _rawPairRustMatches);
+        return markers;
     }
 
     private static long _replacementCoalesceRustMatches;
@@ -4088,39 +3722,6 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         var lb=nb.Where(x=>x.Level==xb.Level&&x.Parent==xb.Parent&&x.Family==xb.Family).Select(x=>b[x.Index].Label).ToList();
         return la.Count==lb.Count&&la.SequenceEqual(lb,StringComparer.Ordinal);
     }
-    private static string LabelSummary(IEnumerable<NativePart> parts)
-    { var labels=parts.Where(p=>IsStructuralLabel(p.Label)).Select(p=>p.Label).ToList(); if(labels.Count==0)return "본문"; if(labels.Count<=5)return string.Join(", ",labels); return $"{labels[0]}~{labels[^1]} ({labels.Count}개)"; }
-    private static List<string> DescribePartStructure(IReadOnlyList<NativePart> oldParts,IReadOnlyList<NativePart> newParts,IReadOnlyList<PartNode> oldNodes,IReadOnlyList<PartNode> newNodes)
-    {
-        var messages=new List<string>();var oa=oldParts.Where(p=>IsStructuralLabel(p.Label)).ToList();var nb=newParts.Where(p=>IsStructuralLabel(p.Label)).ToList();
-        if(oa.Count>=2&&nb.Count==0)messages.Add($"항/호 구조 변경: {LabelSummary(oa)} 열거 구조가 본문으로 통합");
-        else if(nb.Count>=2&&oa.Count==0)messages.Add($"항/호 구조 변경: 본문이 {LabelSummary(nb)} 열거 구조로 분할");
-        else if(oa.Count>0&&nb.Count>0)
-        {
-            var od=oldNodes.Count==0?0:oldNodes.Max(x=>x.Level);var nd=newNodes.Count==0?0:newNodes.Max(x=>x.Level);
-            var of=oldNodes.Where(x=>x.Level>0).Select(x=>x.Family).ToHashSet();var nf=newNodes.Where(x=>x.Level>0).Select(x=>x.Family).ToHashSet();
-            if(od!=nd||!of.SetEquals(nf))messages.Add($"항/호 구조 변경: {LabelSummary(oa)} → {LabelSummary(nb)}");
-        }
-        return messages;
-    }
-
-    private static bool HasReviewAnchors(string a, string b)
-    {
-        var aw = ReviewWordToken.Matches(a ?? string.Empty)
-            .Select(m => TokenKey(m.Value)).Where(x => x.Length > 0).ToList();
-        var bw = ReviewWordToken.Matches(b ?? string.Empty)
-            .Select(m => TokenKey(m.Value)).Where(x => x.Length > 0).ToList();
-        var shared = aw.Intersect(bw).Count(x => !ReviewStopWords.Contains(x));
-        if (shared >= 2) return true;
-        var fuzzy = 0;
-        foreach (var x in aw)
-        foreach (var y in bw)
-        {
-            if (SharedHangulPrefixLength(x, y) >= 2 && ++fuzzy >= 2) return true;
-        }
-        return false;
-    }
-
     private static bool HasStableEdgeContext(string a, string b)
     {
         var x = Normalize(a); var y = Normalize(b);
@@ -4158,51 +3759,6 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         foreach (Match m in DiffToken.Matches(text ?? ""))
             result.Add(new TokenSpan(m.Index, m.Index + m.Length, m.Value));
         return result;
-    }
-
-    private static readonly HashSet<string> ReviewStopWords = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "a","an","the","and","or","of","to","in","on","at","by","for","from","with","as","is","are","was","were","be","been","being",
-        "this","that","these","those","it","its","their","there","here","such","any","all","other","between","within","through","under",
-        "및","또는","그","이","저","의","에","에서","으로","로","를","을","은","는","가","이"
-    };
-
-    private static int RawChangeGapCount(int aCount, int bCount, IReadOnlyList<(int A, int B)> matches)
-    {
-        var count = 0; var pa = -1; var pb = -1;
-        foreach (var m in matches.Append((aCount, bCount)))
-        {
-            if (m.Item1 > pa + 1 || m.Item2 > pb + 1) count++;
-            pa = m.Item1; pb = m.Item2;
-        }
-        return count;
-    }
-
-    private static List<(int A, int B)> StrongReviewMatches(
-        IReadOnlyList<TokenSpan> a, IReadOnlyList<TokenSpan> b, IReadOnlyList<(int A, int B)> matches)
-    {
-        var kept = new List<(int A, int B)>();
-        for (var i = 0; i < matches.Count;)
-        {
-            var start = i; var end = i + 1;
-            while (end < matches.Count && matches[end].A == matches[end - 1].A + 1 && matches[end].B == matches[end - 1].B + 1)
-                end++;
-            var words = matches.Skip(start).Take(end - start)
-                .Select(x => a[x.A].Text)
-                .Where(x => x.Any(char.IsLetterOrDigit))
-                .ToList();
-            var content = words.Where(x => !ReviewStopWords.Contains(TokenKey(x))).ToList();
-            var contentChars = content.Sum(x => x.Length);
-            var hangulChars = words.Sum(x => x.Count(ch => ch is >= '가' and <= '힣'));
-            var strong = words.Count >= 4 ||
-                         (content.Count >= 2 && contentChars >= 13) ||
-                         (words.Count >= 2 && content.Any(x => x.Length >= 11)) ||
-                         (words.Count >= 2 && hangulChars >= 5);
-            if (strong)
-                for (var k = start; k < end; k++) kept.Add(matches[k]);
-            i = end;
-        }
-        return kept;
     }
 
     private static List<(int A, int B)> LcsMatches(string[] a, string[] b)
@@ -4454,26 +4010,6 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         var q = Math.Clamp(mapped, 0, dst.Length);
         while (q < dst.Length && !BoundaryWordChar(dst[q])) q++;
         return q;
-    }
-
-    private static int StructuralGapAnchor(
-        IReadOnlyList<NativePart> sourceParts,
-        IReadOnlyList<NativePart> targetParts,
-        IReadOnlyList<PartMatch> matches,
-        int sourceIndex,
-        bool sourceIsNew)
-    {
-        var mapped = matches
-            .Select(m => sourceIsNew ? (m.New, m.Old) : (m.Old, m.New))
-            .OrderBy(x => x.Item1)
-            .ToList();
-        var next = mapped.FirstOrDefault(x => x.Item1 > sourceIndex, (-1, -1));
-        if (next.Item1 >= 0 && next.Item2 >= 0 && next.Item2 < targetParts.Count)
-            return targetParts[next.Item2].Start;
-        var previous = mapped.LastOrDefault(x => x.Item1 < sourceIndex, (-1, -1));
-        if (previous.Item1 >= 0 && previous.Item2 >= 0 && previous.Item2 < targetParts.Count)
-            return targetParts[previous.Item2].End;
-        return 0;
     }
 
     private static long _reviewSegmentsRustMatches;
