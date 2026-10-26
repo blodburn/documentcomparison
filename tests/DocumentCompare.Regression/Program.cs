@@ -138,12 +138,12 @@ if (args.Length==1 && args[0]=="--smoke-native-production")
     var wordAfter=Path.Combine(dir,"rust-token-after.docx");
     Make(wordBefore,P("Members shall provide proof of identity and contact information."));
     Make(wordAfter,P("Members shall provide updated identity documents and emergency contact information."));
-    var initialTokens=GetRustCounter("TokenMatchRustMatches");
+    var initialFullReview=GetRustCounter("FullDiffRustMatches");
     var wordReview=await eng.CompareAsync(new[]{wordBefore,wordAfter},
         0,"general",true,true);
     Check(wordReview.Rows.Any(x=>x.Changed) &&
-        GetRustCounter("TokenMatchRustMatches")>initialTokens,
-        "production general word edits must use Rust token anchor matching");
+        GetRustCounter("FullDiffRustMatches")>initialFullReview,
+        "production general word edits must use complete Rust review event planner");
     Check(GetRustCounter("CharacterScoreRustMatches")>0 &&
         GetRustCounter("TokenScoreRustMatches")>0,
         "production Rust-first character and token similarity scores were never used");
@@ -168,6 +168,8 @@ if (args.Length==1 && args[0]=="--smoke-native-production")
         "production NFC/NFKC matching must run in Rust");
     Check(GetRustCounter("ReplacementCoalesceRustMatches")>0,
         "production legal replacement selection must run in Rust");
+    Check(GetRustCounter("FullDiffRustMatches")>0,
+        "production generic DiffText event planner must run in Rust");
     Console.WriteLine("PASS PRODUCTION RUST-FIRST ITEM, LINEAGE, TABLE, TOKEN, SCORE, KOREAN DP, SENTENCE AND REVIEW SEGMENTS");
     return;
 }
@@ -4893,5 +4895,166 @@ if (NativeCodeVersionComparer.IsAvailable)
         Value(rejectedTrim)==mismatchedTrim,
         "Rust review piece/trim did not execute on every bounded case or fell back");
     Console.WriteLine("PASS RUST DOCUMENT EVENT PIECES + HANGUL PREFIX CSHARP PARITY 900/900");
+}
+
+// Boundary projection parity: word anchors, equal gaps, punctuation,
+// Unicode and zero-length insertion/deletion anchors.
+if (NativeCodeVersionComparer.IsAvailable)
+{
+    var engineType=typeof(NativeComparisonEngine);
+    var canonical=engineType.GetMethod("MapBoundaryCSharp",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var production=engineType.GetMethod("MapBoundary",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var accepted=engineType.GetProperty("BoundaryRustMatches",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var rejected=engineType.GetProperty("BoundaryRustMismatches",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    long ValueBoundary(System.Reflection.PropertyInfo prop)=>
+        (long)prop.GetValue(null)!;
+    var before=ValueBoundary(accepted);
+    var errors=ValueBoundary(rejected);
+    var vectors=new (string A,string B)[]{
+        ("The price has changed. New terms apply.","The price has changed! Refunds apply."),
+        ("동의없이 개인정보를 수집한다.","동의 없이 개인정보를 수집한다."),
+        ("제3조(의무) 회원은 이용료를 지급한다.","제4조(의무) 회원은 수수료를 지급한다."),
+        ("abc abc abc","abc x abc"),
+        ("어제. 오늘.","어제? 새로운 날."),
+        ("A😀B","A😃B"),("","new"),("old",""),("",""),
+        ("foo. bar baz","foo! X bar baz"),("© ©","© bar"),
+        ("a\nb\nc","a\nx\nc")
+    };
+    var rng=new Random(20261026);
+    var chunks=new[]{"aa","a"," ","\t","제2조","개인정보","동의","없이",
+        ".",",","!","?",";","\n","😀","😃","②","B","the","(3)"};
+    for(var trial=0;trial<260;trial++)
+    {
+        string Sample()=>string.Concat(Enumerable.Range(0,rng.Next(1,12))
+            .Select(_=>chunks[rng.Next(chunks.Length)]));
+        var source=Sample();
+        var target=trial%5==0?source:Sample();
+        vectors=vectors.Append((source,target)).ToArray();
+    }
+    var checkedCount=0;var found=0;
+    foreach(var (oldText,newText) in vectors)
+        for(var x=0;x<=oldText.Length;x++)
+        {
+            var mappingArgs=new object[]{oldText,newText,x};
+            var expected=(int)canonical.Invoke(null,mappingArgs)!;
+            var actual=(int)production.Invoke(null,mappingArgs)!;
+            if(expected!=actual)
+            {
+                found++;
+                if(found<=5)Console.WriteLine("BOUNDARY_DIFF "+oldText+
+                    " → "+newText+" pos="+x+" C#="+expected+" Rust="+actual);
+            }
+            checkedCount++;
+        }
+    var adopted=ValueBoundary(accepted)-before;
+    var mismatches=ValueBoundary(rejected)-errors;
+    Console.WriteLine($"RUST BOUNDARY AUDIT checked={checkedCount} adopted={adopted} mismatch={mismatches}");
+    Check(found==0&&mismatches==0&&adopted==checkedCount,
+        "Rust MapBoundary still depends on C# for supported documents");
+    Console.WriteLine($"PASS RUST BOUNDARY MAPPING CSHARP PARITY {checkedCount}/{checkedCount}");
+}
+
+// Rust generic DiffText hunk selection, including offsets for repeated
+// English articles, Korean words, punctuation and astral characters.
+if (NativeCodeVersionComparer.IsAvailable)
+{
+    var core=typeof(NativeComparisonEngine);
+    var lexer=core.GetMethod("LexTokens",BindingFlags.NonPublic|BindingFlags.Static)!;
+    var managed=core.GetMethod("SelectReviewHunksCSharp",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var native=core.GetMethod("SelectReviewHunks",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var accepted=core.GetProperty("DiffHunksRustMatches",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var rejected=core.GetProperty("DiffHunksRustMismatches",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var beforeAccepted=(long)accepted.GetValue(null)!;
+    var beforeRejected=(long)rejected.GetValue(null)!;
+    var random=new Random(20261026);
+    var vocab=new[]{"member","privacy","and","the","동의","없이","개인정보",
+        "삭제","추가","제1조",".","!",";",":"," "," ","\n","가","나","⑤","A","B"};
+    var cases=0;
+    for(var k=0;k<520;k++)
+    {
+        string MakeTokens()=>string.Concat(Enumerable.Range(0,random.Next(1,18))
+            .Select(_=>vocab[random.Next(vocab.Length)]));
+        var oldText=MakeTokens();
+        var newText=k%7==0?oldText:MakeTokens();
+        var aTokens=lexer.Invoke(null,new object[]{oldText})!;
+        var bTokens=lexer.Invoke(null,new object[]{newText})!;
+        var reference=((System.Collections.IEnumerable)managed.Invoke(null,
+            new[]{aTokens,bTokens})!).Cast<object>().ToArray();
+        var actual=((System.Collections.IEnumerable)native.Invoke(null,
+            new[]{(object)oldText,(object)newText,aTokens,bTokens})!)
+            .Cast<object>().ToArray();
+        Check(reference.SequenceEqual(actual),
+            "Rust DiffText general review hunks differ from C#: "+k+
+            " old="+oldText+" new="+newText);
+        cases++;
+    }
+    Check(((long)accepted.GetValue(null)!)-beforeAccepted==cases &&
+        ((long)rejected.GetValue(null)!) == beforeRejected,
+        "Rust review hunk selector did not accept every supported case");
+    Console.WriteLine($"PASS RUST DIFFTEXT GENERIC HUNKS CSHARP PARITY {cases}/{cases}");
+}
+
+// Rust full DiffText generic event-generation parity. This is not only
+// token matching: compare all produced marker event data and endpoints.
+if (NativeCodeVersionComparer.IsAvailable)
+{
+    var engine=typeof(NativeComparisonEngine);
+    var canonical=engine.GetMethod("DiffTextCoreCSharp",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var native=engine.GetMethod("TryRustGenericDiffText",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var compare=engine.GetMethod("SameReplacementMarker",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var accepted=engine.GetProperty("FullDiffRustMatches",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var rejected=engine.GetProperty("FullDiffRustMismatches",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var starting=(long)accepted.GetValue(null)!;
+    var failures=(long)rejected.GetValue(null)!;
+    var random=new Random(20261026);
+    var tokens=new[]{"personal","data","terms","and","the","privacy",
+        "payment","개인정보","동의","없이","서비스","제공","수수료",
+        ".","!",";",":",","," \n"," "," ","⑥","③","A","B"};
+    var failed=0;var checkedEvents=0;
+    for(var trial=0;trial<350;trial++)
+    {
+        string Gen()=>string.Concat(Enumerable.Range(0,random.Next(1,14))
+            .Select(_=>tokens[random.Next(tokens.Length)]));
+        var oldText=Gen();var newText=trial%11==0?oldText:Gen();
+        object[] argv={oldText,newText,5,12,0,1,"A↔B",0,"body",trial%2==0,0};
+        var reference=((System.Collections.IEnumerable)canonical.Invoke(null,argv)!)
+            .Cast<object>().ToArray();
+        var nativeResult=(System.Collections.IEnumerable?)native.Invoke(null,argv);
+        if(nativeResult is null)
+        {
+            failed++;if(failed<=4)Console.WriteLine("RUST_DIFF_UNSUPPORTED "+
+                oldText+" → "+newText);
+            continue;
+        }
+        var result=nativeResult.Cast<object>().ToArray();
+        if(reference.Length!=result.Length ||
+            !reference.Zip(result).All(p=>(bool)compare.Invoke(null,
+                new[]{p.First,p.Second})!))
+        {
+            failed++;if(failed<=4)
+                Console.WriteLine("RUST_DIFF_MISMATCH "+oldText+" → "+newText+
+                    " count="+reference.Length+"/"+result.Length);
+        }
+        checkedEvents++;
+    }
+    var matches=(long)accepted.GetValue(null)!-starting;
+    var drifts=(long)rejected.GetValue(null)!-failures;
+    Console.WriteLine($"RUST FULL DIFFTEXT AUDIT checked={checkedEvents} accepted={matches} drift={drifts} unsupported={failed}");
+    Check(failed==0&&matches==350&&drifts==0,
+        "Rust complete generic DiffText changed original event markers");
+    Console.WriteLine($"PASS RUST FULL GENERIC DIFFTEXT EVENTS 350/350");
 }
 Console.WriteLine("ALL REGRESSIONS PASSED");

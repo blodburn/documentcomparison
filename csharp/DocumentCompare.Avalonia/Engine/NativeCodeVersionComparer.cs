@@ -152,6 +152,25 @@ public static class NativeCodeVersionComparer
     public sealed record DocumentTableCell(int Index, int Table, int Row, string Key);
     public sealed record DocumentTablePair(int Base, int Other);
     public sealed record DocumentTokenBlock(int A, int B, int Size);
+    public sealed record DocumentReviewDiffEvent(
+        string Kind,string OldText,string NewText,int OldStart,int OldEnd,
+        int NewStart,int NewEnd,int HunkOrder);
+    private sealed record DocumentReviewDiffWire(List<DocumentReviewDiffEvent> Events);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int DocumentReviewDiffDelegate(
+        [In] byte[] input,nuint length,out NativeAstResult result);
+    public sealed record DocumentDiffToken(int Start,int End,string Key);
+    public sealed record DocumentDiffHunk(
+        int OldStart,int OldEnd,int NewStart,int NewEnd,int HunkOrder);
+    private sealed record DocumentDiffHunksResult(List<DocumentDiffHunk> Hunks);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int DocumentDiffHunksDelegate(
+        [In] byte[] input,nuint length,out NativeAstResult result);
+    public sealed record DocumentBoundarySpan(int Start,int End,string Key);
+    private sealed record DocumentBoundaryResult(int Mapped);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int DocumentBoundaryDelegate(
+        [In] byte[] input,nuint length,out NativeAstResult result);
     public sealed record DocumentReplacementMarker(
         int Index,string Kind,string Part,string Visible,bool Lexical,
         int TextLength,int ItemOrder,int OldStart,int OldEnd,int NewStart,int NewEnd);
@@ -312,6 +331,9 @@ public static class NativeCodeVersionComparer
         public readonly DocumentNormalizeDelegate? DocumentNormalize;
         public readonly DocumentReplacementCoalesceDelegate? DocumentReplacementCoalesce;
         public readonly DocumentReviewPieceDelegate? DocumentReviewPiece;
+        public readonly DocumentBoundaryDelegate? DocumentBoundary;
+        public readonly DocumentDiffHunksDelegate? DocumentDiffHunks;
+        public readonly DocumentReviewDiffDelegate? DocumentReviewDiff;
 
         public Exports(IntPtr handle)
         {
@@ -439,6 +461,21 @@ public static class NativeCodeVersionComparer
                 DocumentReviewPiece =
                     Marshal.GetDelegateForFunctionPointer<DocumentReviewPieceDelegate>(
                         reviewPieceExport);
+            if (NativeLibrary.TryGetExport(handle,
+                "dc_map_document_boundary_utf8", out var boundaryExport))
+                DocumentBoundary =
+                    Marshal.GetDelegateForFunctionPointer<DocumentBoundaryDelegate>(
+                        boundaryExport);
+            if (NativeLibrary.TryGetExport(handle,
+                "dc_document_diff_hunks_utf8", out var diffHunksExport))
+                DocumentDiffHunks =
+                    Marshal.GetDelegateForFunctionPointer<DocumentDiffHunksDelegate>(
+                        diffHunksExport);
+            if (NativeLibrary.TryGetExport(handle,
+                "dc_diff_document_review_utf8", out var fullReviewExport))
+                DocumentReviewDiff =
+                    Marshal.GetDelegateForFunctionPointer<DocumentReviewDiffDelegate>(
+                        fullReviewExport);
         }
     }
 
@@ -1237,6 +1274,184 @@ public static class NativeCodeVersionComparer
     }
 
     private sealed record DocumentTokenBlocksWire(List<DocumentTokenBlock> Blocks);
+    /// <summary>
+    /// Full Rust generic DiffText event planner: matching token anchors,
+    /// punctuation filtering, word segmentation, Hangul prefix and
+    /// relative source/target endpoint mapping are all native.
+    /// </summary>
+    public static IReadOnlyList<DocumentReviewDiffEvent>? BuildDocumentReviewEvents(
+        string oldText,string newText,
+        IReadOnlyList<DocumentDiffToken> oldTokens,
+        IReadOnlyList<DocumentDiffToken> newTokens,
+        IReadOnlyList<DocumentBoundarySpan> oldBoundary,
+        IReadOnlyList<DocumentBoundarySpan> newBoundary,
+        IReadOnlyList<bool> oldWord,
+        IReadOnlyList<bool> newWord,
+        bool includePunctuation)
+    {
+        ArgumentNullException.ThrowIfNull(oldText);
+        ArgumentNullException.ThrowIfNull(newText);
+        var exports=Native.Value;
+        if(exports?.DocumentReviewDiff is null ||
+            oldText.Length>2048 || newText.Length>2048 ||
+            (long)oldText.Length*newText.Length>1_000_000 ||
+            oldWord.Count!=oldText.Length || newWord.Count!=newText.Length ||
+            oldTokens.Count>512 || newTokens.Count>512 ||
+            oldBoundary.Count>256 || newBoundary.Count>256)
+            return null;
+        var bytes=JsonSerializer.SerializeToUtf8Bytes(new {
+            oldText,newText,oldTokens,newTokens,oldBoundary,newBoundary,
+            oldWord,newWord,includePunctuation
+        },new JsonSerializerOptions{PropertyNamingPolicy=JsonNamingPolicy.CamelCase});
+        if(bytes.Length>2*1024*1024)return null;
+        var status=exports.DocumentReviewDiff(bytes,(nuint)bytes.Length,out var output);
+        try
+        {
+            if(status is 2 or 3)return null;
+            if(status!=0)
+                throw new InvalidDataException($"Rust DiffText 전체 이벤트 실패: {status}");
+            if(output.Data==IntPtr.Zero || output.Length==0 ||
+                output.Length>2UL*1024*1024)
+                throw new InvalidDataException("Rust DiffText 이벤트 응답 크기 오류");
+            var raw=new byte[checked((int)output.Length)];
+            Marshal.Copy(output.Data,raw,0,raw.Length);
+            var result=JsonSerializer.Deserialize<DocumentReviewDiffWire>(raw,
+                new JsonSerializerOptions{PropertyNameCaseInsensitive=true});
+            if(result?.Events is null || result.Events.Count>1024)
+                throw new InvalidDataException("Rust DiffText 이벤트 수 오류");
+            var lastOrder=-1;
+            foreach(var e in result.Events)
+            {
+                if(e.Kind is not ("change" or "delete" or "insert") ||
+                    e.OldText is null || e.NewText is null ||
+                    e.OldStart<0 || e.OldEnd<e.OldStart || e.OldEnd>oldText.Length ||
+                    e.NewStart<0 || e.NewEnd<e.NewStart || e.NewEnd>newText.Length ||
+                    e.HunkOrder<lastOrder ||
+                    (e.Kind=="delete" && e.NewEnd!=e.NewStart) ||
+                    (e.Kind=="insert" && e.OldEnd!=e.OldStart))
+                    throw new InvalidDataException("Rust DiffText 이벤트 좌표 오류");
+                lastOrder=e.HunkOrder;
+            }
+            return result.Events;
+        }
+        finally
+        {
+            exports.AstFree(ref output);
+        }
+    }
+
+
+    /// <summary>
+    /// Rust standard text review hunk selection from normalized token
+    /// anchors, preserving the exact original absolute UTF-16 ranges.
+    /// </summary>
+    public static IReadOnlyList<DocumentDiffHunk>? SelectDocumentDiffHunks(
+        int oldLength,int newLength,
+        IReadOnlyList<DocumentDiffToken> oldTokens,
+        IReadOnlyList<DocumentDiffToken> newTokens)
+    {
+        ArgumentNullException.ThrowIfNull(oldTokens);
+        ArgumentNullException.ThrowIfNull(newTokens);
+        var exports=Native.Value;
+        if (exports?.DocumentDiffHunks is null ||
+            oldLength is < 0 or > 131072 || newLength is < 0 or > 131072 ||
+            oldTokens.Count>512 || newTokens.Count>512 ||
+            (long)oldTokens.Count*newTokens.Count>100_000 ||
+            oldTokens.Any(t=>t.Start<0 || t.End<t.Start || t.End>oldLength ||
+                t.Key is null || t.Key.Length>8192) ||
+            newTokens.Any(t=>t.Start<0 || t.End<t.Start || t.End>newLength ||
+                t.Key is null || t.Key.Length>8192))
+            return null;
+        var bytes=JsonSerializer.SerializeToUtf8Bytes(new{
+            oldLength,newLength,old=oldTokens,@new=newTokens
+        },new JsonSerializerOptions{PropertyNamingPolicy=JsonNamingPolicy.CamelCase});
+        if (bytes.Length>2*1024*1024) return null;
+        var status=exports.DocumentDiffHunks(bytes,(nuint)bytes.Length,out var result);
+        try
+        {
+            if (status is 2 or 3) return null;
+            if (status!=0)
+                throw new InvalidDataException($"Rust 변경 구간 계산 실패: {status}");
+            if (result.Data==IntPtr.Zero || result.Length==0 ||
+                result.Length>1024UL*1024)
+                throw new InvalidDataException("Rust 변경 구간 데이터 크기 오류");
+            var raw=new byte[checked((int)result.Length)];
+            Marshal.Copy(result.Data,raw,0,raw.Length);
+            var parsed=JsonSerializer.Deserialize<DocumentDiffHunksResult>(raw,
+                new JsonSerializerOptions{PropertyNameCaseInsensitive=true});
+            if (parsed?.Hunks is null ||
+                parsed.Hunks.Count>oldTokens.Count+newTokens.Count+1)
+                throw new InvalidDataException("Rust 변경 구간 개수 오류");
+            var prevOld=-1;var prevNew=-1;var prevOrder=-1;
+            foreach(var h in parsed.Hunks)
+            {
+                if(h.OldStart<0 || h.NewStart<0 ||
+                    h.OldStart>h.OldEnd || h.NewStart>h.NewEnd ||
+                    h.OldEnd>oldLength || h.NewEnd>newLength ||
+                    h.OldStart<prevOld || h.NewStart<prevNew ||
+                    h.HunkOrder<=prevOrder)
+                    throw new InvalidDataException("Rust 변경 구간 위치 오류");
+                prevOld=h.OldEnd;prevNew=h.NewEnd;prevOrder=h.HunkOrder;
+            }
+            return parsed.Hunks;
+        }
+        finally
+        {
+            exports.AstFree(ref result);
+        }
+    }
+
+
+    /// <summary>
+    /// Projects a full review UTF-16 offset through native lexical anchors
+    /// and SequenceMatcher punctuation-boundary rules.
+    /// </summary>
+    public static int? MapDocumentBoundary(
+        string src,string dst,int pos,
+        IReadOnlyList<DocumentBoundarySpan> srcSpans,
+        IReadOnlyList<DocumentBoundarySpan> dstSpans,
+        IReadOnlyList<bool> srcWord,
+        IReadOnlyList<bool> dstWord)
+    {
+        ArgumentNullException.ThrowIfNull(src);
+        ArgumentNullException.ThrowIfNull(dst);
+        var exports=Native.Value;
+        if (exports?.DocumentBoundary is null ||
+            src.Length>2048 || dst.Length>2048 ||
+            (long)src.Length * dst.Length>1_000_000 ||
+            srcSpans.Count>256 || dstSpans.Count>256 ||
+            srcWord.Count!=src.Length || dstWord.Count!=dst.Length)
+            return null;
+        var bytes=JsonSerializer.SerializeToUtf8Bytes(new {
+            src,dst,pos,srcSpans,dstSpans,srcWord,dstWord
+        }, new JsonSerializerOptions {
+            PropertyNamingPolicy=JsonNamingPolicy.CamelCase
+        });
+        if(bytes.Length>1024*1024)return null;
+        var status=exports.DocumentBoundary(bytes,(nuint)bytes.Length,out var output);
+        try
+        {
+            if (status is 2 or 3) return null;
+            if (status!=0)
+                throw new InvalidDataException($"Rust 텍스트 경계 매핑 실패: {status}");
+            if(output.Data==IntPtr.Zero || output.Length==0 ||
+                output.Length>1024UL*1024)
+                throw new InvalidDataException("Rust 텍스트 경계 매핑 크기 오류");
+            var raw=new byte[checked((int)output.Length)];
+            Marshal.Copy(output.Data,raw,0,raw.Length);
+            var result=JsonSerializer.Deserialize<DocumentBoundaryResult>(raw,
+                new JsonSerializerOptions{PropertyNameCaseInsensitive=true});
+            if(result is null || result.Mapped<0 || result.Mapped>dst.Length)
+                throw new InvalidDataException("Rust 텍스트 경계 매핑 인덱스 오류");
+            return result.Mapped;
+        }
+        finally
+        {
+            exports.AstFree(ref output);
+        }
+    }
+
+
     /// <summary>
     /// Rust review event splitting and Hangul-prefix trimming, with exact
     /// UTF-16 boundaries and input-preserving validation.

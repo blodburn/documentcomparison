@@ -2371,29 +2371,106 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         if (preserved is not null) return preserved;
         var korean = TryKoreanReviewDiff(oldText, newText, oldBase, newBase, oldDoc, newDoc, pair, pairOrder, part, itemOrder);
         if (korean is not null) return korean;
-        var a = LexTokens(oldText); var b = LexTokens(newText);
-        var matches = MatcherPairs(a.Select(x => TokenKey(x.Text)).ToArray(), b.Select(x => TokenKey(x.Text)).ToArray());
-        // Common glue words must not split one logical rewrite into dozens of markers.
-        // If the fine LCS would create a marker storm, keep only meaningful equal runs as
-        // anchors (the/of/and/및/또는 etc. stay inside the surrounding replacement hunk).
-        // Keep every stable token anchor so the UI follows the same fine-grained change
-        // boundaries as Word Track Changes instead of collapsing a heavily edited paragraph.
-        var anchors = new List<(int A, int B)> { (-1, -1) };
-        anchors.AddRange(matches);
-        anchors.Add((a.Count, b.Count));
-        var result = new List<NativeMarker>();
+        var native=TryRustGenericDiffText(oldText,newText,oldBase,newBase,
+            oldDoc,newDoc,pair,pairOrder,part,includePunctuation,itemOrder);
+        return native ?? DiffTextCoreCSharp(oldText,newText,oldBase,newBase,
+            oldDoc,newDoc,pair,pairOrder,part,includePunctuation,itemOrder);
+    }
 
-        for (var k = 0; k < anchors.Count - 1; k++)
+    private static long _fullDiffRustMatches;
+    private static long _fullDiffRustMismatches;
+    internal static long FullDiffRustMatches =>
+        System.Threading.Interlocked.Read(ref _fullDiffRustMatches);
+    internal static long FullDiffRustMismatches =>
+        System.Threading.Interlocked.Read(ref _fullDiffRustMismatches);
+
+    private static List<NativeMarker>? TryRustGenericDiffText(
+        string oldText,string newText,int oldBase,int newBase,
+        int oldDoc,int newDoc,string pair,int pairOrder,string part,
+        bool includePunctuation,int itemOrder)
+    {
+        try
         {
-            var left = anchors[k]; var right = anchors[k + 1];
-            var ai = left.A + 1; var aj = right.A; var bi = left.B + 1; var bj = right.B;
-            if (ai >= aj && bi >= bj) continue;
-            var oldStart = ai < a.Count ? a[ai].Start : (left.A >= 0 ? a[left.A].End : 0);
-            var oldEnd = aj > ai ? a[aj - 1].End : oldStart;
-            var newStart = bi < b.Count ? b[bi].Start : (left.B >= 0 ? b[left.B].End : 0);
-            var newEnd = bj > bi ? b[bj - 1].End : newStart;
-            var ot = oldText[oldStart..oldEnd].Trim();
-            var nt = newText[newStart..newEnd].Trim();
+            var oldTokens=LexTokens(oldText).Select(t=>
+                new NativeCodeVersionComparer.DocumentDiffToken(t.Start,t.End,
+                    TokenKey(t.Text))).ToArray();
+            var newTokens=LexTokens(newText).Select(t=>
+                new NativeCodeVersionComparer.DocumentDiffToken(t.Start,t.End,
+                    TokenKey(t.Text))).ToArray();
+            var oldBoundary=BoundaryLexSpans(oldText).Select(t=>
+                new NativeCodeVersionComparer.DocumentBoundarySpan(
+                    t.Start,t.End,LineageNormalize(t.Text))).ToArray();
+            var newBoundary=BoundaryLexSpans(newText).Select(t=>
+                new NativeCodeVersionComparer.DocumentBoundarySpan(
+                    t.Start,t.End,LineageNormalize(t.Text))).ToArray();
+            var native=NativeCodeVersionComparer.BuildDocumentReviewEvents(
+                oldText,newText,oldTokens,newTokens,oldBoundary,newBoundary,
+                oldText.Select(BoundaryWordChar).ToArray(),
+                newText.Select(BoundaryWordChar).ToArray(),includePunctuation);
+            if(native is null)return null;
+            var markers=new List<NativeMarker>();
+            foreach(var e in native)
+            {
+                switch(e.Kind)
+                {
+                    case "change":
+                        markers.Add(NativeMarker.Change(pair,pairOrder,oldDoc,newDoc,
+                            e.OldText,e.NewText,
+                            oldBase+e.OldStart,oldBase+e.OldEnd,
+                            newBase+e.NewStart,newBase+e.NewEnd,
+                            part,itemOrder,e.HunkOrder));
+                        break;
+                    case "delete":
+                        markers.Add(NativeMarker.Delete(pair,pairOrder,oldDoc,newDoc,
+                            e.OldText,oldBase+e.OldStart,oldBase+e.OldEnd,
+                            newBase+e.NewStart,part,itemOrder,e.HunkOrder));
+                        break;
+                    case "insert":
+                        markers.Add(NativeMarker.Insert(pair,pairOrder,oldDoc,newDoc,
+                            e.NewText,oldBase+e.OldStart,
+                            newBase+e.NewStart,newBase+e.NewEnd,
+                            part,itemOrder,e.HunkOrder));
+                        break;
+                }
+            }
+            if(Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_REQUIRE_NATIVE")=="1" ||
+                Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_VERIFY_DOCUMENT_MATCHES")=="1")
+            {
+                var expected=DiffTextCoreCSharp(oldText,newText,oldBase,newBase,
+                    oldDoc,newDoc,pair,pairOrder,part,includePunctuation,itemOrder);
+                if(markers.Count!=expected.Count ||
+                    markers.Where((m,i)=>!SameReplacementMarker(m,expected[i])).Any())
+                {
+                    System.Threading.Interlocked.Increment(ref _fullDiffRustMismatches);
+                    return expected;
+                }
+            }
+            System.Threading.Interlocked.Increment(ref _fullDiffRustMatches);
+            return markers;
+        }
+        catch(Exception ex) when(ex is InvalidDataException or
+            System.Text.Json.JsonException or ArgumentException or OverflowException)
+        {
+            System.Threading.Interlocked.Increment(ref _fullDiffRustMismatches);
+            return null;
+        }
+    }
+
+    private static List<NativeMarker> DiffTextCoreCSharp(
+        string oldText,string newText,int oldBase,int newBase,
+        int oldDoc,int newDoc,string pair,int pairOrder,string part,
+        bool includePunctuation,int itemOrder)
+    {
+        var a = LexTokens(oldText); var b = LexTokens(newText);
+        var hunks = SelectReviewHunks(oldText,newText,a,b);
+        var result = new List<NativeMarker>();
+        foreach(var h in hunks)
+        {
+            var k=h.HunkOrder;
+            var oldStart=h.OldStart;var oldEnd=h.OldEnd;
+            var newStart=h.NewStart;var newEnd=h.NewEnd;
+            var ot=oldText[oldStart..oldEnd].Trim();
+            var nt=newText[newStart..newEnd].Trim();
             if (!includePunctuation && (ot.Length == 0 || IsPunctuationOnly(ot)) && (nt.Length == 0 || IsPunctuationOnly(nt))) continue;
 
             if (ot.Length > 0 && nt.Length > 0)
@@ -2429,6 +2506,75 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             }
         }
         return result;
+    }
+
+    private static long _diffHunksRustMatches;
+    private static long _diffHunksRustMismatches;
+    internal static long DiffHunksRustMatches =>
+        System.Threading.Interlocked.Read(ref _diffHunksRustMatches);
+    internal static long DiffHunksRustMismatches =>
+        System.Threading.Interlocked.Read(ref _diffHunksRustMismatches);
+
+    private static List<NativeCodeVersionComparer.DocumentDiffHunk>
+        SelectReviewHunks(string before,string after,
+            IReadOnlyList<TokenSpan> a,IReadOnlyList<TokenSpan> b)
+    {
+        var original = new Func<List<NativeCodeVersionComparer.DocumentDiffHunk>>(()=>
+            SelectReviewHunksCSharp(a,b));
+        try
+        {
+            var oldTokens=a.Select(t=>new NativeCodeVersionComparer.DocumentDiffToken(
+                t.Start,t.End,TokenKey(t.Text))).ToArray();
+            var newTokens=b.Select(t=>new NativeCodeVersionComparer.DocumentDiffToken(
+                t.Start,t.End,TokenKey(t.Text))).ToArray();
+            var native=NativeCodeVersionComparer.SelectDocumentDiffHunks(
+                before.Length,after.Length,oldTokens,newTokens);
+            if(native is null)return original();
+            if(Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_REQUIRE_NATIVE")=="1" ||
+                Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_VERIFY_DOCUMENT_MATCHES")=="1")
+            {
+                var baseline=original();
+                if(!native.SequenceEqual(baseline))
+                {
+                    System.Threading.Interlocked.Increment(ref _diffHunksRustMismatches);
+                    return baseline;
+                }
+            }
+            System.Threading.Interlocked.Increment(ref _diffHunksRustMatches);
+            return native.ToList();
+        }
+        catch(Exception ex) when(ex is InvalidDataException or
+            System.Text.Json.JsonException or ArgumentException or OverflowException)
+        {
+            System.Threading.Interlocked.Increment(ref _diffHunksRustMismatches);
+            return original();
+        }
+    }
+
+    private static List<NativeCodeVersionComparer.DocumentDiffHunk>
+        SelectReviewHunksCSharp(IReadOnlyList<TokenSpan> a,IReadOnlyList<TokenSpan> b)
+    {
+        var matches=MatcherPairs(a.Select(x=>TokenKey(x.Text)).ToArray(),
+            b.Select(x=>TokenKey(x.Text)).ToArray());
+        var anchors=new List<(int A,int B)>{(-1,-1)};
+        anchors.AddRange(matches);
+        anchors.Add((a.Count,b.Count));
+        var hunks=new List<NativeCodeVersionComparer.DocumentDiffHunk>();
+        for(var k=0;k<anchors.Count-1;k++)
+        {
+            var left=anchors[k];var right=anchors[k+1];
+            var ai=left.A+1;var aj=right.A;
+            var bi=left.B+1;var bj=right.B;
+            if(ai>=aj && bi>=bj)continue;
+            var oldStart=ai<a.Count ? a[ai].Start :
+                (left.A>=0 ? a[left.A].End : 0);
+            var oldEnd=aj>ai ? a[aj-1].End : oldStart;
+            var newStart=bi<b.Count ? b[bi].Start :
+                (left.B>=0 ? b[left.B].End : 0);
+            var newEnd=bj>bi ? b[bj-1].End : newStart;
+            hunks.Add(new(oldStart,oldEnd,newStart,newEnd,k));
+        }
+        return hunks;
     }
 
     private static long _hangulTrimRustMatches;
@@ -3965,7 +4111,51 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     private static bool BoundaryWordChar(char ch) =>
         char.IsLetterOrDigit(ch) || ch == '_' || ch is >= '가' and <= '힣';
 
-    private static int MapBoundary(string src, string dst, int pos)
+    private static long _boundaryRustMatches;
+    private static long _boundaryRustMismatches;
+    internal static long BoundaryRustMatches =>
+        System.Threading.Interlocked.Read(ref _boundaryRustMatches);
+    internal static long BoundaryRustMismatches =>
+        System.Threading.Interlocked.Read(ref _boundaryRustMismatches);
+
+    private static int MapBoundary(string src,string dst,int pos)
+    {
+        src ??= string.Empty;dst ??= string.Empty;
+        pos=Math.Clamp(pos,0,src.Length);
+        try
+        {
+            var a=BoundaryLexSpans(src).Select(x=>
+                new NativeCodeVersionComparer.DocumentBoundarySpan(
+                    x.Start,x.End,LineageNormalize(x.Text))).ToArray();
+            var b=BoundaryLexSpans(dst).Select(x=>
+                new NativeCodeVersionComparer.DocumentBoundarySpan(
+                    x.Start,x.End,LineageNormalize(x.Text))).ToArray();
+            var native=NativeCodeVersionComparer.MapDocumentBoundary(
+                src,dst,pos,a,b,src.Select(BoundaryWordChar).ToArray(),
+                dst.Select(BoundaryWordChar).ToArray());
+            if(native is null) return MapBoundaryCSharp(src,dst,pos);
+            if(Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_REQUIRE_NATIVE")=="1" ||
+                Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_VERIFY_DOCUMENT_MATCHES")=="1")
+            {
+                var reference=MapBoundaryCSharp(src,dst,pos);
+                if(native.Value!=reference)
+                {
+                    System.Threading.Interlocked.Increment(ref _boundaryRustMismatches);
+                    return reference;
+                }
+            }
+            System.Threading.Interlocked.Increment(ref _boundaryRustMatches);
+            return native.Value;
+        }
+        catch(Exception ex) when(ex is InvalidDataException or
+            System.Text.Json.JsonException or ArgumentException or OverflowException)
+        {
+            System.Threading.Interlocked.Increment(ref _boundaryRustMismatches);
+            return MapBoundaryCSharp(src,dst,pos);
+        }
+    }
+
+    private static int MapBoundaryCSharp(string src, string dst, int pos)
     {
         src ??= string.Empty; dst ??= string.Empty;
         pos = Math.Clamp(pos, 0, src.Length);

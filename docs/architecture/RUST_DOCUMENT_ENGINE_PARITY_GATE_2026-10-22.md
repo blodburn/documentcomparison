@@ -671,3 +671,47 @@ MapBoundary's semantic anchor projection, global cross-unit change
 classification, and final output model/Word review adaptation still
 execute in C#. Do not delete the managed engine or label the entire
 source file fully migrated solely from these narrower passing tests.
+
+
+## Rust full generic review and UTF-16 boundary projection — 2026-10-26
+
+A new native boundary engine (rust/src/doc_boundary.rs) takes existing
+C# Regex-derived lexical tokens, normalization keys and word character
+classification and performs the complete source-to-target MapBoundary
+algorithm, including contextual word anchors, SequenceMatcher character
+opcodes and punctuation-adjacent counterpart correction. MapBoundary
+calls Rust first, with managed fallback for unsupported long inputs or
+older DLLs. A deterministic 3,072-boundary corpus passed source parity
+with zero drift and complete native adoption.
+
+rust/src/doc_diff_hunks.rs replaces generic DiffText's repeated
+common-token hunk reconstruction, retaining exact UTF-16 token offsets
+and original hunk order. It passed 520/520 independent source comparisons
+without fallback.
+
+rust/src/doc_diff_review.rs is a complete generic-text DiffText
+review event decision API: the Rust program owns matching anchors,
+changed-hunk selection, punctuation handling, Korean shared-prefix
+clipping, phrase decomposition, and source/target boundary location.
+The managed facade only converts the resulting typed events into
+the existing NativeMarker presentation/Word export model. Unlike
+the prior narrow helpers, the general path is one native call.
+Rust emits change, deletion and insertion events, and the managed
+parity gate compares the complete final marker list, including
+actions, original/new text, offsets, endpoints, hunk order, and
+message representation. All 350 deterministic stress cases passed
+with full native adoption and no parity drift.
+
+During testing, the original C# char.IsLetterOrDigit numeric-category
+contract uncovered that Circled Digits (e.g. ③ and ⑥) are treated as
+non-decimal symbol/number characters for punctuation-only filtering.
+The native implementation was corrected, reducing 4 event mismatches
+to zero. Keep those seeded cases as release safeguards.
+
+Remaining for full-file 100%-Rust retirement: ComparePair's global
+legal article/part structural classification, final structural-movement
+message creation, complete marker/action planning for specialized
+exceptions and model/Word review formatting. The source-reader and
+exporter may remain C#, but calling this a fully Rust-owned
+NativeComparisonEngine before the above ownership transitions
+would be incorrect.
