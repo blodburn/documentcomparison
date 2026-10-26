@@ -2035,3 +2035,48 @@ pub unsafe extern "C" fn dc_diff_document_review_utf8(
         Err(_) => 5,
     }
 }
+
+/// Plan complete article/part structural event classification and status.
+/// # Safety
+/// Caller provides readable input and exclusive writable output, and frees
+/// the successful response with dc_free_ast_json_result.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dc_plan_document_pair_utf8(
+    input: *const u8,
+    length: usize,
+    output: *mut DcAstJsonResult,
+) -> i32 {
+    if output.is_null() {
+        return 2;
+    }
+    // SAFETY: caller guarantees exclusive writable output.
+    unsafe { ptr::write(output, DcAstJsonResult::empty()) };
+    if length > 1024 * 1024 || (length > 0 && input.is_null()) {
+        return 2;
+    }
+    let response = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let bytes = if length == 0 {
+            &[][..]
+        } else {
+            // SAFETY: caller guarantees readable input bytes.
+            unsafe { slice::from_raw_parts(input, length) }
+        };
+        let req: crate::doc_pair_plan::Input = serde_json::from_slice(bytes).map_err(|_| 1)?;
+        if !crate::doc_pair_plan::validate(&req) {
+            return Err(3);
+        }
+        serde_json::to_vec(&crate::doc_pair_plan::plan(&req)).map_err(|_| 4)
+    }));
+    match response {
+        Ok(Ok(raw)) => {
+            let buffer = raw.into_boxed_slice();
+            let length = buffer.len();
+            let data = Box::into_raw(buffer) as *mut u8;
+            // SAFETY: caller guarantees exclusive output.
+            unsafe { ptr::write(output, DcAstJsonResult { data, length }) };
+            0
+        }
+        Ok(Err(code)) => code,
+        Err(_) => 5,
+    }
+}

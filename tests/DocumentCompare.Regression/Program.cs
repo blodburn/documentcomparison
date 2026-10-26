@@ -170,6 +170,9 @@ if (args.Length==1 && args[0]=="--smoke-native-production")
         "production legal replacement selection must run in Rust");
     Check(GetRustCounter("FullDiffRustMatches")>0,
         "production generic DiffText event planner must run in Rust");
+    Check(GetRustCounter("PairPlanRustMatches")>0 &&
+        GetRustCounter("PairPlanRustMismatches")==0,
+        "production article/part classification must adopt Rust plans without drift");
     Console.WriteLine("PASS PRODUCTION RUST-FIRST ITEM, LINEAGE, TABLE, TOKEN, SCORE, KOREAN DP, SENTENCE AND REVIEW SEGMENTS");
     return;
 }
@@ -5057,4 +5060,13 @@ if (NativeCodeVersionComparer.IsAvailable)
         "Rust complete generic DiffText changed original event markers");
     Console.WriteLine($"PASS RUST FULL GENERIC DIFFTEXT EVENTS 350/350");
 }
+var pairPlanNativeUses=(long)typeof(NativeComparisonEngine).GetProperty(
+    "PairPlanRustMatches",BindingFlags.Static|BindingFlags.NonPublic)!
+    .GetValue(null)!;
+var pairPlanNativeDrift=(long)typeof(NativeComparisonEngine).GetProperty(
+    "PairPlanRustMismatches",BindingFlags.Static|BindingFlags.NonPublic)!
+    .GetValue(null)!;
+Console.WriteLine($"RUST PAIR PLAN REVIEW source-complete adopted={pairPlanNativeUses} drift={pairPlanNativeDrift}");
+Check(pairPlanNativeUses>0 && pairPlanNativeDrift==0,
+    "actual ComparePair must adopt Rust structural/message decisions without fallback");
 Console.WriteLine("ALL REGRESSIONS PASSED");

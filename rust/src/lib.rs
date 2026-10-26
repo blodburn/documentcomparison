@@ -284,3 +284,4 @@ mod tests {
 pub mod doc_boundary;
 pub mod doc_diff_hunks;
 pub mod doc_diff_review;
+pub mod doc_pair_plan;

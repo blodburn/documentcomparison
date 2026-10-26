@@ -152,6 +152,30 @@ public static class NativeCodeVersionComparer
     public sealed record DocumentTableCell(int Index, int Table, int Row, string Key);
     public sealed record DocumentTablePair(int Base, int Other);
     public sealed record DocumentTokenBlock(int A, int B, int Size);
+    public sealed record DocumentUnmatchedPart(
+        int Index,bool HasContent,bool Moved,string Source,string Target);
+    public sealed record DocumentUnmatchedDecision(
+        int Index,string Action,string Message,int GapAnchor);
+    public sealed record DocumentStructuralPart(
+        string Label,int Level,string Family,int Start,int End);
+    public sealed record DocumentPairPlanItem(
+        int Old,int New,string OldLabel,string NewLabel,
+        int OldLevel,int NewLevel,int? OldOrdinal,int? NewOrdinal,
+        bool ParentEquivalent,bool ContentEqual,bool SharedEdge,
+        bool SubstantialSentence,bool ReviewAnchors,double Score);
+    public sealed record DocumentPairPlanDecision(
+        int Old,int New,bool LabelChanged,bool ContentChanged,
+        bool Rewrite,string Message);
+    public sealed record DocumentPairPlanResult(
+        bool ArticleMoved,bool TitleChanged,bool BodyChanged,
+        bool StructureChanged,List<string> StructureMessages,
+        List<DocumentUnmatchedDecision> UnmatchedOld,
+        List<DocumentUnmatchedDecision> UnmatchedNew,
+        string Status,string NumberMessage,
+        string TitleMessage,List<DocumentPairPlanDecision> Decisions);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int DocumentPairPlanDelegate(
+        [In] byte[] input,nuint length,out NativeAstResult result);
     public sealed record DocumentReviewDiffEvent(
         string Kind,string OldText,string NewText,int OldStart,int OldEnd,
         int NewStart,int NewEnd,int HunkOrder);
@@ -334,6 +358,7 @@ public static class NativeCodeVersionComparer
         public readonly DocumentBoundaryDelegate? DocumentBoundary;
         public readonly DocumentDiffHunksDelegate? DocumentDiffHunks;
         public readonly DocumentReviewDiffDelegate? DocumentReviewDiff;
+        public readonly DocumentPairPlanDelegate? DocumentPairPlan;
 
         public Exports(IntPtr handle)
         {
@@ -476,6 +501,11 @@ public static class NativeCodeVersionComparer
                 DocumentReviewDiff =
                     Marshal.GetDelegateForFunctionPointer<DocumentReviewDiffDelegate>(
                         fullReviewExport);
+            if (NativeLibrary.TryGetExport(handle,
+                "dc_plan_document_pair_utf8", out var pairPlanExport))
+                DocumentPairPlan =
+                    Marshal.GetDelegateForFunctionPointer<DocumentPairPlanDelegate>(
+                        pairPlanExport);
         }
     }
 
@@ -1274,6 +1304,78 @@ public static class NativeCodeVersionComparer
     }
 
     private sealed record DocumentTokenBlocksWire(List<DocumentTokenBlock> Blocks);
+    /// <summary>
+    /// Rust ownership of legal article, clause/part movement,
+    /// whole-item rewrite and final status classification.
+    /// </summary>
+    public static DocumentPairPlanResult? PlanDocumentPair(
+        string pair,string oldKind,string newKind,
+        string oldNumber,string newNumber,string oldTitle,string newTitle,
+        string oldHeader,string newHeader,bool legalArticle,
+        bool titlesEquivalent,bool headersEquivalent,
+        bool headersSemanticallyEqual,
+        IReadOnlyList<DocumentStructuralPart> oldParts,
+        IReadOnlyList<DocumentStructuralPart> newParts,
+        int oldPartCount,int newPartCount,
+        IReadOnlyList<DocumentPairPlanItem> items,
+        IReadOnlyList<DocumentUnmatchedPart> unmatchedOld,
+        IReadOnlyList<DocumentUnmatchedPart> unmatchedNew)
+    {
+        var exports=Native.Value;
+        if(exports?.DocumentPairPlan is null ||
+            oldPartCount is < 0 or > 256 || newPartCount is < 0 or > 256 ||
+            items.Count>256 || oldParts.Count!=oldPartCount ||
+            newParts.Count!=newPartCount ||
+            unmatchedOld.Count>256 || unmatchedNew.Count>256 ||
+            items.Any(x=>x.Old<0 || x.Old>=oldPartCount ||
+                x.New<0 || x.New>=newPartCount ||
+                !double.IsFinite(x.Score) ||
+                x.Score is < 0 or > 1.5))
+            return null;
+        var input=JsonSerializer.SerializeToUtf8Bytes(new{
+            pair,oldKind,newKind,oldNumber,newNumber,oldTitle,newTitle,
+            oldHeader,newHeader,legalArticle,titlesEquivalent,
+            headersEquivalent,headersSemanticallyEqual,oldParts,newParts,
+            oldPartCount,newPartCount,items,unmatchedOld,unmatchedNew
+        },new JsonSerializerOptions{
+            PropertyNamingPolicy=JsonNamingPolicy.CamelCase
+        });
+        if(input.Length>1024*1024)return null;
+        var status=exports.DocumentPairPlan(input,(nuint)input.Length,out var output);
+        try
+        {
+            if(status is 2 or 3)return null;
+            if(status!=0)
+                throw new InvalidDataException($"Rust 조문 구조 판정 실패: {status}");
+            if(output.Data==IntPtr.Zero || output.Length==0 ||
+                output.Length>1024UL*1024)
+                throw new InvalidDataException("Rust 조문 구조 판정 데이터 오류");
+            var bytes=new byte[checked((int)output.Length)];
+            Marshal.Copy(output.Data,bytes,0,bytes.Length);
+            var result=JsonSerializer.Deserialize<DocumentPairPlanResult>(bytes,
+                new JsonSerializerOptions{PropertyNameCaseInsensitive=true});
+            if(result?.Decisions is null || result.StructureMessages is null ||
+                result.UnmatchedOld is null || result.UnmatchedNew is null ||
+                result.UnmatchedOld.Count!=unmatchedOld.Count ||
+                result.UnmatchedNew.Count!=unmatchedNew.Count ||
+                result.UnmatchedOld.Where((x,i)=>x.Index!=unmatchedOld[i].Index ||
+                    x.Action is not ("skip" or "move" or "delete") ||
+                    x.Message is null || x.GapAnchor<0).Any() ||
+                result.UnmatchedNew.Where((x,i)=>x.Index!=unmatchedNew[i].Index ||
+                    x.Action is not ("skip" or "move" or "insert") ||
+                    x.Message is null || x.GapAnchor<0).Any() ||
+                result.Decisions.Count!=items.Count ||
+                result.Status is null || result.NumberMessage is null ||
+                result.TitleMessage is null ||
+                result.Decisions.Where((d,i)=>d.Old!=items[i].Old ||
+                    d.New!=items[i].New || d.Message is null).Any())
+                throw new InvalidDataException("Rust 조문 구조 판정 결과 오류");
+            return result;
+        }
+        finally{exports.AstFree(ref output);}
+    }
+
+
     /// <summary>
     /// Full Rust generic DiffText event planner: matching token anchors,
     /// punctuation filtering, word segmentation, Hangul prefix and

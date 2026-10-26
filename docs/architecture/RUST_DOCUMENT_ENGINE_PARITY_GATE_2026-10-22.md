@@ -715,3 +715,45 @@ exceptions and model/Word review formatting. The source-reader and
 exporter may remain C#, but calling this a fully Rust-owned
 NativeComparisonEngine before the above ownership transitions
 would be incorrect.
+
+## Rust-first complete article/part structural classification plan (2026-10-26)
+
+The module rust/src/doc_pair_plan.rs now acts as the primary ComparePair
+decision planner for ordinary legal/general, non-table document pairs.
+The single typed plan owns the following classification and outputs:
+
+- legal article move/re-number versus substantive change; article title
+  and ordinary unit-header change classification; Korean status messages
+  and renumbering messages;
+- matched 항/호/목/본문 item moves versus same-ordinal drafting-notation
+  changes versus parent-level changes, including exact structural messages;
+- full-item replacement versus preserved-sentence/partial-token review
+  selection, with existing normalized similarity, edge-context and
+  semantic equality measurements supplied as immutable input features;
+- unpaired structural item movement versus inserted/deleted content,
+  source/target movement messages and the exact structural insertion
+  gap boundary determined from neighboring matched units;
+- body-to-enumeration splitting, enumerated 항호-to-body merging, hierarchy
+  depth/family changes and final per-pair state text.
+
+In production the managed ComparePair invokes the Rust plan, maps
+the decisions to existing NativeMarker presentation objects,
+then delegates text events to the Rust-first DiffText planner.
+With DOCUMENTCOMPARE_REQUIRE_NATIVE=1, the entire generated marker list
+(including source/target offsets/endpoints and messages) and the full
+ordered structural messages are compared against the preserved C#
+ComparePairCore(useRustPlan:false) reference.
+The real DOCX and legal regression corpus adopted Rust plans 1,481 times
+with zero full-output divergence and no managed fallback. Dedicated
+native tests cover renumbering, unpaired items, anchor placement,
+body merge/split and changed structural hierarchy.
+
+Scope clarification: This migrates the ComparePair decision branch
+and global structural presentation rules, not the entirety of
+NativeComparisonEngine.cs. C# still computes semantic feature inputs
+(Regex, selected source-global movement candidates and Word DOCX
+cell merge metadata), owns some specialized review exception paths
+and the outer three-way flow, and creates UI/Word models.
+Older Rust DLLs retain tested C# compatibility fallback.
+Rust-only independent comparison across every input type remains
+a separate required completion gate.
