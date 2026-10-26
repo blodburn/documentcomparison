@@ -228,13 +228,10 @@ public sealed class NativeComparisonEngine : IComparisonEngine
 
     private static List<NativeUnit> ParseUnits(string text, string mode)
     {
-        text=NormalizeLegalBoundaries(NativeDocumentReader.NormalizeNewlines(text));
-        var legal=mode.Equals("legal",StringComparison.OrdinalIgnoreCase) ||
-            (!mode.Equals("general",StringComparison.OrdinalIgnoreCase) &&
-                LooksLegal(text));
+        text=NativeDocumentReader.NormalizeNewlines(text);
         try
         {
-            var native=NativeCodeVersionComparer.ParseDocumentUnits(text,legal);
+            var native=NativeCodeVersionComparer.ParseRawDocumentUnits(text,mode);
             if (native is null) return ParseUnitsCSharp(text,mode);
             var parsed=native.Select(u=>NativeUnit.Create(u.Index,u.Number,u.Title,
                 u.Header,u.Body,u.Section,u.Kind)).ToList();
@@ -710,42 +707,12 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             if (additions.Count>192 || matches.Count>1024)
                 return BuildRowsCSharp(docs,baseIndex,token);
 
-            // For three-way comparisons, C# retains the original semantic
-            // merge predicates. Rust independently owns the insertion slot,
-            // row ordering, one-to-one merge choice and final row grid.
-            var allowed=new List<NativeCodeVersionComparer.DocumentRowMerge>();
-            foreach(var group in additions.GroupBy(x=>x.Slot))
-            {
-                var ordered=group.OrderBy(x=>x.UnitIndex).ThenBy(x=>x.Doc).ToList();
-                for(var i=0;i<ordered.Count;i++)
-                for(var j=i+1;j<ordered.Count;j++)
-                {
-                    if (ordered[i].Doc==ordered[j].Doc) continue;
-                    var ex=docs[ordered[i].Doc][ordered[i].Other];
-                    var other=docs[ordered[j].Doc][ordered[j].Other];
-                    if (UnitLineageSimilarity(ex,other)<.84) continue;
-                    if (ex.Title.Length>0 && other.Title.Length>0 &&
-                        TitleSimilarity(ex,other)<.35) continue;
-                    if (ex.Number.Length>0 && other.Number.Length>0 &&
-                        !string.Equals(ex.Number,other.Number,
-                            StringComparison.OrdinalIgnoreCase))
-                    {
-                        if (ex.Title.Length==0 || other.Title.Length==0 ||
-                            TitleSimilarity(ex,other)<.35) continue;
-                        if (IsLowInformationTitle(ex.Title) &&
-                            IsLowInformationTitle(other.Title))
-                        {
-                            var exBody=LineageNormalize(ex.Body);
-                            var otherBody=LineageNormalize(other.Body);
-                            if (exBody.Length==0 || exBody!=otherBody) continue;
-                        }
-                    }
-                    allowed.Add(new(ordered[i].Doc,ordered[i].Other,
-                        ordered[j].Doc,ordered[j].Other));
-                }
-            }
-            var native=NativeCodeVersionComparer.AlignDocumentRows(
-                counts,baseIndex,matches,additions,allowed);
+            var rawUnits=docs.Select(doc=>
+                (IReadOnlyList<NativeCodeVersionComparer.RawLineageUnit>)
+                doc.Select(u=>new NativeCodeVersionComparer.RawLineageUnit(
+                    u.Kind,u.Number,u.Title,u.Header,u.Body)).ToArray()).ToArray();
+            var native=NativeCodeVersionComparer.AlignDocumentRawRows(
+                rawUnits,baseIndex,matches,additions);
             if (native is null) return BuildRowsCSharp(docs,baseIndex,token);
             var rows=native.Select(indices=>indices.Select((idx,doc)=>
                 idx.HasValue ? docs[doc][idx.Value] : null).ToArray()).ToList();
@@ -1024,48 +991,14 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         token.ThrowIfCancellationRequested();
         try
         {
-            var oldUnits=a.Select(u=>new NativeCodeVersionComparer.DocumentUnitLineageUnit(
-                IsLegalArticle(u),u.Number,u.Title,
-                LineageNormalize(u.Title),LineageNormalize(u.Body),
-                IsLowInformationTitle(u.Title))).ToArray();
-            var newUnits=b.Select(u=>new NativeCodeVersionComparer.DocumentUnitLineageUnit(
-                IsLegalArticle(u),u.Number,u.Title,
-                LineageNormalize(u.Title),LineageNormalize(u.Body),
-                IsLowInformationTitle(u.Title))).ToArray();
-            var features=new List<NativeCodeVersionComparer.DocumentUnitLineageFeature>(
-                a.Count*b.Count);
-            for(var i=0;i<a.Count;i++)
-            for(var j=0;j<b.Count;j++)
-            {
-                if ((j & 31)==0) token.ThrowIfCancellationRequested();
-                var oldArticle=IsLegalArticle(a[i]);
-                var newArticle=IsLegalArticle(b[j]);
-                var score=0.0;
-                var threshold=2.0;
-                if (!oldArticle && !newArticle &&
-                    string.Equals(a[i].Kind,b[j].Kind,StringComparison.Ordinal))
-                {
-                    score=Similarity(a[i].Text,b[j].Text);
-                    threshold=.48;
-                    if (a[i].Kind=="section")
-                    {
-                        if (string.Equals(a[i].Number,b[j].Number,StringComparison.OrdinalIgnoreCase))
-                        {
-                            score=Math.Max(score,.88);
-                            threshold=.30;
-                        }
-                        else if (a[i].Title.Length>0 && b[j].Title.Length>0)
-                            score=Math.Max(score,.70*Similarity(a[i].Title,b[j].Title));
-                    }
-                }
-                features.Add(new(
-                    oldArticle && newArticle ? TitleSimilarity(a[i],b[j]) : 0,
-                    oldArticle && newArticle ? BodySimilarity(a[i],b[j]) : 0,
-                    oldArticle && newArticle ? UnitLineageSimilarity(a[i],b[j]) : 0,
-                    score,threshold));
-            }
-            var native=NativeCodeVersionComparer.MatchDocumentUnitLineage(
-                oldUnits,newUnits,features);
+            var oldUnits=a.Select(u=>
+                new NativeCodeVersionComparer.RawLineageUnit(
+                    u.Kind,u.Number,u.Title,u.Header,u.Body)).ToArray();
+            var newUnits=b.Select(u=>
+                new NativeCodeVersionComparer.RawLineageUnit(
+                    u.Kind,u.Number,u.Title,u.Header,u.Body)).ToArray();
+            var native=NativeCodeVersionComparer.MatchDocumentRawLineage(
+                oldUnits,newUnits);
             if (native is null) return MatchUnitSequenceCSharp(a,b,token);
             if (Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_REQUIRE_NATIVE") == "1" ||
                 Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_VERIFY_DOCUMENT_MATCHES") == "1")
@@ -1369,15 +1302,8 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         token.ThrowIfCancellationRequested();
         try
         {
-            var similarities = new List<double>(a.Count * b.Count);
-            for (var i=0; i<a.Count; i++)
-            for (var j=0; j<b.Count; j++)
-            {
-                if ((j & 63)==0) token.ThrowIfCancellationRequested();
-                similarities.Add(Similarity(a[i].Body, b[j].Body));
-            }
-            var native = NativeCodeVersionComparer.MatchGenericDocumentUnits(
-                a.Count, b.Count, similarities);
+            var native=NativeCodeVersionComparer.MatchGenericDocumentRaw(
+                a.Select(x=>x.Body).ToArray(),b.Select(x=>x.Body).ToArray());
             if (native is null) return MatchGenericUnitsCSharp(a,b,token);
             if (Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_REQUIRE_NATIVE") == "1" ||
                 Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_VERIFY_DOCUMENT_MATCHES") == "1")
@@ -1593,7 +1519,57 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return Math.Min(1.0, score);
     }
 
-    private static Dictionary<(int OldDoc, int NewDoc, int OldIndex, int NewIndex), string> FindTableMovement(
+    private static long _tableMovementRustMatches;
+    private static long _tableMovementRustMismatches;
+    internal static long TableMovementRustMatches =>
+        System.Threading.Interlocked.Read(ref _tableMovementRustMatches);
+    internal static long TableMovementRustMismatches =>
+        System.Threading.Interlocked.Read(ref _tableMovementRustMismatches);
+
+    private static Dictionary<(int OldDoc,int NewDoc,int OldIndex,int NewIndex),string>
+        FindTableMovement(IReadOnlyList<NativeUnit?[]> rows,int docCount,
+            int baseIndex,bool includeAC)
+    {
+        try
+        {
+            static NativeCodeVersionComparer.DocumentMovementLocation Loc(NativeUnit u)=>
+                new(u.Index,u.TableCell?.Table,u.TableCell?.Row,
+                    u.TableCell?.Column);
+            var groups=PairPlan(docCount,baseIndex,includeAC).Select(p=>
+                new NativeCodeVersionComparer.DocumentMovementGroup(
+                    p.Old,p.New,rows.Where(r=>r[p.Old] is not null &&
+                        r[p.New] is not null).Select(r=>
+                        new NativeCodeVersionComparer.DocumentMovementPair(
+                            Loc(r[p.Old]!),Loc(r[p.New]!))).ToArray()))
+                .ToArray();
+            var result=NativeCodeVersionComparer.FindDocxTableMovements(groups);
+            if(result is null)return FindTableMovementCSharp(rows,docCount,baseIndex,includeAC);
+            var mapped=result.ToDictionary(
+                m=>(m.OldDoc,m.NewDoc,m.OldIndex,m.NewIndex),
+                m=>m.Reason);
+            if(Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_REQUIRE_NATIVE")=="1" ||
+                Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_VERIFY_DOCUMENT_MATCHES")=="1")
+            {
+                var reference=FindTableMovementCSharp(rows,docCount,baseIndex,includeAC);
+                if(mapped.Count!=reference.Count ||
+                    mapped.Any(k=>!reference.TryGetValue(k.Key,out var r)||r!=k.Value))
+                {
+                    System.Threading.Interlocked.Increment(ref _tableMovementRustMismatches);
+                    return reference;
+                }
+            }
+            System.Threading.Interlocked.Increment(ref _tableMovementRustMatches);
+            return mapped;
+        }
+        catch(Exception ex) when(ex is InvalidDataException or
+            System.Text.Json.JsonException or ArgumentException or OverflowException)
+        {
+            System.Threading.Interlocked.Increment(ref _tableMovementRustMismatches);
+            return FindTableMovementCSharp(rows,docCount,baseIndex,includeAC);
+        }
+    }
+
+    private static Dictionary<(int OldDoc, int NewDoc, int OldIndex, int NewIndex), string> FindTableMovementCSharp(
         IReadOnlyList<NativeUnit?[]> rows, int docCount, int baseIndex, bool includeAC)
     {
         var moves = new Dictionary<(int, int, int, int), string>();
@@ -1647,32 +1623,11 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         {
             var old = members[oldDoc]; var revised = members[newDoc];
             if (old is null && revised is null) continue;
-            if (old is null)
+            if(old is null || revised is null)
             {
-                var unitLabel = revised!.Kind == "article" ? "조" : revised.Kind == "section" ? "장/절" : "본문 블록";
-                structural.Add($"{pair} · 상태: {unitLabel} 신규");
-                structural.Add($"{pair} · {unitLabel} 추가: {revised.HeaderOrBody}");
-                if (revised.Header.Length > 0)
-                    nativeMarkers.Add(NativeMarker.Insert(pair, order, oldDoc, newDoc, revised.Header, 0, 0, revised.Header.Length, "header", -2, -2));
-                if (revised.Body.Length > 0)
-                {
-                    var offset = revised.Header.Length + 1;
-                    nativeMarkers.Add(NativeMarker.Insert(pair, order, oldDoc, newDoc, revised.Body, 0, offset, offset + revised.Body.Length, "body", 0, 0));
-                }
-                continue;
-            }
-            if (revised is null)
-            {
-                var unitLabel = old.Kind == "article" ? "조" : old.Kind == "section" ? "장/절" : "본문 블록";
-                structural.Add($"{pair} · 상태: {unitLabel} 삭제");
-                structural.Add($"{pair} · {unitLabel} 삭제: {old.HeaderOrBody}");
-                if (old.Header.Length > 0)
-                    nativeMarkers.Add(NativeMarker.Delete(pair, order, oldDoc, newDoc, old.Header, 0, old.Header.Length, 0, "header", -2, -2));
-                if (old.Body.Length > 0)
-                {
-                    var offset = old.Header.Length + 1;
-                    nativeMarkers.Add(NativeMarker.Delete(pair, order, oldDoc, newDoc, old.Body, offset, offset + old.Body.Length, 0, "body", 0, 0));
-                }
+                AppendMissingUnitRust(old ?? revised!,old is null ?
+                    "insert" : "delete",oldDoc,newDoc,pair,order,
+                    nativeMarkers,structural);
                 continue;
             }
             if (tableMoves.TryGetValue((oldDoc, newDoc, old.Index, revised.Index), out var movement))
@@ -1710,6 +1665,37 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         System.Threading.Interlocked.Read(ref _rawPairRustMatches);
     internal static long RawPairRustUnsupported =>
         System.Threading.Interlocked.Read(ref _rawPairRustUnsupported);
+
+    private static long _singleUnitRustMatches;
+    internal static long SingleUnitRustMatches =>
+        System.Threading.Interlocked.Read(ref _singleUnitRustMatches);
+    private static void AppendMissingUnitRust(
+        NativeUnit unit,string action,int oldDoc,int newDoc,string pair,
+        int order,List<NativeMarker> markers,List<string> structural)
+    {
+        var c=unit.TableCell;
+        var data=new NativeCodeVersionComparer.RawCompareUnit(
+            unit.Index,unit.Kind,unit.Number,unit.Title,unit.Header,unit.Body,
+            c is null ? null : new NativeCodeVersionComparer.RawCompareCell(
+                c.Span,c.VerticalMerge,c.ParagraphCount));
+        var result=NativeCodeVersionComparer.CompareRawMissingUnit(data,action);
+        if(result is null)
+            throw new NotSupportedException(
+                $"Rust 신규/삭제 조문 입력 지원 범위 초과: {unit.Kind}, {unit.Body.Length}");
+        structural.AddRange(result.Structural.Select(m=>$"{pair} · {m}"));
+        foreach(var m in result.Markers)
+        {
+            if(m.Kind=="insert")
+                markers.Add(NativeMarker.Insert(pair,order,oldDoc,newDoc,
+                    m.NewText,m.OldStart,m.NewStart,m.NewEnd,
+                    m.Part,m.ItemOrder,m.HunkOrder));
+            else
+                markers.Add(NativeMarker.Delete(pair,order,oldDoc,newDoc,
+                    m.OldText,m.OldStart,m.OldEnd,m.NewStart,
+                    m.Part,m.ItemOrder,m.HunkOrder));
+        }
+        System.Threading.Interlocked.Increment(ref _singleUnitRustMatches);
+    }
 
     private static List<string> ComposeRawStructuralMessages(
         List<string> existing,List<string> fresh)

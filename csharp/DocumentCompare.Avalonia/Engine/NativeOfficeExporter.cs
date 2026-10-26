@@ -3362,7 +3362,33 @@ internal static class NativeOfficeExporter
         return kept.Count > 0 ? kept : matches.ToList();
     }
 
-    private static List<(int A, int B)> Lcs(string[] a, string[] b)
+    private static long _exportLcsRustMatches;
+    private static long _exportLcsRustMismatches;
+    internal static long ExportLcsRustMatches =>
+        System.Threading.Interlocked.Read(ref _exportLcsRustMatches);
+    internal static long ExportLcsRustMismatches =>
+        System.Threading.Interlocked.Read(ref _exportLcsRustMismatches);
+
+    private static List<(int A,int B)> Lcs(string[] a,string[] b)
+    {
+        var native=NativeCodeVersionComparer.MatchExportLcs(a,b);
+        if(native is null)return LcsCSharp(a,b);
+        var pairs=native.Select(x=>(x.A,x.B)).ToList();
+        if(Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_REQUIRE_NATIVE")=="1" ||
+            Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_VERIFY_DOCUMENT_MATCHES")=="1")
+        {
+            var original=LcsCSharp(a,b);
+            if(!pairs.SequenceEqual(original))
+            {
+                System.Threading.Interlocked.Increment(ref _exportLcsRustMismatches);
+                return original;
+            }
+        }
+        System.Threading.Interlocked.Increment(ref _exportLcsRustMatches);
+        return pairs;
+    }
+
+    private static List<(int A, int B)> LcsCSharp(string[] a, string[] b)
     {
         if ((long)(a.Length + 1) * (b.Length + 1) > 4_000_000L)
             return SequencePairs(a, b);

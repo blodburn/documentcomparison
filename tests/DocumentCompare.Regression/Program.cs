@@ -143,9 +143,9 @@ if (args.Length==1 && args[0]=="--smoke-native-production")
     Check(wordReview.Rows.Any(x=>x.Changed) &&
         GetRustCounter("RawPairRustMatches")>initialFullReview,
         "production general word edits must use source-owned Rust ComparePair");
-    Check(GetRustCounter("CharacterScoreRustMatches")>0 &&
-        GetRustCounter("TokenScoreRustMatches")>0,
-        "production Rust-first character and token similarity scores were never used");
+    Check(GetRustCounter("RawPairRustMatches")>0 &&
+        GetRustCounter("GenericUnitRustMatches")>0,
+        "production raw Rust document review and generic scoring were not used");
     var beforeMorph=GetRustCounter("KoreanReviewRustMatches");
     var morph=typeof(NativeComparisonEngine).GetMethod("TryKoreanReviewDiff",
         BindingFlags.Static|BindingFlags.NonPublic)!;
@@ -5073,4 +5073,121 @@ var rawPairUnsupported=(long)typeof(NativeComparisonEngine).GetProperty(
 Console.WriteLine($"RUST RAW COMPAREPAIR owned={rawPairNative} unsupported={rawPairUnsupported}");
 Check(rawPairNative>0 && rawPairUnsupported==0,
     "Rust-only ComparePair must handle every regression pair without C# fallback");
+
+// Source-owned generic block matching must reproduce exactly the historical
+// C# normalization/token similarity and Rust ranking for every returned pair.
+if (NativeCodeVersionComparer.IsAvailable)
+{
+    var rng=new Random(20261026);
+    var parts=new[]{"A","the","privacy","contract","personal","data",
+        "동의","없이","개인정보","회원","가입","제1조"," "," ",".","!","a_b","123",
+        "가나다","네","또는","②","(1)","ＷＯＲＤ"};
+    var tested=0;
+    for(var trial=0;trial<240;trial++)
+    {
+        var countA=rng.Next(0,9);var countB=rng.Next(0,9);
+        string MakeGenericBody()=>string.Concat(Enumerable.Range(0,rng.Next(1,13))
+            .Select(_=>parts[rng.Next(parts.Length)]));
+        var old=Enumerable.Range(0,countA).Select(_=>MakeGenericBody()).ToArray();
+        var revised=Enumerable.Range(0,countB).Select(_=>MakeGenericBody()).ToArray();
+        var similarities=old.SelectMany(a=>revised.Select(b=>
+            (double)typeof(NativeComparisonEngine).GetMethod("SimilarityCSharp",
+                BindingFlags.NonPublic|BindingFlags.Static)!.Invoke(null,new object[]{a,b})!)).ToArray();
+        var reference=NativeCodeVersionComparer.MatchGenericDocumentUnits(
+            old.Length,revised.Length,similarities);
+        var native=NativeCodeVersionComparer.MatchGenericDocumentRaw(old,revised);
+        Check(native is not null && reference is not null &&
+            native.Count==reference.Count &&
+            native.Zip(reference).All(x=>
+                x.First.Base==x.Second.Base &&
+                x.First.Other==x.Second.Other &&
+                x.First.Mode==x.Second.Mode &&
+                Math.Abs(x.First.Score-x.Second.Score)<1e-12),
+            "Rust source-owned generic matching deviated from reference: "+trial);
+        tested++;
+    }
+    Check(NativeCodeVersionComparer.MatchGenericDocumentRaw(
+        Enumerable.Range(0,65).Select(i=>i.ToString()).ToArray(),
+        new[]{"one"}) is null,
+        "oversize Rust generic input must fail safe");
+    Console.WriteLine($"PASS RUST RAW GENERIC UNIT SIMILARITY CSHARP PARITY {tested}/{tested}");
+}
+
+// Word XML exporter paragraph, tracked-revision and formatting LCS is Rust-first.
+// Both ordinary DP tie-breaking and the long-sequence matcher must be exact.
+if (NativeCodeVersionComparer.IsAvailable)
+{
+    var exporter=typeof(NativeComparisonEngine).Assembly.GetType(
+        "DocumentCompare.Avalonia.Engine.NativeOfficeExporter")!;
+    var old=exporter.GetMethod("LcsCSharp",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var production=exporter.GetMethod("Lcs",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var accepted=exporter.GetProperty("ExportLcsRustMatches",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var drift=exporter.GetProperty("ExportLcsRustMismatches",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var start=(long)accepted.GetValue(null)!;
+    var rejected=(long)drift.GetValue(null)!;
+    var rng=new Random(20261026);
+    var words=new[]{"A","B","B","C","동의","개인정보","a-b","123",
+        "한글","(1)","①"," ","","same","same","other","표 셀","세션"};
+    var tested=0;
+    for(var trial=0;trial<275;trial++)
+    {
+        var first=Enumerable.Range(0,rng.Next(0,23))
+            .Select(_=>words[rng.Next(words.Length)]).ToArray();
+        var second=Enumerable.Range(0,rng.Next(0,23))
+            .Select(_=>words[rng.Next(words.Length)]).ToArray();
+        object[] lcsArgs={first,second};
+        var expected=(List<(int A,int B)>)old.Invoke(null,lcsArgs)!;
+        var actual=(List<(int A,int B)>)production.Invoke(null,lcsArgs)!;
+        Check(actual.SequenceEqual(expected),
+            "Rust Word exporter LCS differs: "+trial);
+        tested++;
+    }
+    var longDoc=Enumerable.Range(0,2020)
+        .Select(i=>"Paragraph "+i).ToArray();
+    object[] longArgs={longDoc,longDoc};
+    var longExpected=(List<(int A,int B)>)old.Invoke(null,longArgs)!;
+    var longActual=(List<(int A,int B)>)production.Invoke(null,longArgs)!;
+    Check(longActual.SequenceEqual(longExpected),
+        "Rust Word exporter large document block LCS differs");
+    tested++;
+    Check((long)accepted.GetValue(null)!-start==tested &&
+        ((long)drift.GetValue(null)!)==rejected,
+        "Word export LCS unexpectedly fell back to C#");
+    Console.WriteLine($"PASS RUST WORD EXPORT LCS CSHARP PARITY {tested}/{tested}");
+}
+var tableMovementType=typeof(NativeComparisonEngine);
+var tableMovementAccepted=(long)tableMovementType.GetProperty(
+    "TableMovementRustMatches",BindingFlags.Static|BindingFlags.NonPublic)!
+    .GetValue(null)!;
+var tableMovementMismatch=(long)tableMovementType.GetProperty(
+    "TableMovementRustMismatches",BindingFlags.Static|BindingFlags.NonPublic)!
+    .GetValue(null)!;
+Check(tableMovementAccepted>0&&tableMovementMismatch==0,
+    "Rust DOCX table movement must match the exact source correspondence");
+Console.WriteLine($"PASS RUST DOCX TABLE MOVEMENT nativeCalls={tableMovementAccepted} mismatches={tableMovementMismatch}");
+// Production ownership gates: migrated stages must not silently revert to
+// C# implementation during the supported regression document corpus.
+var engineOwnership=typeof(NativeComparisonEngine);
+long Ownership(string name)=>(long)engineOwnership.GetProperty(name,
+    BindingFlags.Static|BindingFlags.NonPublic)!.GetValue(null)!;
+var stageNames=new[]{
+    ("UnitParserRustMatches","UnitParserRustMismatches"),
+    ("GenericUnitRustMatches","GenericUnitRustMismatches"),
+    ("UnitLineageRustMatches","UnitLineageRustMismatches"),
+    ("RowAlignmentRustMatches","RowAlignmentRustMismatches"),
+    ("TableMovementRustMatches","TableMovementRustMismatches")
+};
+foreach(var (accept,reject) in stageNames)
+{
+    var accepted=Ownership(accept);var rejected=Ownership(reject);
+    Console.WriteLine($"RUST STAGE OWNERSHIP {accept}={accepted} {reject}={rejected}");
+    Check(accepted>0 && rejected==0,
+        "migrated source-scored document stage did not adopt Rust exclusively: "+accept);
+}
+Check(Ownership("SingleUnitRustMatches")>0,
+    "one-sided added/deleted document rows must be Rust-owned");
 Console.WriteLine("ALL REGRESSIONS PASSED");

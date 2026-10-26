@@ -284,4 +284,8 @@ mod tests {
 pub mod doc_boundary;
 pub mod doc_diff_hunks;
 pub mod doc_diff_review;
+pub mod doc_export_lcs;
 pub mod doc_pair_raw;
+pub mod doc_row_alignment_raw;
+pub mod doc_table_movement;
+pub mod doc_unit_lineage_raw;

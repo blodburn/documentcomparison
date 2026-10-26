@@ -2085,3 +2085,326 @@ pub unsafe extern "C" fn dc_compare_document_pair_raw_utf8(
         Err(_) => 5,
     }
 }
+
+/// Raw generic-unit matching: the native engine owns all similarity inputs.
+/// # Safety
+/// Caller provides readable request bytes and exclusive writable output;
+/// release successful output through dc_free_ast_json_result.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dc_match_generic_document_raw_utf8(
+    input: *const u8,
+    length: usize,
+    output: *mut DcAstJsonResult,
+) -> i32 {
+    if output.is_null() {
+        return 2;
+    }
+    // SAFETY: caller grants exclusive output.
+    unsafe { ptr::write(output, DcAstJsonResult::empty()) };
+    if length > 2 * 1024 * 1024 || (length > 0 && input.is_null()) {
+        return 2;
+    }
+    let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let bytes = if length == 0 {
+            &[][..]
+        } else {
+            // SAFETY: caller grants readable input.
+            unsafe { slice::from_raw_parts(input, length) }
+        };
+        let parsed: crate::doc_generic_units::RawInput =
+            serde_json::from_slice(bytes).map_err(|_| 1)?;
+        if !crate::doc_generic_units::validate_raw(&parsed) {
+            return Err(3);
+        }
+        let Some(answer) = crate::doc_generic_units::match_raw(&parsed) else {
+            return Err(3);
+        };
+        serde_json::to_vec(&answer).map_err(|_| 4)
+    }));
+    match outcome {
+        Ok(Ok(raw)) => {
+            let boxed = raw.into_boxed_slice();
+            let length = boxed.len();
+            let data = Box::into_raw(boxed) as *mut u8;
+            // SAFETY: caller grants exclusive output.
+            unsafe { ptr::write(output, DcAstJsonResult { data, length }) };
+            0
+        }
+        Ok(Err(code)) => code,
+        Err(_) => 5,
+    }
+}
+
+// Exact paragraph/formatting LCS owned by the Rust export alignment engine.
+/// # Safety
+/// Caller provides readable input and exclusive writable output; release
+/// successful results using dc_free_ast_json_result.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dc_export_docx_lcs_utf8(
+    input: *const u8,
+    length: usize,
+    output: *mut DcAstJsonResult,
+) -> i32 {
+    if output.is_null() {
+        return 2;
+    }
+    // SAFETY: caller guarantees exclusive result write.
+    unsafe { ptr::write(output, DcAstJsonResult::empty()) };
+    if length > 8 * 1024 * 1024 || (length > 0 && input.is_null()) {
+        return 2;
+    }
+    let response = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let bytes = if length == 0 {
+            &[][..]
+        } else {
+            // SAFETY: caller guarantees readable input.
+            unsafe { slice::from_raw_parts(input, length) }
+        };
+        let req: crate::doc_export_lcs::Input = serde_json::from_slice(bytes).map_err(|_| 1)?;
+        if !crate::doc_export_lcs::validate(&req) {
+            return Err(3);
+        }
+        serde_json::to_vec(&crate::doc_export_lcs::align(&req)).map_err(|_| 4)
+    }));
+    match response {
+        Ok(Ok(raw)) => {
+            let b = raw.into_boxed_slice();
+            let length = b.len();
+            let data = Box::into_raw(b) as *mut u8;
+            // SAFETY: caller guarantees exclusive output.
+            unsafe { ptr::write(output, DcAstJsonResult { data, length }) };
+            0
+        }
+        Ok(Err(code)) => code,
+        Err(_) => 5,
+    }
+}
+
+/// Classify aligned DOCX table/row crossing movements.
+/// # Safety
+/// Caller provides readable UTF-8 JSON and exclusive writable result, and
+/// releases allocated bytes through dc_free_ast_json_result.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dc_find_docx_table_movements_utf8(
+    input: *const u8,
+    length: usize,
+    output: *mut DcAstJsonResult,
+) -> i32 {
+    if output.is_null() {
+        return 2;
+    }
+    // SAFETY: caller gives exclusive writable output.
+    unsafe { ptr::write(output, DcAstJsonResult::empty()) };
+    if length > 4 * 1024 * 1024 || (length > 0 && input.is_null()) {
+        return 2;
+    }
+    let response = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let bytes = if length == 0 {
+            &[][..]
+        } else {
+            // SAFETY: caller gives readable input.
+            unsafe { slice::from_raw_parts(input, length) }
+        };
+        let v: crate::doc_table_movement::Input = serde_json::from_slice(bytes).map_err(|_| 1)?;
+        if !crate::doc_table_movement::validate(&v) {
+            return Err(3);
+        }
+        serde_json::to_vec(&crate::doc_table_movement::classify(&v)).map_err(|_| 4)
+    }));
+    match response {
+        Ok(Ok(raw)) => {
+            let boxed = raw.into_boxed_slice();
+            let length = boxed.len();
+            let data = Box::into_raw(boxed) as *mut u8;
+            // SAFETY: caller gives exclusive writable output.
+            unsafe { ptr::write(output, DcAstJsonResult { data, length }) };
+            0
+        }
+        Ok(Err(code)) => code,
+        Err(_) => 5,
+    }
+}
+
+/// Source-only single-sided document unit addition/deletion events.
+/// # Safety
+/// Caller provides readable UTF-8 request and exclusive output; free
+/// successful native memory with dc_free_ast_json_result.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dc_document_single_unit_utf8(
+    input: *const u8,
+    length: usize,
+    output: *mut DcAstJsonResult,
+) -> i32 {
+    if output.is_null() {
+        return 2;
+    }
+    // SAFETY: caller supplies writable exclusive result.
+    unsafe { ptr::write(output, DcAstJsonResult::empty()) };
+    if length > 1024 * 1024 || (length > 0 && input.is_null()) {
+        return 2;
+    }
+    let answer = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let bytes = if length == 0 {
+            &[][..]
+        } else {
+            // SAFETY: caller supplies readable input.
+            unsafe { slice::from_raw_parts(input, length) }
+        };
+        let req: crate::doc_pair_raw::SingleInput = serde_json::from_slice(bytes).map_err(|_| 1)?;
+        let Some(result) = crate::doc_pair_raw::single(&req) else {
+            return Err(3);
+        };
+        serde_json::to_vec(&result).map_err(|_| 4)
+    }));
+    match answer {
+        Ok(Ok(data)) => {
+            let boxed = data.into_boxed_slice();
+            let length = boxed.len();
+            let ptr = Box::into_raw(boxed) as *mut u8;
+            // SAFETY: caller supplies writable exclusive output.
+            unsafe { ptr::write(output, DcAstJsonResult { data: ptr, length }) };
+            0
+        }
+        Ok(Err(code)) => code,
+        Err(_) => 5,
+    }
+}
+
+/// Legal article lineage with every fuzzy score calculated from raw Rust text.
+/// # Safety
+/// Caller provides readable UTF-8 input and exclusive writable output;
+/// free successful buffers with dc_free_ast_json_result.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dc_match_unit_lineage_raw_utf8(
+    input: *const u8,
+    length: usize,
+    output: *mut DcAstJsonResult,
+) -> i32 {
+    if output.is_null() {
+        return 2;
+    }
+    // SAFETY: caller promises exclusive output.
+    unsafe { ptr::write(output, DcAstJsonResult::empty()) };
+    if length > 2 * 1024 * 1024 || (length > 0 && input.is_null()) {
+        return 2;
+    }
+    let answer = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let data = if length == 0 {
+            &[][..]
+        } else {
+            // SAFETY: caller promises readable input.
+            unsafe { slice::from_raw_parts(input, length) }
+        };
+        let req: crate::doc_unit_lineage_raw::Input =
+            serde_json::from_slice(data).map_err(|_| 1)?;
+        if !crate::doc_unit_lineage_raw::validate(&req) {
+            return Err(3);
+        }
+        serde_json::to_vec(&crate::doc_unit_lineage_raw::match_raw(&req)).map_err(|_| 4)
+    }));
+    match answer {
+        Ok(Ok(raw)) => {
+            let boxed = raw.into_boxed_slice();
+            let length = boxed.len();
+            let data = Box::into_raw(boxed) as *mut u8;
+            // SAFETY: caller promises exclusive output.
+            unsafe { ptr::write(output, DcAstJsonResult { data, length }) };
+            0
+        }
+        Ok(Err(code)) => code,
+        Err(_) => 5,
+    }
+}
+
+/// A/B/C document additions: Rust scores original cross-document unit text
+/// and applies the entire third-version row merge and ordering policy.
+/// # Safety
+/// Caller supplies readable UTF-8 JSON and an exclusive writable output;
+/// release successful buffers via dc_free_ast_json_result.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dc_align_document_rows_raw_utf8(
+    input: *const u8,
+    length: usize,
+    output: *mut DcAstJsonResult,
+) -> i32 {
+    if output.is_null() {
+        return 2;
+    }
+    // SAFETY: exclusive output guaranteed by caller.
+    unsafe { ptr::write(output, DcAstJsonResult::empty()) };
+    if length > 4 * 1024 * 1024 || (length > 0 && input.is_null()) {
+        return 2;
+    }
+    let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let bytes = if length == 0 {
+            &[][..]
+        } else {
+            // SAFETY: readable input guaranteed by caller.
+            unsafe { slice::from_raw_parts(input, length) }
+        };
+        let req: crate::doc_row_alignment_raw::Input =
+            serde_json::from_slice(bytes).map_err(|_| 1)?;
+        if !crate::doc_row_alignment_raw::validate(&req) {
+            return Err(3);
+        }
+        serde_json::to_vec(&crate::doc_row_alignment_raw::align(&req)).map_err(|_| 4)
+    }));
+    match outcome {
+        Ok(Ok(data)) => {
+            let boxed = data.into_boxed_slice();
+            let length = boxed.len();
+            let data = Box::into_raw(boxed) as *mut u8;
+            // SAFETY: exclusive output guaranteed by caller.
+            unsafe { ptr::write(output, DcAstJsonResult { data, length }) };
+            0
+        }
+        Ok(Err(code)) => code,
+        Err(_) => 5,
+    }
+}
+
+/// Parse legal/general units directly from raw text, including structural
+/// boundary recovery and legal mode detection in Rust.
+/// # Safety
+/// Caller grants readable input and exclusive output; free returned data
+/// via dc_free_ast_json_result.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dc_parse_document_raw_units_utf8(
+    input: *const u8,
+    length: usize,
+    output: *mut DcAstJsonResult,
+) -> i32 {
+    if output.is_null() {
+        return 2;
+    }
+    // SAFETY: caller grants exclusive output.
+    unsafe { ptr::write(output, DcAstJsonResult::empty()) };
+    if length > 1024 * 1024 || (length > 0 && input.is_null()) {
+        return 2;
+    }
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let raw = if length == 0 {
+            &[][..]
+        } else {
+            // SAFETY: caller grants readable input.
+            unsafe { slice::from_raw_parts(input, length) }
+        };
+        let req: crate::doc_unit_parser::RawInput = serde_json::from_slice(raw).map_err(|_| 1)?;
+        let Some(parsed) = crate::doc_unit_parser::parse_raw(&req) else {
+            return Err(3);
+        };
+        serde_json::to_vec(&parsed).map_err(|_| 4)
+    }));
+    match result {
+        Ok(Ok(bytes)) => {
+            let boxed = bytes.into_boxed_slice();
+            let length = boxed.len();
+            let data = Box::into_raw(boxed) as *mut u8;
+            // SAFETY: caller grants exclusive output.
+            unsafe { ptr::write(output, DcAstJsonResult { data, length }) };
+            0
+        }
+        Ok(Err(code)) => code,
+        Err(_) => 5,
+    }
+}

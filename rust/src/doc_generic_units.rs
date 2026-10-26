@@ -75,9 +75,107 @@ pub fn validate(input: &Input) -> bool {
             .all(|s| s.is_finite() && (0.0..=1.0).contains(s))
 }
 
+// Complete generic block matching from original raw document bodies.
+// C# does not tokenize, normalize or supply scores to this engine.
+#[derive(Debug, Deserialize)]
+pub struct RawInput {
+    pub old: Vec<String>,
+    pub new: Vec<String>,
+}
+pub fn validate_raw(v: &RawInput) -> bool {
+    v.old.len() <= MAX_COUNT
+        && v.new.len() <= MAX_COUNT
+        && v.old
+            .iter()
+            .chain(&v.new)
+            .all(|t| t.encode_utf16().count() <= 8192)
+}
+pub fn match_raw(v: &RawInput) -> Option<Result> {
+    use crate::doc_normalize::{Input as NormalInput, convert};
+    use regex::Regex;
+    use std::sync::LazyLock;
+    static TOKEN: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"[가-힣A-Za-z0-9_]+|[^\s]").unwrap());
+    let prep = |s: &str| -> Option<(String, Vec<String>)> {
+        let normalized = convert(&NormalInput {
+            text: s.into(),
+            mode: "normalize".into(),
+        })
+        .text;
+        let tokens = TOKEN
+            .find_iter(&normalized)
+            .map(|m| m.as_str().to_owned())
+            .collect::<Vec<_>>();
+        if tokens.len() > 256 {
+            return None;
+        }
+        Some((normalized, tokens))
+    };
+    let old = v.old.iter().map(|s| prep(s)).collect::<Option<Vec<_>>>()?;
+    let new = v.new.iter().map(|s| prep(s)).collect::<Option<Vec<_>>>()?;
+    let score = |a: &(String, Vec<String>), b: &(String, Vec<String>)| -> f64 {
+        if a.0 == b.0 {
+            return 1.0;
+        }
+        if a.0.is_empty() || b.0.is_empty() {
+            return 0.0;
+        }
+        let mut previous = vec![0usize; b.1.len() + 1];
+        let mut current = vec![0usize; b.1.len() + 1];
+        for x in &a.1 {
+            for (j, y) in b.1.iter().enumerate() {
+                current[j + 1] = if x == y {
+                    previous[j] + 1
+                } else {
+                    current[j].max(previous[j + 1])
+                };
+            }
+            std::mem::swap(&mut previous, &mut current);
+        }
+        2.0 * previous[b.1.len()] as f64 / (a.1.len() + b.1.len()).max(1) as f64
+    };
+    let similarities = old
+        .iter()
+        .flat_map(|a| new.iter().map(move |b| score(a, b)))
+        .collect();
+    Some(select(&Input {
+        old_count: old.len(),
+        new_count: new.len(),
+        similarities,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn source_owned_semantics_and_compatibility() {
+        let case = RawInput {
+            old: vec![
+                "the contract".into(),
+                "개인정보 동의 없이".into(),
+                "Article 5".into(),
+            ],
+            new: vec![
+                "Article 5".into(),
+                "the contract".into(),
+                "개인정보 동의 없이".into(),
+            ],
+        };
+        let v = match_raw(&case).unwrap();
+        assert_eq!(v.matches[0].other, 1);
+        assert_eq!(v.matches[1].other, 2);
+        assert_eq!(v.matches[2].other, 0);
+    }
+    #[test]
+    fn generic_source_ignores_whitespace_like_dotnet() {
+        let case = RawInput {
+            old: vec!["A  B".into()],
+            new: vec!["A B".into()],
+        };
+        let v = match_raw(&case).unwrap();
+        assert_eq!(v.matches[0].score, 1.0);
+    }
     #[test]
     fn greedy_prefers_semantics_over_nearest() {
         let data = Input {

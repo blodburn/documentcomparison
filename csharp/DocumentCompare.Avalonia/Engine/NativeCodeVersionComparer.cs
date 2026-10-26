@@ -141,8 +141,31 @@ public static class NativeCodeVersionComparer
         string Text, int Hunk);
     public sealed record DocumentSentenceReview(
         bool Supported, List<DocumentSentenceReviewEvent> Events);
+    public sealed record DocumentMovementLocation(
+        int Index,int? Table,int? Row,int? Column);
+    public sealed record DocumentMovementPair(
+        DocumentMovementLocation Old,DocumentMovementLocation New);
+    public sealed record DocumentMovementGroup(
+        int OldDoc,int NewDoc,IReadOnlyList<DocumentMovementPair> Pairs);
+    public sealed record DocumentMovementMarker(
+        int OldDoc,int NewDoc,int OldIndex,int NewIndex,string Reason);
+    private sealed record DocumentMovementWire(
+        List<DocumentMovementMarker> Moves);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int DocumentTableMovementsDelegate(
+        [In] byte[] input,nuint length,out NativeAstResult result);
+    public sealed record DocumentExportLcsPair(int A,int B);
+    private sealed record DocumentExportLcsWire(List<DocumentExportLcsPair> Pairs);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int DocumentExportLcsDelegate(
+        [In] byte[] input,nuint length,out NativeAstResult result);
     public sealed record DocumentGenericUnitMatch(
         int Base, int Other, double Score, string Mode);
+    public sealed record RawLineageUnit(
+        string Kind,string Number,string Title,string Header,string Body);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int DocumentRawLineageDelegate(
+        [In] byte[] input,nuint length,out NativeAstResult result);
     public sealed record DocumentUnitLineageUnit(
         bool Article, string Number, string Title, string TitleKey,
         string BodyKey, bool LowInformationTitle);
@@ -163,6 +186,9 @@ public static class NativeCodeVersionComparer
         string Part,int ItemOrder,int HunkOrder);
     public sealed record RawCompareResult(
         List<RawCompareMarker> Markers,List<string> Structural);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int DocumentSingleUnitDelegate(
+        [In] byte[] input,nuint length,out NativeAstResult result);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int RawComparePairDelegate(
         [In] byte[] input,nuint length,out NativeAstResult result);
@@ -214,6 +240,9 @@ public static class NativeCodeVersionComparer
         string Body,string Section,string Kind);
     private sealed record DocumentUnitParserWire(List<ParsedDocumentUnit> Units);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int DocumentRawUnitParserDelegate(
+        [In] byte[] input,nuint length,out NativeAstResult result);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int DocumentUnitParserDelegate(
         [In] byte[] input,nuint length,out NativeAstResult result);
     public sealed record DocumentRowMatch(int Doc,int Base,int Other);
@@ -221,6 +250,9 @@ public static class NativeCodeVersionComparer
     public sealed record DocumentRowMerge(
         int LeftDoc,int LeftOther,int RightDoc,int RightOther);
     private sealed record DocumentAlignedRowsWire(List<List<int?>> Rows);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int DocumentRawRowAlignmentDelegate(
+        [In] byte[] input,nuint length,out NativeAstResult result);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int DocumentRowAlignmentDelegate(
         [In] byte[] input,nuint length,out NativeAstResult result);
@@ -256,6 +288,9 @@ public static class NativeCodeVersionComparer
         [In] byte[] input, nuint length, out NativeAstResult result);
 
 
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int DocumentGenericUnitsRawDelegate(
+        [In] byte[] input,nuint length,out NativeAstResult result);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int DocumentGenericUnitsDelegate(
         [In] byte[] input, nuint length, out NativeAstResult result);
@@ -334,14 +369,20 @@ public static class NativeCodeVersionComparer
         public readonly FullDocumentMatchDelegate? FullDocumentMatch;
         public readonly DocumentSentenceReviewDelegate? DocumentSentenceReview;
         public readonly DocumentGenericUnitsDelegate? DocumentGenericUnits;
+        public readonly DocumentGenericUnitsRawDelegate? DocumentGenericUnitsRaw;
+        public readonly DocumentExportLcsDelegate? DocumentExportLcs;
+        public readonly DocumentTableMovementsDelegate? DocumentTableMovements;
         public readonly DocumentUnitLineageDelegate? DocumentUnitLineage;
+        public readonly DocumentRawLineageDelegate? DocumentRawLineage;
         public readonly DocumentTableMatcherDelegate? DocumentTableMatcher;
         public readonly DocumentTokenMatcherDelegate? DocumentTokenMatcher;
         public readonly DocumentCharacterScoreDelegate? DocumentCharacterScore;
         public readonly DocumentKoreanWordDelegate? DocumentKoreanWord;
         public readonly DocumentReviewSegmentsDelegate? DocumentReviewSegments;
         public readonly DocumentRowAlignmentDelegate? DocumentRowAlignment;
+        public readonly DocumentRawRowAlignmentDelegate? DocumentRawRowAlignment;
         public readonly DocumentUnitParserDelegate? DocumentUnitParser;
+        public readonly DocumentRawUnitParserDelegate? DocumentRawUnitParser;
         public readonly DocumentNormalizeDelegate? DocumentNormalize;
         public readonly DocumentReplacementCoalesceDelegate? DocumentReplacementCoalesce;
         public readonly DocumentReviewPieceDelegate? DocumentReviewPiece;
@@ -349,6 +390,7 @@ public static class NativeCodeVersionComparer
         public readonly DocumentDiffHunksDelegate? DocumentDiffHunks;
         public readonly DocumentReviewDiffDelegate? DocumentReviewDiff;
         public readonly RawComparePairDelegate? RawComparePair;
+        public readonly DocumentSingleUnitDelegate? DocumentSingleUnit;
 
         public Exports(IntPtr handle)
         {
@@ -424,10 +466,30 @@ public static class NativeCodeVersionComparer
                     Marshal.GetDelegateForFunctionPointer<DocumentGenericUnitsDelegate>(
                         genericUnitsExport);
             if (NativeLibrary.TryGetExport(handle,
+                "dc_match_generic_document_raw_utf8",out var rawUnitsExport))
+                DocumentGenericUnitsRaw =
+                    Marshal.GetDelegateForFunctionPointer<DocumentGenericUnitsRawDelegate>(
+                        rawUnitsExport);
+            if (NativeLibrary.TryGetExport(handle,
+                "dc_export_docx_lcs_utf8",out var exportLcs))
+                DocumentExportLcs =
+                    Marshal.GetDelegateForFunctionPointer<DocumentExportLcsDelegate>(
+                        exportLcs);
+            if (NativeLibrary.TryGetExport(handle,
+                "dc_find_docx_table_movements_utf8",out var tableMovesExport))
+                DocumentTableMovements =
+                    Marshal.GetDelegateForFunctionPointer<DocumentTableMovementsDelegate>(
+                        tableMovesExport);
+            if (NativeLibrary.TryGetExport(handle,
                 "dc_match_document_unit_lineage_utf8", out var lineageExport))
                 DocumentUnitLineage =
                     Marshal.GetDelegateForFunctionPointer<DocumentUnitLineageDelegate>(
                         lineageExport);
+            if (NativeLibrary.TryGetExport(handle,
+                "dc_match_unit_lineage_raw_utf8",out var rawLineageExport))
+                DocumentRawLineage =
+                    Marshal.GetDelegateForFunctionPointer<DocumentRawLineageDelegate>(
+                        rawLineageExport);
             if (NativeLibrary.TryGetExport(handle,
                 "dc_match_docx_table_cells_utf8", out var tableMatcherExport))
                 DocumentTableMatcher = Marshal.GetDelegateForFunctionPointer<DocumentTableMatcherDelegate>(
@@ -457,10 +519,20 @@ public static class NativeCodeVersionComparer
                     Marshal.GetDelegateForFunctionPointer<DocumentRowAlignmentDelegate>(
                         rowAlignmentExport);
             if (NativeLibrary.TryGetExport(handle,
+                "dc_align_document_rows_raw_utf8",out var rawRowsExport))
+                DocumentRawRowAlignment =
+                    Marshal.GetDelegateForFunctionPointer<DocumentRawRowAlignmentDelegate>(
+                        rawRowsExport);
+            if (NativeLibrary.TryGetExport(handle,
                 "dc_parse_document_units_utf8", out var unitParserExport))
                 DocumentUnitParser =
                     Marshal.GetDelegateForFunctionPointer<DocumentUnitParserDelegate>(
                         unitParserExport);
+            if (NativeLibrary.TryGetExport(handle,
+                "dc_parse_document_raw_units_utf8",out var rawParserExport))
+                DocumentRawUnitParser =
+                    Marshal.GetDelegateForFunctionPointer<DocumentRawUnitParserDelegate>(
+                        rawParserExport);
             if (NativeLibrary.TryGetExport(handle,
                 "dc_normalize_document_text_utf8", out var normalizeExport))
                 DocumentNormalize =
@@ -496,6 +568,11 @@ public static class NativeCodeVersionComparer
                 RawComparePair =
                     Marshal.GetDelegateForFunctionPointer<RawComparePairDelegate>(
                         rawPairExport);
+            if (NativeLibrary.TryGetExport(handle,
+                "dc_document_single_unit_utf8",out var singleUnitExport))
+                DocumentSingleUnit =
+                    Marshal.GetDelegateForFunctionPointer<DocumentSingleUnitDelegate>(
+                        singleUnitExport);
         }
     }
 
@@ -1184,6 +1261,139 @@ public static class NativeCodeVersionComparer
         }
     }
 
+    /// <summary>
+    /// Entire generic document matching from original bodies. Rust owns
+    /// normalization, lexical token scores, proximity ranking and pairing.
+    /// </summary>
+    public static IReadOnlyList<DocumentGenericUnitMatch>? MatchGenericDocumentRaw(
+        IReadOnlyList<string> old,IReadOnlyList<string> revised)
+    {
+        ArgumentNullException.ThrowIfNull(old);
+        ArgumentNullException.ThrowIfNull(revised);
+        var exports=Native.Value;
+        if(exports?.DocumentGenericUnitsRaw is null ||
+            old.Count>64 || revised.Count>64 ||
+            old.Any(x=>x is null || x.Length>8192) ||
+            revised.Any(x=>x is null || x.Length>8192))
+            return null;
+        var bytes=JsonSerializer.SerializeToUtf8Bytes(new{old,@new=revised});
+        if(bytes.Length>2*1024*1024)return null;
+        var status=exports.DocumentGenericUnitsRaw(bytes,(nuint)bytes.Length,out var result);
+        try
+        {
+            if(status is 2 or 3)return null;
+            if(status!=0)
+                throw new InvalidDataException($"Rust 일반 원문 매칭 오류: {status}");
+            if(result.Data==IntPtr.Zero || result.Length==0 ||
+                result.Length>1024UL*1024)
+                throw new InvalidDataException("Rust 일반 원문 매칭 크기 오류");
+            var data=new byte[checked((int)result.Length)];
+            Marshal.Copy(result.Data,data,0,data.Length);
+            var parsed=JsonSerializer.Deserialize<GenericUnitsWire>(data,
+                new JsonSerializerOptions{PropertyNameCaseInsensitive=true});
+            if(parsed?.Matches is null ||
+                parsed.Matches.Count>Math.Min(old.Count,revised.Count))
+                throw new InvalidDataException("Rust 일반 원문 매칭 개수 오류");
+            var usedNew=new HashSet<int>();var last=-1;
+            foreach(var m in parsed.Matches)
+            {
+                if(m.Base<=last || m.Base>=old.Count ||
+                    m.Other<0 || m.Other>=revised.Count ||
+                    !usedNew.Add(m.Other) || m.Mode!="same" ||
+                    !double.IsFinite(m.Score) || m.Score is < .48 or > 1)
+                    throw new InvalidDataException("Rust 일반 원문 매칭 결과 오류");
+                last=m.Base;
+            }
+            return parsed.Matches;
+        }
+        finally{exports.AstFree(ref result);}
+    }
+    /// <summary>
+    /// Word tracked-changes paragraph/formatting matching. Rust owns
+    /// all exact LCS decisions and long-document block fallback.
+    /// </summary>
+    public static IReadOnlyList<DocumentExportLcsPair>? MatchExportLcs(
+        IReadOnlyList<string> old,IReadOnlyList<string> revised)
+    {
+        ArgumentNullException.ThrowIfNull(old);
+        ArgumentNullException.ThrowIfNull(revised);
+        var exports=Native.Value;
+        if(exports?.DocumentExportLcs is null ||
+            old.Count>16_384 || revised.Count>16_384 ||
+            old.Any(x=>x is null || x.Length>65_536) ||
+            revised.Any(x=>x is null || x.Length>65_536))
+            return null;
+        var raw=JsonSerializer.SerializeToUtf8Bytes(new{old,@new=revised});
+        if(raw.Length>8*1024*1024)return null;
+        var status=exports.DocumentExportLcs(raw,(nuint)raw.Length,out var result);
+        try
+        {
+            if(status is 2 or 3)return null;
+            if(status!=0)
+                throw new InvalidDataException($"Rust Word 문단 매칭 실패: {status}");
+            if(result.Data==IntPtr.Zero || result.Length==0 ||
+                result.Length>1024UL*1024)
+                throw new InvalidDataException("Rust Word 문단 매칭 크기 오류");
+            var bytes=new byte[checked((int)result.Length)];
+            Marshal.Copy(result.Data,bytes,0,bytes.Length);
+            var parsed=JsonSerializer.Deserialize<DocumentExportLcsWire>(bytes,
+                new JsonSerializerOptions{PropertyNameCaseInsensitive=true});
+            if(parsed?.Pairs is null ||
+                parsed.Pairs.Count>Math.Min(old.Count,revised.Count))
+                throw new InvalidDataException("Rust Word 문단 매칭 결과 오류");
+            var previousA=-1;var previousB=-1;
+            foreach(var entry in parsed.Pairs)
+            {
+                if(entry.A<=previousA || entry.B<=previousB ||
+                    entry.A>=old.Count || entry.B>=revised.Count ||
+                    old[entry.A]!=revised[entry.B])
+                    throw new InvalidDataException("Rust Word 문단 매칭 좌표 오류");
+                previousA=entry.A;previousB=entry.B;
+            }
+            return parsed.Pairs;
+        }
+        finally{exports.AstFree(ref result);}
+    }
+
+    /// <summary>
+    /// Source-aligned table and row crossing movement classification in Rust.
+    /// </summary>
+    public static IReadOnlyList<DocumentMovementMarker>? FindDocxTableMovements(
+        IReadOnlyList<DocumentMovementGroup> groups)
+    {
+        ArgumentNullException.ThrowIfNull(groups);
+        var exports=Native.Value;
+        if(exports?.DocumentTableMovements is null || groups.Count>3 ||
+            groups.Any(g=>g.Pairs.Count>4096))
+            return null;
+        var bytes=JsonSerializer.SerializeToUtf8Bytes(new{groups},
+            new JsonSerializerOptions{PropertyNamingPolicy=JsonNamingPolicy.CamelCase});
+        if(bytes.Length>4*1024*1024)return null;
+        var status=exports.DocumentTableMovements(bytes,(nuint)bytes.Length,
+            out var output);
+        try
+        {
+            if(status is 2 or 3)return null;
+            if(status!=0)
+                throw new InvalidDataException($"Rust 표 이동 판정 오류: {status}");
+            if(output.Data==IntPtr.Zero || output.Length==0 ||
+                output.Length>1024UL*1024)
+                throw new InvalidDataException("Rust 표 이동 응답 오류");
+            var raw=new byte[checked((int)output.Length)];
+            Marshal.Copy(output.Data,raw,0,raw.Length);
+            var parsed=JsonSerializer.Deserialize<DocumentMovementWire>(raw,
+                new JsonSerializerOptions{PropertyNameCaseInsensitive=true});
+            if(parsed?.Moves is null || parsed.Moves.Count>4096 ||
+                parsed.Moves.Any(x=>x.Reason is not ("표 이동" or "표 행 이동") ||
+                    !groups.Any(g=>g.OldDoc==x.OldDoc && g.NewDoc==x.NewDoc &&
+                        g.Pairs.Any(p=>p.Old.Index==x.OldIndex &&
+                            p.New.Index==x.NewIndex))))
+                throw new InvalidDataException("Rust 표 이동 입력 불일치");
+            return parsed.Moves;
+        }
+        finally{exports.AstFree(ref output);}
+    }
+
     private sealed record GenericUnitsWire(List<DocumentGenericUnitMatch> Matches);
     /// <summary>
     /// Match DOCX table rows and columns via Rust using original C#
@@ -1300,6 +1510,43 @@ public static class NativeCodeVersionComparer
     /// Returns null for unsupported input; the production caller explicitly
     /// raises an error rather than executing any C# comparison fallback.
     /// </summary>
+    public static RawCompareResult? CompareRawMissingUnit(
+        RawCompareUnit unit,string action)
+    {
+        ArgumentNullException.ThrowIfNull(unit);
+        var exports=Native.Value;
+        if(exports?.DocumentSingleUnit is null ||
+            action is not ("insert" or "delete") ||
+            unit.Body.Length>2048 || unit.Header.Length>512)
+            return null;
+        var bytes=JsonSerializer.SerializeToUtf8Bytes(new{unit,action},
+            new JsonSerializerOptions{PropertyNamingPolicy=JsonNamingPolicy.CamelCase});
+        if(bytes.Length>1024*1024)return null;
+        var status=exports.DocumentSingleUnit(bytes,(nuint)bytes.Length,out var output);
+        try
+        {
+            if(status is 2 or 3)return null;
+            if(status!=0)
+                throw new InvalidDataException($"Rust 신규/삭제 문서 판정 오류: {status}");
+            if(output.Data==IntPtr.Zero || output.Length==0 ||
+                output.Length>1024UL*1024)
+                throw new InvalidDataException("Rust 신규/삭제 마커 응답 오류");
+            var data=new byte[checked((int)output.Length)];
+            Marshal.Copy(output.Data,data,0,data.Length);
+            var result=JsonSerializer.Deserialize<RawCompareResult>(data,
+                new JsonSerializerOptions{PropertyNameCaseInsensitive=true});
+            if(result?.Markers is null || result.Structural is null ||
+                result.Structural.Count!=2 || result.Markers.Count>2 ||
+                result.Markers.Any(m=>m.Kind!=action ||
+                    m.Part is not ("header" or "body") ||
+                    m.OldStart<0 || m.OldStart>m.OldEnd ||
+                    m.NewStart<0 || m.NewStart>m.NewEnd))
+                throw new InvalidDataException("Rust 신규/삭제 마커 검증 오류");
+            return result;
+        }
+        finally{exports.AstFree(ref output);}
+    }
+
     public static RawCompareResult? CompareRawDocumentPair(
         RawCompareUnit old,RawCompareUnit revised,bool includePunctuation)
     {
@@ -1685,6 +1932,44 @@ public static class NativeCodeVersionComparer
     /// Native legal and general text-to-unit parsing. The input text is
     /// preprocessed by the existing flattened-article/newline guard.
     /// </summary>
+    /// <summary>
+    /// Rust-owned source unit parser. C# supplies raw normalized newlines
+    /// only; structural title boundaries and legal classification are Rust.
+    /// </summary>
+    public static IReadOnlyList<ParsedDocumentUnit>? ParseRawDocumentUnits(
+        string text,string mode)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        var exports=Native.Value;
+        if(exports?.DocumentRawUnitParser is null || text.Length>131072)
+            return null;
+        var bytes=JsonSerializer.SerializeToUtf8Bytes(new{text,mode});
+        if(bytes.Length>1024*1024)return null;
+        var status=exports.DocumentRawUnitParser(bytes,(nuint)bytes.Length,
+            out var output);
+        try
+        {
+            if(status is 2 or 3)return null;
+            if(status!=0)
+                throw new InvalidDataException($"Rust 원문 단위 파서 오류: {status}");
+            if(output.Data==IntPtr.Zero || output.Length==0 ||
+                output.Length>4UL*1024*1024)
+                throw new InvalidDataException("Rust 원문 파서 응답 크기 오류");
+            var raw=new byte[checked((int)output.Length)];
+            Marshal.Copy(output.Data,raw,0,raw.Length);
+            var parsed=JsonSerializer.Deserialize<DocumentUnitParserWire>(raw,
+                new JsonSerializerOptions{PropertyNameCaseInsensitive=true});
+            if(parsed?.Units is null || parsed.Units.Count>4096 ||
+                parsed.Units.Where((u,i)=>u.Index!=i ||
+                    u.Number is null || u.Title is null || u.Header is null ||
+                    u.Body is null || u.Section is null ||
+                    u.Kind is not ("article" or "section" or "block")).Any())
+                throw new InvalidDataException("Rust 원문 단위 파서 응답 범위 오류");
+            return parsed.Units;
+        }
+        finally{exports.AstFree(ref output);}
+    }
+
     public static IReadOnlyList<ParsedDocumentUnit>? ParseDocumentUnits(
         string text, bool legal)
     {
@@ -1725,6 +2010,58 @@ public static class NativeCodeVersionComparer
     /// placement. The original managed engine provides unit matches and
     /// item-level merge eligibility, native code owns the output row grid.
     /// </summary>
+    /// <summary>
+    /// A/B/C alignment from raw unit texts, native cross-version merge
+    /// scoring, ranked merge predicates and final row grid.
+    /// </summary>
+    public static IReadOnlyList<IReadOnlyList<int?>>? AlignDocumentRawRows(
+        IReadOnlyList<IReadOnlyList<RawLineageUnit>> units,int baseDoc,
+        IReadOnlyList<DocumentRowMatch> matched,
+        IReadOnlyList<DocumentRowAddition> additions)
+    {
+        var exports=Native.Value;
+        if(exports?.DocumentRawRowAlignment is null ||
+            units.Count is < 2 or > 3 || baseDoc<0 ||
+            baseDoc>=units.Count || units.Any(u=>u.Count>512) ||
+            units.SelectMany(u=>u).Any(x=>x.Body.Length>512 ||
+                x.Title.Length>256 || x.Header.Length>512) ||
+            matched.Count>1024 || additions.Count>192)
+            return null;
+        var bytes=JsonSerializer.SerializeToUtf8Bytes(
+            new{units,baseDoc,matched,additions},
+            new JsonSerializerOptions{PropertyNamingPolicy=JsonNamingPolicy.CamelCase});
+        if(bytes.Length>4*1024*1024)return null;
+        var status=exports.DocumentRawRowAlignment(bytes,(nuint)bytes.Length,
+            out var output);
+        try
+        {
+            if(status is 2 or 3)return null;
+            if(status!=0)
+                throw new InvalidDataException($"Rust 원문 A/B/C 행 매칭 오류: {status}");
+            if(output.Data==IntPtr.Zero || output.Length==0 ||
+                output.Length>2UL*1024*1024)
+                throw new InvalidDataException("Rust 원문 A/B/C 행 결과 크기 오류");
+            var raw=new byte[checked((int)output.Length)];
+            Marshal.Copy(output.Data,raw,0,raw.Length);
+            var parsed=JsonSerializer.Deserialize<DocumentAlignedRowsWire>(raw,
+                new JsonSerializerOptions{PropertyNameCaseInsensitive=true});
+            if(parsed?.Rows is null ||
+                parsed.Rows.Count>units.Sum(x=>x.Count) ||
+                parsed.Rows.Any(row=>row.Count!=units.Count))
+                throw new InvalidDataException("Rust 원문 A/B/C 행 출력 형식 오류");
+            var used=new HashSet<(int,int)>();
+            foreach(var row in parsed.Rows)
+                for(var d=0;d<units.Count;d++)
+                    if(row[d] is int index && (index<0 ||
+                        index>=units[d].Count || !used.Add((d,index))))
+                        throw new InvalidDataException("Rust A/B/C 행 누락/중복 오류");
+            if(used.Count!=units.Sum(x=>x.Count))
+                throw new InvalidDataException("Rust A/B/C 행 단위 누락");
+            return parsed.Rows;
+        }
+        finally{exports.AstFree(ref output);}
+    }
+
     public static IReadOnlyList<IReadOnlyList<int?>>? AlignDocumentRows(
         IReadOnlyList<int> counts,int baseDoc,
         IReadOnlyList<DocumentRowMatch> matched,
@@ -1931,6 +2268,57 @@ public static class NativeCodeVersionComparer
     /// Rust whole legal-unit/article lineage including non-article block
     /// alignment. C# supplies canonical text-based score matrix.
     /// </summary>
+    /// <summary>
+    /// Legal article lineage calculated exclusively from source title,
+    /// article number, body and section text on the Rust side.
+    /// </summary>
+    public static IReadOnlyList<DocumentGenericUnitMatch>? MatchDocumentRawLineage(
+        IReadOnlyList<RawLineageUnit> old,IReadOnlyList<RawLineageUnit> revised)
+    {
+        ArgumentNullException.ThrowIfNull(old);
+        ArgumentNullException.ThrowIfNull(revised);
+        var exports=Native.Value;
+        if(exports?.DocumentRawLineage is null ||
+            old.Count>48 || revised.Count>48 ||
+            (long)old.Count*revised.Count>1024 ||
+            old.Concat(revised).Any(x=>x.Body.Length>512 ||
+                x.Header.Length>512 || x.Title.Length>256))
+            return null;
+        var bytes=JsonSerializer.SerializeToUtf8Bytes(new{old,@new=revised},
+            new JsonSerializerOptions{PropertyNamingPolicy=JsonNamingPolicy.CamelCase});
+        if(bytes.Length>2*1024*1024)return null;
+        var status=exports.DocumentRawLineage(bytes,(nuint)bytes.Length,out var result);
+        try
+        {
+            if(status is 2 or 3)return null;
+            if(status!=0)
+                throw new InvalidDataException($"Rust 원문 조문 계보 분석 실패: {status}");
+            if(result.Data==IntPtr.Zero || result.Length==0 ||
+                result.Length>1024UL*1024)
+                throw new InvalidDataException("Rust 원문 조문 계보 응답 크기 오류");
+            var data=new byte[checked((int)result.Length)];
+            Marshal.Copy(result.Data,data,0,data.Length);
+            var parsed=JsonSerializer.Deserialize<GenericUnitsWire>(data,
+                new JsonSerializerOptions{PropertyNameCaseInsensitive=true});
+            if(parsed?.Matches is null ||
+                parsed.Matches.Count>Math.Min(old.Count,revised.Count))
+                throw new InvalidDataException("Rust 원문 조문 계보 결과 오류");
+            var previous=-1;var usedNew=new HashSet<int>();
+            foreach(var m in parsed.Matches)
+            {
+                if(m.Base<=previous || m.Base>=old.Count || m.Base<0 ||
+                    m.Other<0 || m.Other>=revised.Count ||
+                    !usedNew.Add(m.Other) ||
+                    m.Mode is not ("same" or "moved" or "renumbered") ||
+                    !double.IsFinite(m.Score) || m.Score is < 0 or > 1)
+                    throw new InvalidDataException("Rust 원문 조문 계보 인덱스 오류");
+                previous=m.Base;
+            }
+            return parsed.Matches;
+        }
+        finally{exports.AstFree(ref result);}
+    }
+
     public static IReadOnlyList<DocumentGenericUnitMatch>? MatchDocumentUnitLineage(
         IReadOnlyList<DocumentUnitLineageUnit> oldUnits,
         IReadOnlyList<DocumentUnitLineageUnit> newUnits,

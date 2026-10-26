@@ -206,13 +206,24 @@ fn value(s: &str) -> Option<f64> {
 fn english_article(line: &str) -> Option<(String, String)> {
     let caps = EARTICLE.captures(line)?;
     let number = caps.get(1)?.as_str();
-    if number.chars().all(|c| c.is_ascii_alphabetic()) && roman_value(number) == 0 {
+    let rest = caps.get(2).map_or("", |v| v.as_str());
+    if number.chars().all(|c| c.is_ascii_alphabetic()) {
+        if roman_value(number) > 0 {
+            return Some((number.into(), rest.into()));
+        }
+        // .NET RomanNumberPattern intentionally accepts its longest
+        // canonical prefix even when an invalid Roman suffix remains:
+        // CIVIL -> CIV + "IL", IIV -> II + "V", VX -> V + "X".
+        for boundary in (1..number.len()).rev() {
+            let part = &number[..boundary];
+            if roman_value(part) > 0 {
+                let suffix = &line[caps.get(1)?.start() + boundary..];
+                return Some((part.into(), suffix.trim().into()));
+            }
+        }
         return None;
     }
-    Some((
-        number.to_owned(),
-        caps.get(2).map_or("", |v| v.as_str()).to_owned(),
-    ))
+    Some((number.into(), rest.into()))
 }
 fn false_article_lines(lines: &[&str]) -> HashSet<usize> {
     let markers = lines
@@ -588,6 +599,80 @@ fn general_units(text: &str) -> Result {
     flush_general(&mut units, &mut current, &mut body, &mut seq);
     Result { units }
 }
+// Text-to-unit parser entrypoint without managed structural preprocessing.
+#[derive(Debug, Deserialize)]
+pub struct RawInput {
+    pub text: String,
+    pub mode: String,
+}
+static STRONG_ENGLISH: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)(?:Article|Section)\s+(?:\d+(?:[-.]\d+)*|[IVXLCDM]+)\s*[.:-]?\s*\([^\n)]{1,180}[)}]",
+    )
+    .unwrap()
+});
+static STRONG_KOREAN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"제\s*\d+\s*조(?:\s*의\s*\d+)?\s*\([^\n)]{1,180}[)}]").unwrap());
+fn legal_boundaries(text: &str) -> String {
+    let mut found = std::collections::BTreeSet::new();
+    for (is_english, re) in [(true, &*STRONG_ENGLISH), (false, &*STRONG_KOREAN)] {
+        for m in re.find_iter(text) {
+            let at = m.start();
+            if at == 0 {
+                continue;
+            }
+            let left = &text[..at];
+            if left.ends_with('\n') {
+                continue;
+            }
+            if is_english
+                && left
+                    .chars()
+                    .last()
+                    .is_some_and(|c| c.is_ascii_alphanumeric())
+            {
+                continue;
+            }
+            let last_nonblank = left
+                .chars()
+                .rev()
+                .find(|&c| !c.is_whitespace() || c == '\n');
+            if matches!(
+                last_nonblank,
+                Some('.' | '!' | '?' | ';' | '|' | '}' | ')' | '。' | '！' | '？')
+            ) {
+                found.insert(at);
+            }
+        }
+    }
+    if found.is_empty() {
+        return text.into();
+    }
+    let mut out = text.to_owned();
+    for at in found.into_iter().rev() {
+        out.insert(at, '\n');
+    }
+    out
+}
+pub fn parse_raw(req: &RawInput) -> Option<Result> {
+    if req.text.encode_utf16().count() > 131072 || req.mode.len() > 80 {
+        return None;
+    }
+    let text = legal_boundaries(&req.text);
+    let legal = if req.mode.eq_ignore_ascii_case("legal") {
+        true
+    } else if req.mode.eq_ignore_ascii_case("general") {
+        false
+    } else {
+        text.split('\n')
+            .filter(|l| KARTICLE.is_match(l) || EARTICLE.is_match(l))
+            .take(2)
+            .count()
+            >= 2
+    };
+    Some(parse(&Input { text, legal }))
+}
+
 pub fn parse(input: &Input) -> Result {
     if input.legal {
         legal_units(&input.text)
@@ -598,6 +683,50 @@ pub fn parse(input: &Input) -> Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn source_only_roman_prefix_compatibility() {
+        let source = "Article CIVIL Rights\nBody one\nArticle IIV Terms\nBody two\nArticle VX End\nBody three";
+        let result = parse_raw(&RawInput {
+            text: source.into(),
+            mode: "auto".into(),
+        })
+        .unwrap();
+        let numbers = result
+            .units
+            .iter()
+            .map(|x| x.number.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(numbers, vec!["CIV", "II", "V"]);
+        assert_eq!(result.units[0].title, "IL Rights");
+        assert_eq!(result.units[1].title, "V Terms");
+        assert_eq!(result.units[2].title, "X End");
+    }
+    #[test]
+    fn source_only_parser_detects_flattened_articles() {
+        let original = "Intro. 제1조(목적) 본 약관은 목적을 정한다. 제2조(정의) 용어를 정의한다.";
+        let result = parse_raw(&RawInput {
+            text: original.into(),
+            mode: "auto".into(),
+        })
+        .unwrap();
+        let articles = result
+            .units
+            .iter()
+            .filter(|u| u.kind == "article")
+            .map(|u| u.number.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(articles, vec!["1", "2"]);
+    }
+    #[test]
+    fn inline_article_reference_is_not_structural() {
+        let original = "Users act under Article 5 (Fees), as specified.";
+        let result = parse_raw(&RawInput {
+            text: original.into(),
+            mode: "general".into(),
+        })
+        .unwrap();
+        assert!(!result.units.iter().any(|u| u.kind == "article"));
+    }
     #[test]
     fn article_title_and_reorder() {
         let doc = "제1조(목적)\n본 약관은 회원의 권리를 규정한다.\n제2조(보호)\n회원은 개인정보를 보호받는다.";

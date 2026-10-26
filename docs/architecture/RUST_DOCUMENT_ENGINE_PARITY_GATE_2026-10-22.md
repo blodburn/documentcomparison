@@ -815,3 +815,59 @@ budgets or unknown reorder/merge patterns now fail explicitly instead of
 being handled by the former C# core. Thus the C# dependency is removed from
 ComparePair, but full feature completeness for all possible inputs remains
 a separate acceptance criterion.
+
+
+## Source-owned generic, lineage, A/B/C and DOCX export migrations (2026-10-26)
+
+These new optional ABI-v1 Rust production endpoints perform complete
+formerly managed sub-decisions from original source content:
+
+- dc_match_generic_document_raw_utf8: native Unicode normalization,
+  lexical token extraction, exact token LCS similarity scoring and final
+  greedy one-to-one block matching without a managed score matrix.
+- dc_match_unit_lineage_raw_utf8: source-only legal title concepts,
+  body word-set/indel scoring, enumeration structure scoring, article
+  lineage, moves and re-numbering. C# now supplies source unit text/metadata,
+  not a dense C# similarity feature matrix, in the bounded Rust-first path.
+- dc_align_document_rows_raw_utf8: native cross-document addition merge
+  eligibility from original title/body/number text and final A/B/C row grid.
+  The managed duplicate allowed-merge predicate calculation was removed.
+- dc_find_docx_table_movements_utf8: table and row order inversion,
+  text/table crossing and one movement message per affected row.
+- dc_document_single_unit_utf8: standalone addition/removal of a document
+  unit including source header/body offsets and structural status messages.
+  The old C# one-sided BuildRow decision branch is removed.
+- dc_export_docx_lcs_utf8: exact paragraph, tracked-change and formatting
+  LCS in Rust including the long-sequence longest-block fallback; Word XML
+  serialization remains C#.
+
+Regression gates include 240 source-owned generic matching vectors,
+276 native Word exporter LCS vectors, and observed 57 production table
+movement calls with 0 mismatch. The full corpus asserts nonzero adoption
+and zero shadow drift in generic, lineage, row alignment and table movement.
+The existing DOCX reader/serializer and UI remain managed.
+
+Current limitation: feature-complete independent Rust execution for arbitrary
+long/ambiguous document structures is not yet proven. Source-unit parsing
+and outer unit-grid matching retain C# compatibility reference/fallback code,
+and the bounded raw lineage/row APIs fall back on oversized inputs.
+Passing regression equivalence is not a claim of universal 100% migration.
+
+
+## Raw-source structural parser (2026-10-26)
+
+The new dc_parse_document_raw_units_utf8 accepts original newline-normalized
+document text and the selected legal/general/auto mode. Rust now reconstructs
+flattened inline article boundaries, recognizes legal article prevalence and
+chooses the structural parser without the earlier C# NormalizeLegalBoundaries
+and LooksLegal preprocessing. A/B/C Word I/O still supplies the source text;
+the managed C# parser is retained only as a parity reference and compatibility
+fallback for inputs rejected by the bounded Rust FFI. Production parser
+adoption/mismatch counters are included in the final regression gate.
+
+
+The direct Rust legal mode detection additionally implements the historical
+.NET canonical-Roman prefix contract: CIVIL is parsed as CIV plus title
+continuation IL, IIV as II plus V and VX as V plus X. The original C# parser
+parity corpus caught an initial whitespace mismatch here; after remediation
+620 production parser invocations showed zero parity mismatch.
