@@ -194,20 +194,24 @@ mod tests {
         })
         .expect("bounded large input must use Rust");
         assert_eq!(result.matches.len(), 96);
-        assert!(result
-            .matches
-            .iter()
-            .enumerate()
-            .all(|(i, pair)| pair.base == i && pair.other == i && pair.score == 1.0));
+        assert!(
+            result
+                .matches
+                .iter()
+                .enumerate()
+                .all(|(i, pair)| pair.base == i && pair.other == i && pair.score == 1.0)
+        );
     }
     #[test]
     fn raw_matching_rejects_excessive_token_comparison_work() {
         let bodies = vec!["token ".repeat(256); 96];
-        assert!(match_raw(&RawInput {
-            old: bodies.clone(),
-            new: bodies
-        })
-        .is_none());
+        assert!(
+            match_raw(&RawInput {
+                old: bodies.clone(),
+                new: bodies
+            })
+            .is_none()
+        );
     }
     #[test]
     fn greedy_prefers_semantics_over_nearest() {
