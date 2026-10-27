@@ -987,7 +987,10 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         var bb = b.Where(IsLegalArticle).ToArray();
         // Generic documents do not use the legal article lineage limits.
         if (aa.Length == 0 || bb.Length == 0)
+        {
+            System.Threading.Interlocked.Increment(ref _genericUnitDirectDispatches);
             return MatchGenericUnits(a,b,token);
+        }
         if (a.Count > 48 || b.Count > 48 || (long)a.Count * b.Count > 1024)
             return MatchUnitSequenceCSharp(a,b,token);
         token.ThrowIfCancellationRequested();
@@ -1289,6 +1292,10 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         }
         return result;
     }
+
+    private static long _genericUnitDirectDispatches;
+    internal static long GenericUnitDirectDispatches =>
+        System.Threading.Interlocked.Read(ref _genericUnitDirectDispatches);
 
     private static long _genericUnitRustMatches;
     private static long _genericUnitRustMismatches;
