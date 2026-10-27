@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 
 const MAX_COUNT: usize = 256;
+// Raw-text scoring is budgeted separately and can accept larger documents.
+const MAX_RAW_COUNT: usize = 1024;
 // Bound pairwise LCS work for raw blocks before building the similarity matrix.
 const MAX_RAW_TOKEN_COMPARISONS: usize = 8_000_000;
 #[derive(Debug, Deserialize)]
@@ -85,8 +87,8 @@ pub struct RawInput {
     pub new: Vec<String>,
 }
 pub fn validate_raw(v: &RawInput) -> bool {
-    v.old.len() <= MAX_COUNT
-        && v.new.len() <= MAX_COUNT
+    v.old.len() <= MAX_RAW_COUNT
+        && v.new.len() <= MAX_RAW_COUNT
         && v.old
             .iter()
             .chain(&v.new)
@@ -194,6 +196,25 @@ mod tests {
         })
         .expect("bounded large input must use Rust");
         assert_eq!(result.matches.len(), 96);
+        assert!(
+            result
+                .matches
+                .iter()
+                .enumerate()
+                .all(|(i, pair)| pair.base == i && pair.other == i && pair.score == 1.0)
+        );
+    }
+    #[test]
+    fn source_owned_matching_handles_three_hundred_twenty_blocks() {
+        let bodies = (0..320)
+            .map(|i| format!("unique_clause_{i:03}"))
+            .collect::<Vec<_>>();
+        let result = match_raw(&RawInput {
+            old: bodies.clone(),
+            new: bodies,
+        })
+        .expect("320 simple units must be supported by Rust");
+        assert_eq!(result.matches.len(), 320);
         assert!(
             result
                 .matches

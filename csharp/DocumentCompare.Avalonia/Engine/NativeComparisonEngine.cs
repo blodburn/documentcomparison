@@ -1298,7 +1298,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     private static List<UnitMatch> MatchGenericUnits(
         IReadOnlyList<NativeUnit> a, IReadOnlyList<NativeUnit> b, CancellationToken token)
     {
-        if (a.Count > 256 || b.Count > 256) return MatchGenericUnitsCSharp(a, b, token);
+        if (a.Count > 1024 || b.Count > 1024) return MatchGenericUnitsCSharp(a, b, token);
         token.ThrowIfCancellationRequested();
         try
         {
@@ -2893,7 +2893,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     private static List<NativePart> ParseParts(string text)
     {
 
-        if (text.Length > 16_384) return ParsePartsCSharp(text);
+        if (text.Length > 131_072) return ParsePartsCSharp(text);
         try
         {
             var rust = NativeCodeVersionComparer.ParseDocumentParts(text);
@@ -3626,7 +3626,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     private static List<PartNode> BuildPartHierarchy(IReadOnlyList<NativePart> parts)
     {
 
-        if (parts.Count > 256) return BuildPartHierarchyCSharp(parts);
+        if (parts.Count > 4096) return BuildPartHierarchyCSharp(parts);
         try
         {
             var native = NativeCodeVersionComparer.AnalyzeDocumentHierarchy(

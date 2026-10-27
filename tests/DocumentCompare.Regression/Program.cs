@@ -3257,6 +3257,7 @@ if (NativeCodeVersionComparer.IsAvailable)
                     ?? Array.Empty<NativeCodeVersionComparer.DocumentPart>()),
                 "Rust structural parser differs from committed Golden fixture: "+input);
         }
+    samples.Add("① "+new string('한',20000)+"\n② 다음 조항");
     var mismatches=new List<string>();
     foreach(var input in samples)
     {
@@ -3324,6 +3325,8 @@ if(NativeCodeVersionComparer.IsAvailable)
             "개인정보 처리에 관한 내용"));
         hierarchyCases.Add(content);
     }
+    hierarchyCases.Add(string.Join("\n",Enumerable.Range(0,320)
+        .Select(i=>$"① 항목 {i:D3}")));
     foreach(var content in hierarchyCases)
     {
         var parts=parser.Invoke(null,new object[]{content})!;
@@ -5128,6 +5131,13 @@ if (NativeCodeVersionComparer.IsAvailable)
             "Rust source-owned generic matching deviated from reference: "+trial);
         tested++;
     }
+    var bigRawBlocks=Enumerable.Range(0,320)
+        .Select(i=>$"unique_clause_{i:D3}").ToArray();
+    var bigRawMatches=NativeCodeVersionComparer.MatchGenericDocumentRaw(
+        bigRawBlocks,bigRawBlocks);
+    Check(bigRawMatches is not null && bigRawMatches.Count==320 &&
+        bigRawMatches.Select((m,i)=>m.Base==i&&m.Other==i&&m.Score==1.0).All(x=>x),
+        "Rust raw matcher must own 320 generic document blocks");
     var largerBlocks=Enumerable.Range(0,96)
         .Select(i=>$"unique_clause_{i:D3}").ToArray();
     var largerResult=NativeCodeVersionComparer.MatchGenericDocumentRaw(
@@ -5136,7 +5146,7 @@ if (NativeCodeVersionComparer.IsAvailable)
         largerResult.Select((m,i)=>m.Base==i&&m.Other==i&&m.Score==1.0).All(x=>x),
         "Rust raw matcher must own 96 distinct generic blocks");
     Check(NativeCodeVersionComparer.MatchGenericDocumentRaw(
-        Enumerable.Range(0,257).Select(i=>i.ToString()).ToArray(),
+        Enumerable.Range(0,1025).Select(i=>i.ToString()).ToArray(),
         new[]{"one"}) is null,
         "oversize Rust generic input must fail safe");
     Console.WriteLine($"PASS RUST RAW GENERIC UNIT SIMILARITY CSHARP PARITY {tested}/{tested}");
