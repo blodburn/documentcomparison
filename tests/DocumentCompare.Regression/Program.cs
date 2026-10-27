@@ -5138,6 +5138,29 @@ if (NativeCodeVersionComparer.IsAvailable)
     Check(bigRawMatches is not null && bigRawMatches.Count==320 &&
         bigRawMatches.Select((m,i)=>m.Base==i&&m.Other==i&&m.Score==1.0).All(x=>x),
         "Rust raw matcher must own 320 generic document blocks");
+    // A 96-block general document must bypass the legal-article 48-block
+    // guard and enter Rust matching directly (not via C# lineage fallback).
+    var parsedGeneric=typeof(NativeComparisonEngine).GetMethod(
+        "ParseUnits",BindingFlags.Static|BindingFlags.NonPublic)!;
+    var routeGeneric=typeof(NativeComparisonEngine).GetMethod(
+        "MatchUnitSequence",BindingFlags.Static|BindingFlags.NonPublic)!;
+    var directCounter=typeof(NativeComparisonEngine).GetProperty(
+        "GenericUnitDirectDispatches",BindingFlags.Static|BindingFlags.NonPublic)!;
+    var nativeCounter=typeof(NativeComparisonEngine).GetProperty(
+        "GenericUnitRustMatches",BindingFlags.Static|BindingFlags.NonPublic)!;
+    var sourceGeneric=string.Join("\n",Enumerable.Range(0,96)
+        .Select(i=>$"{i+1}. Section {i:D3}\nUnique clause {i:D3} contents."));
+    var rawUnits=parsedGeneric.Invoke(null,new object[]{sourceGeneric,"general"})!;
+    var unitCount=((System.Collections.IEnumerable)rawUnits).Cast<object>().Count();
+    Check(unitCount==96,"general parser must expose 96 separate blocks");
+    var previousDirect=(long)directCounter.GetValue(null)!;
+    var previousGenericRust=(long)nativeCounter.GetValue(null)!;
+    var matchedGeneric=routeGeneric.Invoke(null,new object[]{
+        rawUnits,rawUnits,CancellationToken.None})!;
+    Check(((System.Collections.IEnumerable)matchedGeneric).Cast<object>().Count()==96 &&
+        (long)directCounter.GetValue(null)!>previousDirect &&
+        (long)nativeCounter.GetValue(null)!>previousGenericRust,
+        "96-block general document must use direct Rust generic matching");
     var largerBlocks=Enumerable.Range(0,96)
         .Select(i=>$"unique_clause_{i:D3}").ToArray();
     var largerResult=NativeCodeVersionComparer.MatchGenericDocumentRaw(
