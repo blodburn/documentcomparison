@@ -981,13 +981,15 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     {
         // Tables have an independent structural matching contract; neither
         // table cells nor their source offsets may be treated as article prose.
-        if (a.Any(x => x.TableCell is not null) || b.Any(x => x.TableCell is not null) ||
-            a.Count > 48 || b.Count > 48 || (long)a.Count * b.Count > 1024)
+        if (a.Any(x => x.TableCell is not null) || b.Any(x => x.TableCell is not null))
             return MatchUnitSequenceCSharp(a,b,token);
         var aa = a.Where(IsLegalArticle).ToArray();
         var bb = b.Where(IsLegalArticle).ToArray();
+        // Generic documents do not use the legal article lineage limits.
         if (aa.Length == 0 || bb.Length == 0)
             return MatchGenericUnits(a,b,token);
+        if (a.Count > 48 || b.Count > 48 || (long)a.Count * b.Count > 1024)
+            return MatchUnitSequenceCSharp(a,b,token);
         token.ThrowIfCancellationRequested();
         try
         {
