@@ -5,7 +5,9 @@
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 
-const MAX_COUNT: usize = 64;
+const MAX_COUNT: usize = 256;
+// Bound pairwise LCS work for raw blocks before building the similarity matrix.
+const MAX_RAW_TOKEN_COMPARISONS: usize = 8_000_000;
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Input {
@@ -113,6 +115,11 @@ pub fn match_raw(v: &RawInput) -> Option<Result> {
     };
     let old = v.old.iter().map(|s| prep(s)).collect::<Option<Vec<_>>>()?;
     let new = v.new.iter().map(|s| prep(s)).collect::<Option<Vec<_>>>()?;
+    let old_tokens: usize = old.iter().map(|(_, tokens)| tokens.len()).sum();
+    let new_tokens: usize = new.iter().map(|(_, tokens)| tokens.len()).sum();
+    if old_tokens.saturating_mul(new_tokens) > MAX_RAW_TOKEN_COMPARISONS {
+        return None;
+    }
     let score = |a: &(String, Vec<String>), b: &(String, Vec<String>)| -> f64 {
         if a.0 == b.0 {
             return 1.0;
@@ -175,6 +182,32 @@ mod tests {
         };
         let v = match_raw(&case).unwrap();
         assert_eq!(v.matches[0].score, 1.0);
+    }
+    #[test]
+    fn source_owned_matching_handles_ninety_six_blocks() {
+        let bodies = (0..96)
+            .map(|i| format!("unique_clause_{i:03}"))
+            .collect::<Vec<_>>();
+        let result = match_raw(&RawInput {
+            old: bodies.clone(),
+            new: bodies,
+        })
+        .expect("bounded large input must use Rust");
+        assert_eq!(result.matches.len(), 96);
+        assert!(result
+            .matches
+            .iter()
+            .enumerate()
+            .all(|(i, pair)| pair.base == i && pair.other == i && pair.score == 1.0));
+    }
+    #[test]
+    fn raw_matching_rejects_excessive_token_comparison_work() {
+        let bodies = vec!["token ".repeat(256); 96];
+        assert!(match_raw(&RawInput {
+            old: bodies.clone(),
+            new: bodies
+        })
+        .is_none());
     }
     #[test]
     fn greedy_prefers_semantics_over_nearest() {

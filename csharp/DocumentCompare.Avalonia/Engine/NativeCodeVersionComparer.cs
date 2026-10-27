@@ -1220,7 +1220,7 @@ public static class NativeCodeVersionComparer
         ArgumentNullException.ThrowIfNull(similarities);
         var exports = Native.Value;
         if (exports?.DocumentGenericUnits is null ||
-            oldCount is < 0 or > 64 || newCount is < 0 or > 64 ||
+            oldCount is < 0 or > 256 || newCount is < 0 or > 256 ||
             similarities.Count != oldCount * newCount ||
             similarities.Any(s => !double.IsFinite(s) || s is < 0 or > 1))
             return null;
@@ -1272,7 +1272,7 @@ public static class NativeCodeVersionComparer
         ArgumentNullException.ThrowIfNull(revised);
         var exports=Native.Value;
         if(exports?.DocumentGenericUnitsRaw is null ||
-            old.Count>64 || revised.Count>64 ||
+            old.Count>256 || revised.Count>256 ||
             old.Any(x=>x is null || x.Length>8192) ||
             revised.Any(x=>x is null || x.Length>8192))
             return null;
