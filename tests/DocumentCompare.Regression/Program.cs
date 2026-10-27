@@ -4176,7 +4176,7 @@ if (NativeCodeVersionComparer.IsAvailable)
         cases++;
     }
     Check(NativeCodeVersionComparer.MatchGenericDocumentUnits(
-        65,1,Enumerable.Repeat(.95,65).ToArray()) is null,
+        257,1,Enumerable.Repeat(.95,257).ToArray()) is null,
         "unsupported large generic matcher must safely fall back to C#");
     Console.WriteLine($"PASS RUST GENERIC BLOCK CSHARP PARITY {cases}/{cases}");
 }
@@ -5128,8 +5128,15 @@ if (NativeCodeVersionComparer.IsAvailable)
             "Rust source-owned generic matching deviated from reference: "+trial);
         tested++;
     }
+    var largerBlocks=Enumerable.Range(0,96)
+        .Select(i=>$"unique_clause_{i:D3}").ToArray();
+    var largerResult=NativeCodeVersionComparer.MatchGenericDocumentRaw(
+        largerBlocks,largerBlocks);
+    Check(largerResult is not null && largerResult.Count==96 &&
+        largerResult.Select((m,i)=>m.Base==i&&m.Other==i&&m.Score==1.0).All(x=>x),
+        "Rust raw matcher must own 96 distinct generic blocks");
     Check(NativeCodeVersionComparer.MatchGenericDocumentRaw(
-        Enumerable.Range(0,65).Select(i=>i.ToString()).ToArray(),
+        Enumerable.Range(0,257).Select(i=>i.ToString()).ToArray(),
         new[]{"one"}) is null,
         "oversize Rust generic input must fail safe");
     Console.WriteLine($"PASS RUST RAW GENERIC UNIT SIMILARITY CSHARP PARITY {tested}/{tested}");
