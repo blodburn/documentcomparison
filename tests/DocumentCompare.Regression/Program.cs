@@ -4116,6 +4116,15 @@ if (NativeCodeVersionComparer.IsAvailable)
                 textsWhole[seededWhole.Next(textsWhole.Length)]);
         wholeDocs.Add(string.Join("\n",lines));
     }
+    // The Rust full matcher already accepts 64 parts. Confirm that the
+    // production C# bridge does not truncate the source to the old 32 limit.
+    // Reordered unique bodies must retain their original counterparts.
+    var biggerWholeParts=string.Join("\n",Enumerable.Range(0,48)
+        .Select(i=>$"({i+1}) Unique document clause {i:D3} details"));
+    var biggerWholeReordered=string.Join("\n",Enumerable.Range(0,48)
+        .Reverse().Select(i=>$"({i+1}) Unique document clause {i:D3} details"));
+    wholeDocs.Add(biggerWholeParts);
+    wholeDocs.Add(biggerWholeReordered);
     var checkedWhole=0;
     foreach(var originalText in wholeDocs)
     {

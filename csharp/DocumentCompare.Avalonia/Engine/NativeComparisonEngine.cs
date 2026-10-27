@@ -3331,9 +3331,9 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         // Rust is the production match-choice path for bounded documents;
         // C# is still the fail-safe, and the CI parity mode shadows all
         // native results against the untouched reference implementation.
-        if (a.Count > 32 || b.Count > 32 ||
-            (long)a.Count * b.Count > 512 ||
-            a.Sum(p => (long)p.Core.Length) + b.Sum(p => (long)p.Core.Length) > 32_768 ||
+        if (a.Count > 64 || b.Count > 64 ||
+            (long)a.Count * b.Count > 4_096 ||
+            a.Sum(p => (long)p.Core.Length) + b.Sum(p => (long)p.Core.Length) > 65_536 ||
             a.Any(p => p.Core.Length > 8_192) ||
             b.Any(p => p.Core.Length > 8_192))
             return MatchPartsCSharp(a, b);
