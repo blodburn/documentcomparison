@@ -2878,6 +2878,11 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         return new string(chars);
     }
 
+    // Production uses Rust. CI can compare every result with the C# reference.
+    private static bool VerifyRustDocumentMatches =>
+        Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_REQUIRE_NATIVE") == "1" ||
+        Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_VERIFY_DOCUMENT_MATCHES") == "1";
+
     private static long _partsRustParityMatches;
     private static long _partsRustParityMismatches;
     internal static long PartsRustParityMatches =>
@@ -2887,26 +2892,30 @@ public sealed class NativeComparisonEngine : IComparisonEngine
 
     private static List<NativePart> ParseParts(string text)
     {
-        var canonical = ParsePartsCSharp(text);
-        if (text.Length > 16_384) return canonical;
+
+        if (text.Length > 16_384) return ParsePartsCSharp(text);
         try
         {
             var rust = NativeCodeVersionComparer.ParseDocumentParts(text);
-            if (rust is null) return canonical;
-            var same = rust.Count == canonical.Count;
-            if (same)
-                for (var i = 0; i < canonical.Count; i++)
-                {
-                    var a = canonical[i]; var b = rust[i];
-                    if (a.Label != b.Label || a.Start != b.Start || a.End != b.End ||
-                        a.CoreStart != b.CoreStart || a.CoreEnd != b.CoreEnd ||
-                        a.Core != b.Core)
-                    { same = false; break; }
-                }
-            if (!same)
+            if (rust is null) return ParsePartsCSharp(text);
+            if (VerifyRustDocumentMatches)
             {
-                System.Threading.Interlocked.Increment(ref _partsRustParityMismatches);
-                return canonical;
+                var canonical = ParsePartsCSharp(text);
+                var same = rust.Count == canonical.Count;
+                if (same)
+                    for (var i = 0; i < canonical.Count; i++)
+                    {
+                        var a = canonical[i]; var b = rust[i];
+                        if (a.Label != b.Label || a.Start != b.Start || a.End != b.End ||
+                            a.CoreStart != b.CoreStart || a.CoreEnd != b.CoreEnd ||
+                            a.Core != b.Core)
+                        { same = false; break; }
+                    }
+                if (!same)
+                {
+                    System.Threading.Interlocked.Increment(ref _partsRustParityMismatches);
+                    return canonical;
+                }
             }
             System.Threading.Interlocked.Increment(ref _partsRustParityMatches);
             return rust.Select(p =>
@@ -2916,7 +2925,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             System.Text.EncoderFallbackException or OverflowException)
         {
             System.Threading.Interlocked.Increment(ref _partsRustParityMismatches);
-            return canonical;
+            return ParsePartsCSharp(text);
         }
     }
 
@@ -2998,17 +3007,21 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     private static List<NativeCodeVersionComparer.ExactDocumentPartPair>
         MatchExactPartKeys(IReadOnlyList<string> oldKeys, IReadOnlyList<string> newKeys)
     {
-        var canonical = MatchExactPartKeysCSharp(oldKeys, newKeys);
+
         if (oldKeys.Count > 256 || newKeys.Count > 256)
-            return canonical;
+            return MatchExactPartKeysCSharp(oldKeys, newKeys);
         try
         {
             var native = NativeCodeVersionComparer.MatchExactDocumentParts(oldKeys, newKeys);
-            if (native is null) return canonical;
-            if (!canonical.SequenceEqual(native))
+            if (native is null) return MatchExactPartKeysCSharp(oldKeys, newKeys);
+            if (VerifyRustDocumentMatches)
             {
-                System.Threading.Interlocked.Increment(ref _exactPartsRustParityMismatches);
-                return canonical;
+                var canonical = MatchExactPartKeysCSharp(oldKeys, newKeys);
+                if (!canonical.SequenceEqual(native))
+                {
+                    System.Threading.Interlocked.Increment(ref _exactPartsRustParityMismatches);
+                    return canonical;
+                }
             }
             System.Threading.Interlocked.Increment(ref _exactPartsRustParityMatches);
             return native.ToList();
@@ -3017,7 +3030,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             System.Text.EncoderFallbackException or OverflowException)
         {
             System.Threading.Interlocked.Increment(ref _exactPartsRustParityMismatches);
-            return canonical;
+            return MatchExactPartKeysCSharp(oldKeys, newKeys);
         }
     }
 
@@ -3068,20 +3081,24 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         SelectPartMoveCandidates(int oldCount, int newCount,
             IReadOnlyList<NativeCodeVersionComparer.DocumentMoveCandidate> candidates)
     {
-        var canonical = SelectPartMoveCandidatesCSharp(oldCount, newCount, candidates);
+
         try
         {
             var rust = NativeCodeVersionComparer.SelectDocumentPartMoves(
                 oldCount, newCount, candidates);
-            if (rust is null) return canonical;
-            if (rust.Count != canonical.Count ||
-                rust.Where((selected, i) =>
-                    selected.Old != canonical[i].Old ||
-                    selected.New != canonical[i].New ||
-                    Math.Abs(selected.Score - canonical[i].Score) > 1e-12).Any())
+            if (rust is null) return SelectPartMoveCandidatesCSharp(oldCount, newCount, candidates);
+            if (VerifyRustDocumentMatches)
             {
-                System.Threading.Interlocked.Increment(ref _moveCandidatesRustParityMismatches);
-                return canonical;
+                var canonical = SelectPartMoveCandidatesCSharp(oldCount, newCount, candidates);
+                if (rust.Count != canonical.Count ||
+                    rust.Where((selected, i) =>
+                        selected.Old != canonical[i].Old ||
+                        selected.New != canonical[i].New ||
+                        Math.Abs(selected.Score - canonical[i].Score) > 1e-12).Any())
+                {
+                    System.Threading.Interlocked.Increment(ref _moveCandidatesRustParityMismatches);
+                    return canonical;
+                }
             }
             System.Threading.Interlocked.Increment(ref _moveCandidatesRustParityMatches);
             return rust.ToList();
@@ -3090,7 +3107,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             System.Text.EncoderFallbackException or OverflowException)
         {
             System.Threading.Interlocked.Increment(ref _moveCandidatesRustParityMismatches);
-            return canonical;
+            return SelectPartMoveCandidatesCSharp(oldCount, newCount, candidates);
         }
     }
 
@@ -3127,19 +3144,23 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         SelectSameLabelCandidates(int oldCount, int newCount,
             IReadOnlyList<NativeCodeVersionComparer.DocumentSameLabelCandidate> candidates)
     {
-        var canonical = SelectSameLabelCandidatesCSharp(oldCount, newCount, candidates);
+
         try
         {
             var native = NativeCodeVersionComparer.SelectSameLabelDocumentParts(
                 oldCount, newCount, candidates);
-            if (native is null) return canonical;
-            if (canonical.Count != native.Count ||
-                native.Where((pair, i) =>
-                    pair.Old != canonical[i].Old || pair.New != canonical[i].New ||
-                    Math.Abs(pair.Score - canonical[i].Score) > 1e-12).Any())
+            if (native is null) return SelectSameLabelCandidatesCSharp(oldCount, newCount, candidates);
+            if (VerifyRustDocumentMatches)
             {
-                System.Threading.Interlocked.Increment(ref _sameLabelRustParityMismatches);
-                return canonical;
+                var canonical = SelectSameLabelCandidatesCSharp(oldCount, newCount, candidates);
+                if (canonical.Count != native.Count ||
+                    native.Where((pair, i) =>
+                        pair.Old != canonical[i].Old || pair.New != canonical[i].New ||
+                        Math.Abs(pair.Score - canonical[i].Score) > 1e-12).Any())
+                {
+                    System.Threading.Interlocked.Increment(ref _sameLabelRustParityMismatches);
+                    return canonical;
+                }
             }
             System.Threading.Interlocked.Increment(ref _sameLabelRustParityMatches);
             return native.ToList();
@@ -3148,7 +3169,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             System.Text.EncoderFallbackException or OverflowException)
         {
             System.Threading.Interlocked.Increment(ref _sameLabelRustParityMismatches);
-            return canonical;
+            return SelectSameLabelCandidatesCSharp(oldCount, newCount, candidates);
         }
     }
 
@@ -3189,19 +3210,23 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         SelectSameOrdinalCandidates(int oldCount, int newCount,
             IReadOnlyList<NativeCodeVersionComparer.DocumentSameOrdinalCandidate> candidates)
     {
-        var canonical = SelectSameOrdinalCandidatesCSharp(oldCount, newCount, candidates);
+
         try
         {
             var rust = NativeCodeVersionComparer.SelectSameOrdinalDocumentParts(
                 oldCount, newCount, candidates);
-            if (rust is null) return canonical;
-            if (rust.Count != canonical.Count ||
-                rust.Where((pair, i) =>
-                    pair.Old != canonical[i].Old || pair.New != canonical[i].New ||
-                    Math.Abs(pair.Score - canonical[i].Score) > 1e-12).Any())
+            if (rust is null) return SelectSameOrdinalCandidatesCSharp(oldCount, newCount, candidates);
+            if (VerifyRustDocumentMatches)
             {
-                System.Threading.Interlocked.Increment(ref _sameOrdinalRustParityMismatches);
-                return canonical;
+                var canonical = SelectSameOrdinalCandidatesCSharp(oldCount, newCount, candidates);
+                if (rust.Count != canonical.Count ||
+                    rust.Where((pair, i) =>
+                        pair.Old != canonical[i].Old || pair.New != canonical[i].New ||
+                        Math.Abs(pair.Score - canonical[i].Score) > 1e-12).Any())
+                {
+                    System.Threading.Interlocked.Increment(ref _sameOrdinalRustParityMismatches);
+                    return canonical;
+                }
             }
             System.Threading.Interlocked.Increment(ref _sameOrdinalRustParityMatches);
             return rust.ToList();
@@ -3210,7 +3235,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             System.Text.EncoderFallbackException or OverflowException)
         {
             System.Threading.Interlocked.Increment(ref _sameOrdinalRustParityMismatches);
-            return canonical;
+            return SelectSameOrdinalCandidatesCSharp(oldCount, newCount, candidates);
         }
     }
 
@@ -3256,19 +3281,23 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         SelectCrossLevelCandidates(int oldCount, int newCount,
             IReadOnlyList<NativeCodeVersionComparer.DocumentCrossLevelCandidate> candidates)
     {
-        var canonical = SelectCrossLevelCandidatesCSharp(oldCount, newCount, candidates);
+
         try
         {
             var rust = NativeCodeVersionComparer.SelectCrossLevelDocumentParts(
                 oldCount, newCount, candidates);
-            if (rust is null) return canonical;
-            if (rust.Count != canonical.Count ||
-                rust.Where((entry, i) =>
-                    entry.Old != canonical[i].Old || entry.New != canonical[i].New ||
-                    Math.Abs(entry.Score - canonical[i].Score) > 1e-12).Any())
+            if (rust is null) return SelectCrossLevelCandidatesCSharp(oldCount, newCount, candidates);
+            if (VerifyRustDocumentMatches)
             {
-                System.Threading.Interlocked.Increment(ref _crossLevelRustParityMismatches);
-                return canonical;
+                var canonical = SelectCrossLevelCandidatesCSharp(oldCount, newCount, candidates);
+                if (rust.Count != canonical.Count ||
+                    rust.Where((entry, i) =>
+                        entry.Old != canonical[i].Old || entry.New != canonical[i].New ||
+                        Math.Abs(entry.Score - canonical[i].Score) > 1e-12).Any())
+                {
+                    System.Threading.Interlocked.Increment(ref _crossLevelRustParityMismatches);
+                    return canonical;
+                }
             }
             System.Threading.Interlocked.Increment(ref _crossLevelRustParityMatches);
             return rust.ToList();
@@ -3277,7 +3306,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             System.Text.EncoderFallbackException or OverflowException)
         {
             System.Threading.Interlocked.Increment(ref _crossLevelRustParityMismatches);
-            return canonical;
+            return SelectCrossLevelCandidatesCSharp(oldCount, newCount, candidates);
         }
     }
 
@@ -3596,27 +3625,31 @@ public sealed class NativeComparisonEngine : IComparisonEngine
 
     private static List<PartNode> BuildPartHierarchy(IReadOnlyList<NativePart> parts)
     {
-        var canonical = BuildPartHierarchyCSharp(parts);
-        if (parts.Count > 256) return canonical;
+
+        if (parts.Count > 256) return BuildPartHierarchyCSharp(parts);
         try
         {
             var native = NativeCodeVersionComparer.AnalyzeDocumentHierarchy(
                 parts.Select(x => x.Label).ToArray());
-            if (native is null) return canonical;
-            var same = native.Count == canonical.Count;
-            if (same)
-                for (var i = 0; i < canonical.Count; i++)
-                {
-                    var left = canonical[i]; var right = native[i];
-                    if (left.Index != right.Index || left.Level != right.Level ||
-                        left.Parent != right.Parent || left.Family != right.Family ||
-                        PartOrdinalAt(parts, i) != right.Ordinal)
-                    { same = false; break; }
-                }
-            if (!same)
+            if (native is null) return BuildPartHierarchyCSharp(parts);
+            if (VerifyRustDocumentMatches)
             {
-                System.Threading.Interlocked.Increment(ref _hierarchyRustParityMismatches);
-                return canonical;
+                var canonical = BuildPartHierarchyCSharp(parts);
+                var same = native.Count == canonical.Count;
+                if (same)
+                    for (var i = 0; i < canonical.Count; i++)
+                    {
+                        var left = canonical[i]; var right = native[i];
+                        if (left.Index != right.Index || left.Level != right.Level ||
+                            left.Parent != right.Parent || left.Family != right.Family ||
+                            PartOrdinalAt(parts, i) != right.Ordinal)
+                        { same = false; break; }
+                    }
+                if (!same)
+                {
+                    System.Threading.Interlocked.Increment(ref _hierarchyRustParityMismatches);
+                    return canonical;
+                }
             }
             System.Threading.Interlocked.Increment(ref _hierarchyRustParityMatches);
             return native.Select(x => new PartNode(x.Index, x.Level, x.Parent, x.Family)).ToList();
@@ -3625,7 +3658,7 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             System.Text.EncoderFallbackException or OverflowException)
         {
             System.Threading.Interlocked.Increment(ref _hierarchyRustParityMismatches);
-            return canonical;
+            return BuildPartHierarchyCSharp(parts);
         }
     }
 
