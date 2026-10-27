@@ -3319,6 +3319,9 @@ public sealed class NativeComparisonEngine : IComparisonEngine
         }
     }
 
+    private static long _wholeExactRustMatches;
+    internal static long WholeExactRustMatches =>
+        System.Threading.Interlocked.Read(ref _wholeExactRustMatches);
     private static long _wholeMatchRustParityMatches;
     private static long _wholeMatchRustParityMismatches;
     internal static long WholeMatchRustParityMatches =>
@@ -3328,9 +3331,56 @@ public sealed class NativeComparisonEngine : IComparisonEngine
 
     private static List<PartMatch> MatchParts(IReadOnlyList<NativePart> a, IReadOnlyList<NativePart> b)
     {
-        // Rust is the production match-choice path for bounded documents;
-        // C# is still the fail-safe, and the CI parity mode shadows all
-        // native results against the untouched reference implementation.
+        // Identical nonempty body multisets are a complete Rust exact-match
+        // decision. Skip all C# pair scoring, including for 65-256 list items.
+        // Keep the one-sided structural exception from the original matcher.
+        if (a.Count > 0 && a.Count == b.Count && a.Count <= 256 &&
+            !((a.Count(p => IsStructuralLabel(p.Label)) >= 2 &&
+                b.All(p => !IsStructuralLabel(p.Label))) ||
+              (b.Count(p => IsStructuralLabel(p.Label)) >= 2 &&
+                a.All(p => !IsStructuralLabel(p.Label)))))
+        {
+            try
+            {
+                var leftKeys=a.Select(p => LineageNormalize(p.Core)).ToArray();
+                var rightKeys=b.Select(p => LineageNormalize(p.Core)).ToArray();
+                if (leftKeys.All(k => k.Length > 0 && k.Length <= 16_384) &&
+                    rightKeys.All(k => k.Length > 0 && k.Length <= 16_384))
+                {
+                    var exact=NativeCodeVersionComparer.MatchExactDocumentParts(
+                        leftKeys,rightKeys);
+                    if (exact is not null && exact.Count == a.Count)
+                    {
+                        var mapped=exact.Select(p=>new PartMatch(p.Old,p.New,1.0)).ToList();
+                        if (VerifyRustDocumentMatches)
+                        {
+                            var canonical=MatchPartsCSharp(a,b);
+                            if (mapped.Count != canonical.Count ||
+                                mapped.Where((m,i)=>m.Old!=canonical[i].Old ||
+                                    m.New!=canonical[i].New ||
+                                    Math.Abs(m.Score-canonical[i].Score)>1e-12).Any())
+                            {
+                                System.Threading.Interlocked.Increment(
+                                    ref _wholeMatchRustParityMismatches);
+                                return canonical;
+                            }
+                        }
+                        System.Threading.Interlocked.Increment(ref _wholeExactRustMatches);
+                        System.Threading.Interlocked.Increment(ref _wholeMatchRustParityMatches);
+                        return mapped;
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is InvalidDataException or
+                System.Text.Json.JsonException or ArgumentException or
+                System.Text.EncoderFallbackException or OverflowException)
+            {
+                // An unsupported exact payload follows the full-match path.
+            }
+        }
+
+        // Rust owns candidate selection for other bounded documents.
+        // C# remains an emergency fallback and the CI parity reference.
         if (a.Count > 64 || b.Count > 64 ||
             (long)a.Count * b.Count > 4_096 ||
             a.Sum(p => (long)p.Core.Length) + b.Sum(p => (long)p.Core.Length) > 65_536 ||
