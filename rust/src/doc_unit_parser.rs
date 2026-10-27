@@ -665,7 +665,7 @@ pub fn parse_raw(req: &RawInput) -> Option<Result> {
         false
     } else {
         text.split('\n')
-            .filter(|l| KARTICLE.is_match(l) || EARTICLE.is_match(l))
+            .filter(|l| KARTICLE.is_match(l) || english_article(l.trim()).is_some())
             .take(2)
             .count()
             >= 2
