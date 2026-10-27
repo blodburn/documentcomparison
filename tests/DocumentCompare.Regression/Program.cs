@@ -4116,6 +4116,15 @@ if (NativeCodeVersionComparer.IsAvailable)
                 textsWhole[seededWhole.Next(textsWhole.Length)]);
         wholeDocs.Add(string.Join("\n",lines));
     }
+    // The Rust full matcher already accepts 64 parts. Confirm that the
+    // production C# bridge does not truncate the source to the old 32 limit.
+    // Reordered unique bodies must retain their original counterparts.
+    var biggerWholeParts=string.Join("\n",Enumerable.Range(0,48)
+        .Select(i=>$"({i+1}) Unique document clause {i:D3} details"));
+    var biggerWholeReordered=string.Join("\n",Enumerable.Range(0,48)
+        .Reverse().Select(i=>$"({i+1}) Unique document clause {i:D3} details"));
+    wholeDocs.Add(biggerWholeParts);
+    wholeDocs.Add(biggerWholeReordered);
     var checkedWhole=0;
     foreach(var originalText in wholeDocs)
     {
@@ -4135,6 +4144,29 @@ if (NativeCodeVersionComparer.IsAvailable)
             checkedWhole++;
         }
     }
+    // 96-part exact reordering must be Rust-owned with no managed
+    // candidate-feature matrix and exact old/new lineage.
+    var manyExactOld=string.Join("\n",Enumerable.Range(1,96)
+        .Select(i=>$"({i}) Unique source clause {i:D3}"));
+    var manyExactNew=string.Join("\n",Enumerable.Range(1,96).Reverse()
+        .Select(i=>$"({i}) Unique source clause {i:D3}"));
+    var oldExactParts=wholeParser.Invoke(null,new object[]{manyExactOld})!;
+    var newExactParts=wholeParser.Invoke(null,new object[]{manyExactNew})!;
+    Check(((System.Collections.IEnumerable)oldExactParts).Cast<object>().Count()==96 &&
+          ((System.Collections.IEnumerable)newExactParts).Cast<object>().Count()==96,
+        "96-part exact ordering regression parser setup failed");
+    var fastProp=wholeType.GetProperty("WholeExactRustMatches",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var fastBefore=(long)fastProp.GetValue(null)!;
+    var exactReference=FetchWhole(wholeCSharp,oldExactParts,newExactParts);
+    var exactProduction=FetchWhole(wholeLive,oldExactParts,newExactParts);
+    Check(exactReference.Length==96 && exactProduction.Length==96 &&
+        exactReference.Zip(exactProduction).All(x=>
+            x.First.Old==x.Second.Old && x.First.New==x.Second.New &&
+            Math.Abs(x.First.Score-x.Second.Score)<1e-12) &&
+        (long)fastProp.GetValue(null)!>fastBefore,
+        "Rust-only exact full matcher must preserve 96-part reorder lineage");
+    checkedWhole++;
     Check(MissesWhole()==initialWholeMismatches,
         "whole MatchParts Rust differs from C# in tested document structures; "+
         (MissesWhole()-initialWholeMismatches)+" mismatches");
