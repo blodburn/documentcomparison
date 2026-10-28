@@ -4167,6 +4167,30 @@ if (NativeCodeVersionComparer.IsAvailable)
         (long)fastProp.GetValue(null)!>fastBefore,
         "Rust-only exact full matcher must preserve 96-part reorder lineage");
     checkedWhole++;
+    // Ensure >256 uniquely reordered parts use the Rust-owned full-match
+    // entrypoint rather than the former C# fallback. The oracle has to
+    // agree on positions and scores, not only the overall pair count.
+    var giantExactOld=string.Join("\n",Enumerable.Range(1,320)
+        .Select(i=>$"({i}) Distinct exact contract provision {i:D4}"));
+    var giantExactNew=string.Join("\n",Enumerable.Range(1,320).Reverse()
+        .Select(i=>$"({i}) Distinct exact contract provision {i:D4}"));
+    var giantOldParts=wholeParser.Invoke(null,new object[]{giantExactOld})!;
+    var giantNewParts=wholeParser.Invoke(null,new object[]{giantExactNew})!;
+    Check(((System.Collections.IEnumerable)giantOldParts).Cast<object>().Count()==320 &&
+        ((System.Collections.IEnumerable)giantNewParts).Cast<object>().Count()==320,
+        "320-part native exact reorder parser setup failed");
+    var giantFastBefore=(long)fastProp.GetValue(null)!;
+    var giantRustBefore=MatchesWhole();
+    var giantCanonical=FetchWhole(wholeCSharp,giantOldParts,giantNewParts);
+    var giantNative=FetchWhole(wholeLive,giantOldParts,giantNewParts);
+    Check(giantCanonical.Length==320 && giantNative.Length==320 &&
+        giantCanonical.Zip(giantNative).All(x=>
+            x.First.Old==x.Second.Old && x.First.New==x.Second.New &&
+            Math.Abs(x.First.Score-x.Second.Score)<1e-12) &&
+        MatchesWhole()==giantRustBefore+1 &&
+        ((long)fastProp.GetValue(null)!)==giantFastBefore+1,
+        "320-part exact reordering must use Rust and match managed lineage");
+    checkedWhole++;
     // Nonidentical documents beyond the legacy 64-part cap now use Rust
     // without exceeding the independent candidate-stage 8,192 pair budget.
     var bigChangedOld=string.Join("\n",Enumerable.Range(1,96)

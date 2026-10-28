@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 use std::{cmp::Ordering, collections::HashSet, sync::LazyLock};
 
 const MAX_ITEMS: usize = 128;
-const MAX_EXACT_ITEMS: usize = 256;
+const MAX_EXACT_ITEMS: usize = 1_024;
+const MAX_TOTAL_UTF16_UNITS: usize = 524_288;
 const MAX_PAIRS: usize = 8_192;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -582,6 +583,13 @@ pub fn validate(input: &Input) -> bool {
     let (na, nb) = (input.old.len(), input.new.len());
     if na > MAX_EXACT_ITEMS
         || nb > MAX_EXACT_ITEMS
+        || input
+            .old
+            .iter()
+            .chain(input.new.iter())
+            .map(|p| p.core.encode_utf16().count())
+            .sum::<usize>()
+            > MAX_TOTAL_UTF16_UNITS
         || !input.old.iter().chain(input.new.iter()).all(|p| {
             p.label.encode_utf16().count() <= 128 && p.core.encode_utf16().count() <= 16_384
         })
@@ -688,6 +696,23 @@ mod tests {
                 .iter()
                 .enumerate()
                 .all(|(i, m)| { m.old == i && m.new == 199 - i && m.score == 1.0 })
+        );
+    }
+    #[test]
+    fn full_exact_match_handles_512_reordered_parts() {
+        let old: Vec<_> = (0..512)
+            .map(|i| item("1.", &format!("distinct clause content {i:04}"), 1))
+            .collect();
+        let new = old.iter().cloned().rev().collect();
+        let request = Input { old, new };
+        assert!(validate(&request));
+        let matches = checked(&request).matches;
+        assert_eq!(matches.len(), 512);
+        assert!(
+            matches
+                .iter()
+                .enumerate()
+                .all(|(i, m)| m.old == i && m.new == 511 - i && m.score == 1.0)
         );
     }
     #[test]
