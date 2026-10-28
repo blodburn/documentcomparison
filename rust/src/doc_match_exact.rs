@@ -1,14 +1,13 @@
-//! Port of the FIRST MatchParts pairing pass, not of the full matcher.
-//! Keys are prepared by the canonical C# LineageNormalize rule.
-//! Unique/duplicate content is paired greedily with nearest unmatched
-//! destination (index distance), with lowest new index breaking ties.
-//! All downstream definition-head, hierarchy, residual and move rules
-//! still use the authoritative C# matcher.
+//! Exact-key matching used by the standalone first-pass API and the
+//! Rust-owned full MatchParts fast path. Keys use canonical lineage rules.
+//! Duplicate keys choose the nearest unmatched destination, breaking
+//! equal-distance ties by the lowest new index.
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeSet, HashMap};
 
-const MAX_PARTS: usize = 256;
+const MAX_PARTS: usize = 1_024;
 const MAX_KEY_LENGTH: usize = 16_384;
-const MAX_TOTAL_CHARS: usize = 131_072;
+const MAX_TOTAL_CHARS: usize = 2_097_152;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -40,23 +39,33 @@ pub fn pair(old: &[String], new: &[String]) -> std::result::Result<Result, &'sta
     {
         return Err("too many document part keys");
     }
-    let mut used_new = vec![false; new.len()];
-    let mut pairs = Vec::new();
+    // Per-key ordered positions replace repeated full scans while
+    // preserving canonical C# nearest-unmatched, lower-index tie behavior.
+    let mut destinations: HashMap<&str, BTreeSet<usize>> = HashMap::new();
+    for (j, key) in new.iter().enumerate() {
+        if !key.is_empty() {
+            destinations.entry(key.as_str()).or_default().insert(j);
+        }
+    }
+    let mut pairs = Vec::with_capacity(old.len().min(new.len()));
     for (i, old_key) in old.iter().enumerate() {
         if old_key.is_empty() {
             continue;
         }
-        let mut best: Option<usize> = None;
-        for (j, new_key) in new.iter().enumerate() {
-            if used_new[j] || new_key != old_key {
-                continue;
-            }
-            if best.is_none_or(|prev| i.abs_diff(j) < i.abs_diff(prev)) {
-                best = Some(j);
-            }
-        }
-        if let Some(j) = best {
-            used_new[j] = true;
+        let Some(positions) = destinations.get_mut(old_key.as_str()) else {
+            continue;
+        };
+        let previous = positions.range(..=i).next_back().copied();
+        let next = positions.range(i..).next().copied();
+        let selected = match (previous, next) {
+            (Some(left), Some(right)) if i.abs_diff(left) <= i.abs_diff(right) => Some(left),
+            (Some(_), Some(right)) => Some(right),
+            (Some(left), None) => Some(left),
+            (None, Some(right)) => Some(right),
+            (None, None) => None,
+        };
+        if let Some(j) = selected {
+            positions.remove(&j);
             pairs.push(Pair { old: i, new: j });
         }
     }
@@ -115,10 +124,29 @@ mod tests {
 
     #[test]
     fn rejects_unbounded_input() {
-        let oversized = vec!["x".to_string(); 257];
+        let oversized = vec!["x".to_string(); 1_025];
         assert!(pair(&oversized, &[]).is_err());
     }
 
+    #[test]
+    fn duplicate_key_ties_choose_lower_unmatched_index() {
+        let old = keys(&["a", "x", "duplicate", "x", "duplicate"]);
+        let new = keys(&["a", "duplicate", "x", "duplicate", "x"]);
+        let matched = pair(&old, &new).unwrap().pairs;
+        assert_eq!(matched[2], Pair { old: 2, new: 1 });
+        assert_eq!(matched[4], Pair { old: 4, new: 3 });
+    }
+    #[test]
+    fn one_thousand_twenty_four_reordered_keys_are_exact() {
+        let old: Vec<_> = (0..1_024).map(|i| format!("clause{i:04}")).collect();
+        let new: Vec<_> = old.iter().cloned().rev().collect();
+        let matched = pair(&old, &new).unwrap().pairs;
+        assert_eq!(matched.len(), 1_024);
+        assert!(matched
+            .iter()
+            .enumerate()
+            .all(|(i, pair)| pair.old == i && pair.new == 1_023 - i));
+    }
     #[test]
     fn does_not_infer_semantically_similar_but_changed_content() {
         assert!(

@@ -3331,11 +3331,11 @@ public sealed class NativeComparisonEngine : IComparisonEngine
 
     private static List<PartMatch> MatchParts(IReadOnlyList<NativePart> a, IReadOnlyList<NativePart> b)
     {
-        // Rust owns exact reordered bodies (up to 256 items), and all
+        // Rust owns exact reordered bodies (up to 1024 items), and all
         // other bounded semantic part matches (up to 128 / 8,192 pairs).
         // Unsupported requests retain the original C# fallback.
-        if (a.Count > 256 || b.Count > 256 ||
-            a.Sum(p => (long)p.Core.Length) + b.Sum(p => (long)p.Core.Length) > 131_072 ||
+        if (a.Count > 1_024 || b.Count > 1_024 ||
+            a.Sum(p => (long)p.Core.Length) + b.Sum(p => (long)p.Core.Length) > 524_288 ||
             a.Any(p => p.Core.Length > 16_384) ||
             b.Any(p => p.Core.Length > 16_384))
             return MatchPartsCSharp(a, b);
