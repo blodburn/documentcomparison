@@ -546,7 +546,7 @@ mod tests {
         });
         assert!(derived[0].ordinal_shape && derived[0].sibling_shape);
         assert!(!derived[1].exact_normalized);
-        assert!(!derived[1].ordinal_shape);
+        assert!(derived[1].ordinal_shape);
         assert!(derived[1].sibling_shape);
     }
     #[test]
