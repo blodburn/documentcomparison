@@ -3393,20 +3393,15 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             var newNodes = BuildPartHierarchy(b);
             var oldItems = a.Select((p, i) =>
                 new NativeCodeVersionComparer.FullDocumentMatchItem(
-                    p.Label, LineageNormalize(p.Core), DefinitionHead(p.Core),
-                    oldNodes[i].Level, oldNodes[i].Parent, PartOrdinalAt(a, i),
-                    Normalize(p.Core), oldNodes[i].Family,
-                    p.Core.Trim().Length > 0,
-                    WordSet(p.Core).OrderBy(x => x, StringComparer.Ordinal).ToArray())).ToArray();
+                    p.Label, p.Core, oldNodes[i].Level, oldNodes[i].Parent,
+                    PartOrdinalAt(a, i), oldNodes[i].Family)).ToArray();
             var newItems = b.Select((p, i) =>
                 new NativeCodeVersionComparer.FullDocumentMatchItem(
-                    p.Label, LineageNormalize(p.Core), DefinitionHead(p.Core),
-                    newNodes[i].Level, newNodes[i].Parent, PartOrdinalAt(b, i),
-                    Normalize(p.Core), newNodes[i].Family,
-                    p.Core.Trim().Length > 0,
-                    WordSet(p.Core).OrderBy(x => x, StringComparer.Ordinal).ToArray())).ToArray();
-            // Rust owns every pair score and structural decision. Only
-            // per-part normalized values/token sets cross the native boundary.
+                    p.Label, p.Core, newNodes[i].Level, newNodes[i].Parent,
+                    PartOrdinalAt(b, i), newNodes[i].Family)).ToArray();
+            // Rust derives per-part keys, normalized text, definition heads
+            // and word sets from raw core text, then owns every pair score
+            // and match decision. C# supplies structural hierarchy only.
             var native = NativeCodeVersionComparer.MatchDocumentPartsFull(
                 oldItems, newItems);
             if (native is null) return MatchPartsCSharp(a, b);

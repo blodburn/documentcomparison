@@ -67,7 +67,7 @@ fn score_indel(a: &str, b: &str) -> f64 {
     }
     2.0 * prev[bb.len()] as f64 / (aa.len() + bb.len()) as f64
 }
-fn wordset(s: &str) -> HashSet<String> {
+pub(crate) fn wordset(s: &str) -> HashSet<String> {
     WORD.find_iter(&s.to_lowercase())
         .map(|m| m.as_str().to_owned())
         .collect()
