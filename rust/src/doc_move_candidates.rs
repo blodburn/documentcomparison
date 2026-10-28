@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 
-const MAX_CANDIDATES: usize = 8192;
+const MAX_CANDIDATES: usize = 16_384;
 const MAX_PARTS: usize = 256;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -4,7 +4,7 @@
 //! rank/threshold/greedy selection, NOT the complete legal item matcher.
 use serde::{Deserialize, Serialize};
 const MAX_ITEMS: usize = 256;
-const MAX_CANDIDATES: usize = 8192;
+const MAX_CANDIDATES: usize = 16_384;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
