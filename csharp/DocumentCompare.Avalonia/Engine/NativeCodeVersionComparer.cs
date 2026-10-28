@@ -1101,7 +1101,8 @@ public static class NativeCodeVersionComparer
         ArgumentNullException.ThrowIfNull(newItems);
         var exports = Native.Value;
         if (exports?.FullDocumentMatch is null ||
-            oldItems.Count > 64 || newItems.Count > 64 ||
+            oldItems.Count > 128 || newItems.Count > 128 ||
+            (long)oldItems.Count * newItems.Count > 8_192 ||
             oldItems.Any(x => x.Label is null || x.Key is null || x.Head is null ||
                 x.Normalized is null || x.Family is null || x.WordTokens is null ||
                 x.Key.Length > 8192 || x.Head.Length > 8192 ||

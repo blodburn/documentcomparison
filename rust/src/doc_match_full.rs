@@ -9,7 +9,8 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::{cmp::Ordering, collections::HashSet};
 
-const MAX_ITEMS: usize = 64;
+const MAX_ITEMS: usize = 128;
+const MAX_PAIRS: usize = 8_192;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -460,7 +461,7 @@ pub fn checked(input: &Input) -> Result {
 
 pub fn validate(input: &Input) -> bool {
     let (na, nb) = (input.old.len(), input.new.len());
-    if na > MAX_ITEMS || nb > MAX_ITEMS {
+    if na > MAX_ITEMS || nb > MAX_ITEMS || na.saturating_mul(nb) > MAX_PAIRS {
         return false;
     }
     let work_old: usize = input.old.iter().map(|p| p.key.encode_utf16().count()).sum();
@@ -566,6 +567,27 @@ mod tests {
         assert!(!derived[1].exact_normalized);
         assert!(derived[1].ordinal_shape);
         assert!(derived[1].sibling_shape);
+    }
+    #[test]
+    fn validates_large_but_bounded_nonidentical_documents() {
+        let request = Input {
+            old: (0..96)
+                .map(|i| item("1.", &format!("old_clause_{i:03}"), 1))
+                .collect(),
+            new: (0..80)
+                .map(|i| item("1.", &format!("new_clause_{i:03}"), 1))
+                .collect(),
+        };
+        assert!(validate(&request));
+        let above_pair_budget = Input {
+            old: (0..96)
+                .map(|i| item("1.", &format!("old_clause_{i:03}"), 1))
+                .collect(),
+            new: (0..96)
+                .map(|i| item("1.", &format!("new_clause_{i:03}"), 1))
+                .collect(),
+        };
+        assert!(!validate(&above_pair_budget));
     }
     #[test]
     fn one_sided_structure_does_not_invent_pairs() {
