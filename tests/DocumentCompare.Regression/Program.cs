@@ -4188,7 +4188,7 @@ if (NativeCodeVersionComparer.IsAvailable)
             x.First.Old==x.Second.Old && x.First.New==x.Second.New &&
             Math.Abs(x.First.Score-x.Second.Score)<1e-12) &&
         MatchesWhole()==giantRustBefore+1 &&
-        (long)fastProp.GetValue(null)!==giantFastBefore+1,
+        ((long)fastProp.GetValue(null)!)==giantFastBefore+1,
         "320-part exact reordering must use Rust and match managed lineage");
     checkedWhole++;
     // Nonidentical documents beyond the legacy 64-part cap now use Rust
