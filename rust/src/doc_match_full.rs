@@ -529,20 +529,27 @@ fn exact_full(input: &Input) -> Option<Result> {
         return None;
     }
     // Preserve the canonical C# protection against one-sided list structure.
-    let structured_a = a.iter().filter(|p| p.label != "본문" && !p.label.is_empty()).count();
-    let structured_b = b.iter().filter(|p| p.label != "본문" && !p.label.is_empty()).count();
-    if (structured_a >= 2 && structured_b == 0)
-        || (structured_b >= 2 && structured_a == 0)
-    {
+    let structured_a = a
+        .iter()
+        .filter(|p| p.label != "본문" && !p.label.is_empty())
+        .count();
+    let structured_b = b
+        .iter()
+        .filter(|p| p.label != "본문" && !p.label.is_empty())
+        .count();
+    if (structured_a >= 2 && structured_b == 0) || (structured_b >= 2 && structured_a == 0) {
         return None;
     }
     let keys = |items: &[Item]| -> Vec<String> {
         items
             .iter()
-            .map(|p| doc_normalize::convert(&doc_normalize::Input {
-                text: p.core.clone(),
-                mode: "lineage".into(),
-            }).text)
+            .map(|p| {
+                doc_normalize::convert(&doc_normalize::Input {
+                    text: p.core.clone(),
+                    mode: "lineage".into(),
+                })
+                .text
+            })
             .collect()
     };
     let old_keys = keys(a);
@@ -557,7 +564,11 @@ fn exact_full(input: &Input) -> Option<Result> {
     Some(Result {
         matches: pairs
             .into_iter()
-            .map(|p| Match { old: p.old, new: p.new, score: 1.0 })
+            .map(|p| Match {
+                old: p.old,
+                new: p.new,
+                score: 1.0,
+            })
             .collect(),
     })
 }
@@ -569,8 +580,9 @@ pub fn checked(input: &Input) -> Result {
 
 pub fn validate(input: &Input) -> bool {
     let (na, nb) = (input.old.len(), input.new.len());
-    if na > MAX_EXACT_ITEMS || nb > MAX_EXACT_ITEMS ||
-        !input.old.iter().chain(input.new.iter()).all(|p| {
+    if na > MAX_EXACT_ITEMS
+        || nb > MAX_EXACT_ITEMS
+        || !input.old.iter().chain(input.new.iter()).all(|p| {
             p.label.encode_utf16().count() <= 128 && p.core.encode_utf16().count() <= 16_384
         })
     {
@@ -582,12 +594,22 @@ pub fn validate(input: &Input) -> bool {
     if na > MAX_ITEMS || nb > MAX_ITEMS || na.saturating_mul(nb) > MAX_PAIRS {
         return false;
     }
-    let work_old: usize = input.old.iter().map(|p| p.core.encode_utf16().count()).sum();
-    let work_new: usize = input.new.iter().map(|p| p.core.encode_utf16().count()).sum();
+    let work_old: usize = input
+        .old
+        .iter()
+        .map(|p| p.core.encode_utf16().count())
+        .sum();
+    let work_new: usize = input
+        .new
+        .iter()
+        .map(|p| p.core.encode_utf16().count())
+        .sum();
     work_old.saturating_mul(work_new) <= 32_000_000
-        && input.old.iter().chain(input.new.iter()).all(|p| {
-            p.core.encode_utf16().count() <= 8192
-        })
+        && input
+            .old
+            .iter()
+            .chain(input.new.iter())
+            .all(|p| p.core.encode_utf16().count() <= 8192)
 }
 
 #[cfg(test)]
