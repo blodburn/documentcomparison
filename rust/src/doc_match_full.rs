@@ -1,11 +1,11 @@
 #![allow(clippy::needless_range_loop)]
 //! Entire MatchParts match-choice orchestration ported from C#.
-//! C# supplies raw text, hierarchy and labels. Rust owns per-part keys,
+//! C# supplies raw item labels and text. Rust owns hierarchy, ordinals,
 //! normalization, word sets, similarity scores and matching decisions.
 //! Full final pair lists are parity-checked against the reference C# engine.
 use crate::{
-    doc_character_score, doc_cross_level, doc_move_candidates, doc_normalize, doc_same_label,
-    doc_same_ordinal, doc_unit_lineage_raw,
+    doc_character_score, doc_cross_level, doc_move_candidates, doc_normalize, doc_parts,
+    doc_same_label, doc_same_ordinal, doc_unit_lineage_raw,
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -19,10 +19,6 @@ const MAX_PAIRS: usize = 8_192;
 pub struct Item {
     pub label: String,
     pub core: String,
-    pub level: usize,
-    pub parent: i32,
-    pub ordinal: Option<i32>,
-    pub family: String,
 }
 
 #[derive(Debug, Clone)]
@@ -42,7 +38,7 @@ struct PreparedItem {
 static QUOTED_HEAD: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"^\s*["“‘]([^"”’]{1,96})["”’]"#).unwrap());
 
-fn prepare(item: &Item) -> PreparedItem {
+fn prepare(item: &Item, hierarchy: &doc_parts::HierarchyNode) -> PreparedItem {
     let normalized = doc_normalize::convert(&doc_normalize::Input {
         text: item.core.clone(),
         mode: "normalize".into(),
@@ -73,11 +69,11 @@ fn prepare(item: &Item) -> PreparedItem {
         label: item.label.clone(),
         key,
         head,
-        level: item.level,
-        parent: item.parent,
-        ordinal: item.ordinal,
+        level: hierarchy.level,
+        parent: hierarchy.parent,
+        ordinal: hierarchy.ordinal.map(|v| v as i32),
         normalized,
-        family: item.family.clone(),
+        family: hierarchy.family.clone(),
         has_trimmed_content: !item.core.trim().is_empty(),
         word_tokens: tokens,
     }
@@ -126,6 +122,17 @@ fn stable_edge(a: &str, b: &str) -> bool {
         suffix += 1;
     }
     prefix >= 18 || suffix >= 18
+}
+
+fn prepare_all(items: &[Item]) -> Vec<PreparedItem> {
+    let labels: Vec<String> = items.iter().map(|item| item.label.clone()).collect();
+    let hierarchy = doc_parts::hierarchy(&labels)
+        .expect("hierarchy has been checked by full matcher input validation");
+    items
+        .iter()
+        .zip(hierarchy.nodes.iter())
+        .map(|(item, node)| prepare(item, node))
+        .collect()
 }
 
 fn ordinal_shapes(items: &[PreparedItem]) -> Vec<Option<Vec<i32>>> {
@@ -258,8 +265,8 @@ fn structural(i: &PreparedItem) -> bool {
 }
 
 pub fn compare(input: &Input) -> Result {
-    let a: Vec<PreparedItem> = input.old.iter().map(prepare).collect();
-    let b: Vec<PreparedItem> = input.new.iter().map(prepare).collect();
+    let a = prepare_all(&input.old);
+    let b = prepare_all(&input.new);
     let (na, nb) = (a.len(), b.len());
     let features = derive_features(&a, &b);
     let f = |i: usize, j: usize| &features[i * nb + j];
@@ -538,40 +545,18 @@ pub fn validate(input: &Input) -> bool {
     if work_old.saturating_mul(work_new) > 32_000_000 {
         return false;
     }
-    input
-        .old
-        .iter()
-        .chain(input.new.iter())
-        .enumerate()
-        .all(|(i, item)| {
-            item.label.len() <= 256
-                && item.core.encode_utf16().count() <= 8192
-                && item.family.len() <= 128
-                && item.level <= 4
-                && item.parent >= -1
-                && (if i < na {
-                    item.parent < i as i32
-                } else {
-                    item.parent < (i - na) as i32
-                })
-        })
+    input.old.iter().chain(input.new.iter()).all(|item| {
+        item.label.encode_utf16().count() <= 128 && item.core.encode_utf16().count() <= 8192
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn item(label: &str, key: &str, level: usize) -> Item {
+    fn item(label: &str, key: &str, _level: usize) -> Item {
         Item {
             label: label.into(),
             core: key.into(),
-            level,
-            parent: -1,
-            ordinal: None,
-            family: if label == "본문" {
-                "body".into()
-            } else {
-                "number".into()
-            },
         }
     }
     #[test]
@@ -603,28 +588,10 @@ mod tests {
         let other = format!("{}new", "개인정보보호".repeat(8));
         assert!(stable_edge(&prefix, &other));
         assert!(!stable_edge("짧음", "짧음"));
-        let x = [
-            Item {
-                ordinal: Some(1),
-                ..item("1.", "original-a", 1)
-            },
-            Item {
-                ordinal: Some(2),
-                ..item("2.", "original-b", 1)
-            },
-        ];
-        let y = [
-            Item {
-                ordinal: Some(1),
-                ..item("1.", "revised-a", 1)
-            },
-            Item {
-                ordinal: Some(2),
-                ..item("2.", "revised-b", 1)
-            },
-        ];
-        let old: Vec<_> = x.iter().map(prepare).collect();
-        let new: Vec<_> = y.iter().map(prepare).collect();
+        let x = [item("1.", "original-a", 1), item("2.", "original-b", 1)];
+        let y = [item("1.", "revised-a", 1), item("2.", "revised-b", 1)];
+        let old = prepare_all(&x);
+        let new = prepare_all(&y);
         let derived = derive_features(&old, &new);
         assert!(derived[0].ordinal_shape && derived[0].sibling_shape);
         assert!(!derived[1].exact_normalized);
@@ -634,7 +601,8 @@ mod tests {
     #[test]
     fn raw_cores_are_preprocessed_into_native_match_features() {
         let x = item("①", "“Personal Data”\u{200b} 이용 동의 없이 1,000원", 1);
-        let y = prepare(&x);
+        let y = prepare_all(&[x]);
+        let y = &y[0];
         assert_eq!(y.head, "personal data");
         assert!(y.key.contains("이용동의없이"));
         assert!(!y.key.contains("\u{200b}"));

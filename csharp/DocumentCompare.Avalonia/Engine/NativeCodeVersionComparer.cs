@@ -130,9 +130,7 @@ public static class NativeCodeVersionComparer
     public sealed record DocumentCrossLevelCandidate(
         int Old, int New, double Similarity, double Containment,
         bool SameOrdinal, bool Edge);
-    public sealed record FullDocumentMatchItem(
-        string Label, string Core, int Level, int Parent, int? Ordinal,
-        string Family);
+    public sealed record FullDocumentMatchItem(string Label, string Core);
     // All full-match pair scoring and candidate decisions belong to Rust.
     public sealed record FullDocumentMatch(int Old, int New, double Score);
     public sealed record DocumentSentenceReviewEvent(
@@ -1102,10 +1100,10 @@ public static class NativeCodeVersionComparer
         if (exports?.FullDocumentMatch is null ||
             oldItems.Count > 128 || newItems.Count > 128 ||
             (long)oldItems.Count * newItems.Count > 8_192 ||
-            oldItems.Any(x => x.Label is null || x.Core is null || x.Family is null ||
-                x.Core.Length > 8192 || x.Family.Length > 32) ||
-            newItems.Any(x => x.Label is null || x.Core is null || x.Family is null ||
-                x.Core.Length > 8192 || x.Family.Length > 32))
+            oldItems.Any(x => x.Label is null || x.Core is null ||
+                x.Label.Length > 128 || x.Core.Length > 8192) ||
+            newItems.Any(x => x.Label is null || x.Core is null ||
+                x.Label.Length > 128 || x.Core.Length > 8192))
             return null;
         var raw = JsonSerializer.SerializeToUtf8Bytes(
             new { old = oldItems, @new = newItems },
