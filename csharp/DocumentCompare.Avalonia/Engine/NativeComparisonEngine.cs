@@ -3389,19 +3389,14 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             return MatchPartsCSharp(a, b);
         try
         {
-            var oldNodes = BuildPartHierarchy(a);
-            var newNodes = BuildPartHierarchy(b);
-            var oldItems = a.Select((p, i) =>
+            // Rust owns hierarchy, contextual ordinals, raw text features
+            // and full match decisions. Managed code sends only raw parts.
+            var oldItems = a.Select(p =>
                 new NativeCodeVersionComparer.FullDocumentMatchItem(
-                    p.Label, p.Core, oldNodes[i].Level, oldNodes[i].Parent,
-                    PartOrdinalAt(a, i), oldNodes[i].Family)).ToArray();
-            var newItems = b.Select((p, i) =>
+                    p.Label, p.Core)).ToArray();
+            var newItems = b.Select(p =>
                 new NativeCodeVersionComparer.FullDocumentMatchItem(
-                    p.Label, p.Core, newNodes[i].Level, newNodes[i].Parent,
-                    PartOrdinalAt(b, i), newNodes[i].Family)).ToArray();
-            // Rust derives per-part keys, normalized text, definition heads
-            // and word sets from raw core text, then owns every pair score
-            // and match decision. C# supplies structural hierarchy only.
+                    p.Label, p.Core)).ToArray();
             var native = NativeCodeVersionComparer.MatchDocumentPartsFull(
                 oldItems, newItems);
             if (native is null) return MatchPartsCSharp(a, b);
