@@ -131,9 +131,8 @@ public static class NativeCodeVersionComparer
         int Old, int New, double Similarity, double Containment,
         bool SameOrdinal, bool Edge);
     public sealed record FullDocumentMatchItem(
-        string Label, string Key, string Head, int Level, int Parent, int? Ordinal,
-        string Normalized, string Family, bool HasTrimmedContent,
-        IReadOnlyList<string> WordTokens);
+        string Label, string Core, int Level, int Parent, int? Ordinal,
+        string Family);
     // All full-match pair scoring and candidate decisions belong to Rust.
     public sealed record FullDocumentMatch(int Old, int New, double Score);
     public sealed record DocumentSentenceReviewEvent(
@@ -1103,18 +1102,10 @@ public static class NativeCodeVersionComparer
         if (exports?.FullDocumentMatch is null ||
             oldItems.Count > 128 || newItems.Count > 128 ||
             (long)oldItems.Count * newItems.Count > 8_192 ||
-            oldItems.Any(x => x.Label is null || x.Key is null || x.Head is null ||
-                x.Normalized is null || x.Family is null || x.WordTokens is null ||
-                x.Key.Length > 8192 || x.Head.Length > 8192 ||
-                x.Normalized.Length > 32768 || x.Family.Length > 32 ||
-                x.WordTokens.Count > 512 ||
-                x.WordTokens.Any(w => w is null || w.Length > 128)) ||
-            newItems.Any(x => x.Label is null || x.Key is null || x.Head is null ||
-                x.Normalized is null || x.Family is null || x.WordTokens is null ||
-                x.Key.Length > 8192 || x.Head.Length > 8192 ||
-                x.Normalized.Length > 32768 || x.Family.Length > 32 ||
-                x.WordTokens.Count > 512 ||
-                x.WordTokens.Any(w => w is null || w.Length > 128)))
+            oldItems.Any(x => x.Label is null || x.Core is null || x.Family is null ||
+                x.Core.Length > 8192 || x.Family.Length > 32) ||
+            newItems.Any(x => x.Label is null || x.Core is null || x.Family is null ||
+                x.Core.Length > 8192 || x.Family.Length > 32))
             return null;
         var raw = JsonSerializer.SerializeToUtf8Bytes(
             new { old = oldItems, @new = newItems },

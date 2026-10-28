@@ -1,13 +1,15 @@
 #![allow(clippy::needless_range_loop)]
 //! Entire MatchParts match-choice orchestration ported from C#.
-//! C# supplies per-item text normalization and token sets; Rust owns the
-//! similarity and containment scores plus edge and sibling/ordinal decisions.
+//! C# supplies raw text, hierarchy and labels. Rust owns per-part keys,
+//! normalization, word sets, similarity scores and matching decisions.
 //! Full final pair lists are parity-checked against the reference C# engine.
 use crate::{
-    doc_character_score, doc_cross_level, doc_move_candidates, doc_same_label, doc_same_ordinal,
+    doc_character_score, doc_cross_level, doc_move_candidates, doc_normalize, doc_same_label,
+    doc_same_ordinal, doc_unit_lineage_raw,
 };
+use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::{cmp::Ordering, collections::HashSet};
+use std::{cmp::Ordering, collections::HashSet, sync::LazyLock};
 
 const MAX_ITEMS: usize = 128;
 const MAX_PAIRS: usize = 8_192;
@@ -16,15 +18,69 @@ const MAX_PAIRS: usize = 8_192;
 #[serde(rename_all = "camelCase")]
 pub struct Item {
     pub label: String,
-    pub key: String,
-    pub head: String,
+    pub core: String,
     pub level: usize,
     pub parent: i32,
     pub ordinal: Option<i32>,
-    pub normalized: String,
     pub family: String,
-    pub has_trimmed_content: bool,
-    pub word_tokens: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedItem {
+    label: String,
+    key: String,
+    head: String,
+    level: usize,
+    parent: i32,
+    ordinal: Option<i32>,
+    normalized: String,
+    family: String,
+    has_trimmed_content: bool,
+    word_tokens: Vec<String>,
+}
+
+static QUOTED_HEAD: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"^\s*["“‘]([^"”’]{1,96})["”’]"#).unwrap());
+
+fn prepare(item: &Item) -> PreparedItem {
+    let normalized = doc_normalize::convert(&doc_normalize::Input {
+        text: item.core.clone(),
+        mode: "normalize".into(),
+    })
+    .text;
+    let key = doc_normalize::convert(&doc_normalize::Input {
+        text: item.core.clone(),
+        mode: "lineage".into(),
+    })
+    .text;
+    let head = QUOTED_HEAD
+        .captures(&item.core)
+        .and_then(|c| c.get(1))
+        .filter(|m| m.as_str().encode_utf16().count() <= 96)
+        .map(|m| {
+            doc_normalize::convert(&doc_normalize::Input {
+                text: m.as_str().into(),
+                mode: "normalize".into(),
+            })
+            .text
+        })
+        .unwrap_or_default();
+    let mut tokens: Vec<_> = doc_unit_lineage_raw::wordset(&item.core)
+        .into_iter()
+        .collect();
+    tokens.sort();
+    PreparedItem {
+        label: item.label.clone(),
+        key,
+        head,
+        level: item.level,
+        parent: item.parent,
+        ordinal: item.ordinal,
+        normalized,
+        family: item.family.clone(),
+        has_trimmed_content: !item.core.trim().is_empty(),
+        word_tokens: tokens,
+    }
 }
 #[derive(Debug, Clone)]
 struct DerivedFeatures {
@@ -72,7 +128,7 @@ fn stable_edge(a: &str, b: &str) -> bool {
     prefix >= 18 || suffix >= 18
 }
 
-fn ordinal_shapes(items: &[Item]) -> Vec<Option<Vec<i32>>> {
+fn ordinal_shapes(items: &[PreparedItem]) -> Vec<Option<Vec<i32>>> {
     items
         .iter()
         .map(|item| {
@@ -91,7 +147,7 @@ fn ordinal_shapes(items: &[Item]) -> Vec<Option<Vec<i32>>> {
         .collect()
 }
 
-fn sibling_shapes(items: &[Item]) -> Vec<Vec<&str>> {
+fn sibling_shapes(items: &[PreparedItem]) -> Vec<Vec<&str>> {
     items
         .iter()
         .map(|item| {
@@ -108,8 +164,7 @@ fn sibling_shapes(items: &[Item]) -> Vec<Vec<&str>> {
         .collect()
 }
 
-fn derive_features(input: &Input) -> Vec<DerivedFeatures> {
-    let (a, b) = (&input.old, &input.new);
+fn derive_features(a: &[PreparedItem], b: &[PreparedItem]) -> Vec<DerivedFeatures> {
     let oa = ordinal_shapes(a);
     let ob = ordinal_shapes(b);
     let sa = sibling_shapes(a);
@@ -176,7 +231,13 @@ fn parents(a: i32, b: i32, matches: &[Match]) -> bool {
             .any(|m| m.old == a as usize && m.new == b as usize)
     }
 }
-fn collapsed(i: usize, j: usize, a: &[Item], b: &[Item], matched: &[Match]) -> bool {
+fn collapsed(
+    i: usize,
+    j: usize,
+    a: &[PreparedItem],
+    b: &[PreparedItem],
+    matched: &[Match],
+) -> bool {
     if a[i].level.abs_diff(b[j].level) != 1 {
         return false;
     }
@@ -192,15 +253,15 @@ fn collapsed(i: usize, j: usize, a: &[Item], b: &[Item], matched: &[Match]) -> b
             && parents(a[i].parent, b[p as usize].parent, matched)
     }
 }
-fn structural(i: &Item) -> bool {
+fn structural(i: &PreparedItem) -> bool {
     i.label != "본문" && !i.label.is_empty()
 }
 
 pub fn compare(input: &Input) -> Result {
-    let a = &input.old;
-    let b = &input.new;
+    let a: Vec<PreparedItem> = input.old.iter().map(prepare).collect();
+    let b: Vec<PreparedItem> = input.new.iter().map(prepare).collect();
     let (na, nb) = (a.len(), b.len());
-    let features = derive_features(input);
+    let features = derive_features(&a, &b);
     let f = |i: usize, j: usize| &features[i * nb + j];
     let structured_a = a.iter().filter(|x| structural(x)).count();
     let structured_b = b.iter().filter(|x| structural(x)).count();
@@ -381,7 +442,7 @@ pub fn compare(input: &Input) -> Result {
             continue;
         }
         for j in 0..nb {
-            if used_b[j] || !structural(&b[j]) || !collapsed(i, j, a, b, &matched) {
+            if used_b[j] || !structural(&b[j]) || !collapsed(i, j, &a, &b, &matched) {
                 continue;
             }
             let p = f(i, j);
@@ -464,8 +525,16 @@ pub fn validate(input: &Input) -> bool {
     if na > MAX_ITEMS || nb > MAX_ITEMS || na.saturating_mul(nb) > MAX_PAIRS {
         return false;
     }
-    let work_old: usize = input.old.iter().map(|p| p.key.encode_utf16().count()).sum();
-    let work_new: usize = input.new.iter().map(|p| p.key.encode_utf16().count()).sum();
+    let work_old: usize = input
+        .old
+        .iter()
+        .map(|p| p.core.encode_utf16().count())
+        .sum();
+    let work_new: usize = input
+        .new
+        .iter()
+        .map(|p| p.core.encode_utf16().count())
+        .sum();
     if work_old.saturating_mul(work_new) > 32_000_000 {
         return false;
     }
@@ -476,12 +545,8 @@ pub fn validate(input: &Input) -> bool {
         .enumerate()
         .all(|(i, item)| {
             item.label.len() <= 256
-                && item.key.len() <= 8192
-                && item.head.len() <= 8192
-                && item.normalized.len() <= 131_072
+                && item.core.encode_utf16().count() <= 8192
                 && item.family.len() <= 128
-                && item.word_tokens.len() <= 512
-                && item.word_tokens.iter().all(|token| token.len() <= 512)
                 && item.level <= 4
                 && item.parent >= -1
                 && (if i < na {
@@ -498,19 +563,15 @@ mod tests {
     fn item(label: &str, key: &str, level: usize) -> Item {
         Item {
             label: label.into(),
-            key: key.into(),
-            head: String::new(),
+            core: key.into(),
             level,
             parent: -1,
             ordinal: None,
-            normalized: key.into(),
             family: if label == "본문" {
                 "body".into()
             } else {
                 "number".into()
             },
-            has_trimmed_content: !key.is_empty(),
-            word_tokens: key.split_whitespace().map(str::to_owned).collect(),
         }
     }
     #[test]
@@ -542,7 +603,7 @@ mod tests {
         let other = format!("{}new", "개인정보보호".repeat(8));
         assert!(stable_edge(&prefix, &other));
         assert!(!stable_edge("짧음", "짧음"));
-        let x = vec![
+        let x = [
             Item {
                 ordinal: Some(1),
                 ..item("1.", "original-a", 1)
@@ -552,7 +613,7 @@ mod tests {
                 ..item("2.", "original-b", 1)
             },
         ];
-        let y = vec![
+        let y = [
             Item {
                 ordinal: Some(1),
                 ..item("1.", "revised-a", 1)
@@ -562,11 +623,24 @@ mod tests {
                 ..item("2.", "revised-b", 1)
             },
         ];
-        let derived = derive_features(&Input { old: x, new: y });
+        let old: Vec<_> = x.iter().map(prepare).collect();
+        let new: Vec<_> = y.iter().map(prepare).collect();
+        let derived = derive_features(&old, &new);
         assert!(derived[0].ordinal_shape && derived[0].sibling_shape);
         assert!(!derived[1].exact_normalized);
         assert!(derived[1].ordinal_shape);
         assert!(derived[1].sibling_shape);
+    }
+    #[test]
+    fn raw_cores_are_preprocessed_into_native_match_features() {
+        let x = item("①", "“Personal Data”\u{200b} 이용 동의 없이 1,000원", 1);
+        let y = prepare(&x);
+        assert_eq!(y.head, "personal data");
+        assert!(y.key.contains("이용동의없이"));
+        assert!(!y.key.contains("\u{200b}"));
+        assert!(y.word_tokens.contains(&"personal".into()));
+        assert!(y.word_tokens.contains(&"1,000".into()));
+        assert!(y.has_trimmed_content);
     }
     #[test]
     fn validates_large_but_bounded_nonidentical_documents() {
