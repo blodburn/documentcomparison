@@ -142,10 +142,12 @@ mod tests {
         let new: Vec<_> = old.iter().cloned().rev().collect();
         let matched = pair(&old, &new).unwrap().pairs;
         assert_eq!(matched.len(), 1_024);
-        assert!(matched
-            .iter()
-            .enumerate()
-            .all(|(i, pair)| pair.old == i && pair.new == 1_023 - i));
+        assert!(
+            matched
+                .iter()
+                .enumerate()
+                .all(|(i, pair)| pair.old == i && pair.new == 1_023 - i)
+        );
     }
     #[test]
     fn does_not_infer_semantically_similar_but_changed_content() {
