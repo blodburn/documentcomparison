@@ -81,9 +81,7 @@ fn ordinal_shapes(items: &[Item]) -> Vec<Option<Vec<i32>>> {
             let sequence: Vec<Option<i32>> = items
                 .iter()
                 .filter(|other| {
-                    other.level == item.level
-                        && other.parent == item.parent
-                        && structural(other)
+                    other.level == item.level && other.parent == item.parent && structural(other)
                 })
                 .map(|other| other.ordinal)
                 .collect();
@@ -130,9 +128,7 @@ fn derive_features(input: &Input) -> Vec<DerivedFeatures> {
                 similarity: score.similarity,
                 containment: score.containment,
                 edge: stable_edge(&a[i].normalized, &b[j].normalized),
-                ordinal_shape: same_level
-                    && oa[i].is_some()
-                    && oa[i] == ob[j],
+                ordinal_shape: same_level && oa[i].is_some() && oa[i] == ob[j],
                 sibling_shape: same_level && sa[i] == sb[j],
                 exact_normalized: a[i].normalized == b[j].normalized,
             }
@@ -476,7 +472,11 @@ mod tests {
             parent: -1,
             ordinal: None,
             normalized: key.into(),
-            family: if label == "본문" { "body".into() } else { "number".into() },
+            family: if label == "본문" {
+                "body".into()
+            } else {
+                "number".into()
+            },
         }
     }
     fn feat(score: f64) -> PairFeatures {
@@ -532,12 +532,24 @@ mod tests {
         assert!(stable_edge(&prefix, &other));
         assert!(!stable_edge("짧음", "짧음"));
         let x = vec![
-            Item { ordinal: Some(1), ..item("1.", "original-a", 1) },
-            Item { ordinal: Some(2), ..item("2.", "original-b", 1) },
+            Item {
+                ordinal: Some(1),
+                ..item("1.", "original-a", 1)
+            },
+            Item {
+                ordinal: Some(2),
+                ..item("2.", "original-b", 1)
+            },
         ];
         let y = vec![
-            Item { ordinal: Some(1), ..item("1.", "revised-a", 1) },
-            Item { ordinal: Some(2), ..item("2.", "revised-b", 1) },
+            Item {
+                ordinal: Some(1),
+                ..item("1.", "revised-a", 1)
+            },
+            Item {
+                ordinal: Some(2),
+                ..item("2.", "revised-b", 1)
+            },
         ];
         let derived = derive_features(&Input {
             old: x,
