@@ -545,14 +545,9 @@ pub fn validate(input: &Input) -> bool {
     if work_old.saturating_mul(work_new) > 32_000_000 {
         return false;
     }
-    input
-        .old
-        .iter()
-        .chain(input.new.iter())
-        .all(|item| {
-            item.label.encode_utf16().count() <= 128
-                && item.core.encode_utf16().count() <= 8192
-        })
+    input.old.iter().chain(input.new.iter()).all(|item| {
+        item.label.encode_utf16().count() <= 128 && item.core.encode_utf16().count() <= 8192
+    })
 }
 
 #[cfg(test)]
