@@ -708,10 +708,12 @@ mod tests {
         assert!(validate(&request));
         let matches = checked(&request).matches;
         assert_eq!(matches.len(), 512);
-        assert!(matches
-            .iter()
-            .enumerate()
-            .all(|(i, m)| m.old == i && m.new == 511 - i && m.score == 1.0));
+        assert!(
+            matches
+                .iter()
+                .enumerate()
+                .all(|(i, m)| m.old == i && m.new == 511 - i && m.score == 1.0)
+        );
     }
     #[test]
     fn validates_large_but_bounded_nonidentical_documents() {
