@@ -3394,26 +3394,21 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             var oldItems = a.Select((p, i) =>
                 new NativeCodeVersionComparer.FullDocumentMatchItem(
                     p.Label, LineageNormalize(p.Core), DefinitionHead(p.Core),
-                    oldNodes[i].Level, oldNodes[i].Parent, PartOrdinalAt(a, i))).ToArray();
+                    oldNodes[i].Level, oldNodes[i].Parent, PartOrdinalAt(a, i),
+                    Normalize(p.Core), oldNodes[i].Family)).ToArray();
             var newItems = b.Select((p, i) =>
                 new NativeCodeVersionComparer.FullDocumentMatchItem(
                     p.Label, LineageNormalize(p.Core), DefinitionHead(p.Core),
-                    newNodes[i].Level, newNodes[i].Parent, PartOrdinalAt(b, i))).ToArray();
+                    newNodes[i].Level, newNodes[i].Parent, PartOrdinalAt(b, i),
+                    Normalize(p.Core), newNodes[i].Family)).ToArray();
             var features = new List<NativeCodeVersionComparer.FullDocumentMatchFeatures>(
                 a.Count * b.Count);
             for (var i = 0; i < a.Count; i++)
             for (var j = 0; j < b.Count; j++)
             {
-                var sameLevel = oldNodes[i].Level == newNodes[j].Level;
                 features.Add(new(
                     PartSimilarity(a[i], b[j]),
-                    Containment(a[i].Core, b[j].Core),
-                    HasStableEdgeContext(a[i].Core, b[j].Core),
-                    sameLevel && OrdinalSiblingShapeEquivalent(
-                        i, j, a, b, oldNodes, newNodes),
-                    sameLevel && SiblingShapeEquivalent(
-                        i, j, a, b, oldNodes, newNodes),
-                    Normalize(a[i].Core) == Normalize(b[j].Core)));
+                    Containment(a[i].Core, b[j].Core)));
             }
             var native = NativeCodeVersionComparer.MatchDocumentPartsFull(
                 oldItems, newItems, features);
