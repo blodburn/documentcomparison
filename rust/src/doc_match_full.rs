@@ -727,10 +727,10 @@ mod tests {
         };
         assert!(validate(&request));
         let above_pair_budget = Input {
-            old: (0..96)
+            old: (0..144)
                 .map(|i| item("1.", &format!("old_clause_{i:03}"), 1))
                 .collect(),
-            new: (0..96)
+            new: (0..120)
                 .map(|i| item("1.", &format!("new_clause_{i:03}"), 1))
                 .collect(),
         };
