@@ -1,7 +1,7 @@
 #![allow(clippy::needless_range_loop)]
 //! Entire MatchParts match-choice orchestration ported from C#.
 //! C# supplies raw text, hierarchy and labels. Rust owns per-part keys,
- //! normalization, word sets, similarity scores and matching decisions.
+//! normalization, word sets, similarity scores and matching decisions.
 //! Full final pair lists are parity-checked against the reference C# engine.
 use crate::{
     doc_character_score, doc_cross_level, doc_move_candidates, doc_normalize, doc_same_label,
@@ -9,11 +9,7 @@ use crate::{
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::{
-    cmp::Ordering,
-    collections::HashSet,
-    sync::LazyLock,
-};
+use std::{cmp::Ordering, collections::HashSet, sync::LazyLock};
 
 const MAX_ITEMS: usize = 128;
 const MAX_PAIRS: usize = 8_192;
@@ -235,7 +231,13 @@ fn parents(a: i32, b: i32, matches: &[Match]) -> bool {
             .any(|m| m.old == a as usize && m.new == b as usize)
     }
 }
-fn collapsed(i: usize, j: usize, a: &[PreparedItem], b: &[PreparedItem], matched: &[Match]) -> bool {
+fn collapsed(
+    i: usize,
+    j: usize,
+    a: &[PreparedItem],
+    b: &[PreparedItem],
+    matched: &[Match],
+) -> bool {
     if a[i].level.abs_diff(b[j].level) != 1 {
         return false;
     }
@@ -523,8 +525,16 @@ pub fn validate(input: &Input) -> bool {
     if na > MAX_ITEMS || nb > MAX_ITEMS || na.saturating_mul(nb) > MAX_PAIRS {
         return false;
     }
-    let work_old: usize = input.old.iter().map(|p| p.core.encode_utf16().count()).sum();
-    let work_new: usize = input.new.iter().map(|p| p.core.encode_utf16().count()).sum();
+    let work_old: usize = input
+        .old
+        .iter()
+        .map(|p| p.core.encode_utf16().count())
+        .sum();
+    let work_new: usize = input
+        .new
+        .iter()
+        .map(|p| p.core.encode_utf16().count())
+        .sum();
     if work_old.saturating_mul(work_new) > 32_000_000 {
         return false;
     }
