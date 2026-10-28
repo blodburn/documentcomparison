@@ -3331,61 +3331,13 @@ public sealed class NativeComparisonEngine : IComparisonEngine
 
     private static List<PartMatch> MatchParts(IReadOnlyList<NativePart> a, IReadOnlyList<NativePart> b)
     {
-        // Identical nonempty body multisets are a complete Rust exact-match
-        // decision. Skip all C# pair scoring, including for 65-256 list items.
-        // Keep the one-sided structural exception from the original matcher.
-        if (a.Count > 0 && a.Count == b.Count && a.Count <= 256 &&
-            !((a.Count(p => IsStructuralLabel(p.Label)) >= 2 &&
-                b.All(p => !IsStructuralLabel(p.Label))) ||
-              (b.Count(p => IsStructuralLabel(p.Label)) >= 2 &&
-                a.All(p => !IsStructuralLabel(p.Label)))))
-        {
-            try
-            {
-                var leftKeys=a.Select(p => LineageNormalize(p.Core)).ToArray();
-                var rightKeys=b.Select(p => LineageNormalize(p.Core)).ToArray();
-                if (leftKeys.All(k => k.Length > 0 && k.Length <= 16_384) &&
-                    rightKeys.All(k => k.Length > 0 && k.Length <= 16_384))
-                {
-                    var exact=NativeCodeVersionComparer.MatchExactDocumentParts(
-                        leftKeys,rightKeys);
-                    if (exact is not null && exact.Count == a.Count)
-                    {
-                        var mapped=exact.Select(p=>new PartMatch(p.Old,p.New,1.0)).ToList();
-                        if (VerifyRustDocumentMatches)
-                        {
-                            var canonical=MatchPartsCSharp(a,b);
-                            if (mapped.Count != canonical.Count ||
-                                mapped.Where((m,i)=>m.Old!=canonical[i].Old ||
-                                    m.New!=canonical[i].New ||
-                                    Math.Abs(m.Score-canonical[i].Score)>1e-12).Any())
-                            {
-                                System.Threading.Interlocked.Increment(
-                                    ref _wholeMatchRustParityMismatches);
-                                return canonical;
-                            }
-                        }
-                        System.Threading.Interlocked.Increment(ref _wholeExactRustMatches);
-                        System.Threading.Interlocked.Increment(ref _wholeMatchRustParityMatches);
-                        return mapped;
-                    }
-                }
-            }
-            catch (Exception ex) when (ex is InvalidDataException or
-                System.Text.Json.JsonException or ArgumentException or
-                System.Text.EncoderFallbackException or OverflowException)
-            {
-                // An unsupported exact payload follows the full-match path.
-            }
-        }
-
-        // Rust owns candidate selection for other bounded documents.
-        // C# remains an emergency fallback and the CI parity reference.
-        if (a.Count > 128 || b.Count > 128 ||
-            (long)a.Count * b.Count > 8_192 ||
-            a.Sum(p => (long)p.Core.Length) + b.Sum(p => (long)p.Core.Length) > 65_536 ||
-            a.Any(p => p.Core.Length > 8_192) ||
-            b.Any(p => p.Core.Length > 8_192))
+        // Rust owns exact reordered bodies (up to 256 items), and all
+        // other bounded semantic part matches (up to 128 / 8,192 pairs).
+        // Unsupported requests retain the original C# fallback.
+        if (a.Count > 256 || b.Count > 256 ||
+            a.Sum(p => (long)p.Core.Length) + b.Sum(p => (long)p.Core.Length) > 131_072 ||
+            a.Any(p => p.Core.Length > 16_384) ||
+            b.Any(p => p.Core.Length > 16_384))
             return MatchPartsCSharp(a, b);
         try
         {
@@ -3413,6 +3365,9 @@ public sealed class NativeComparisonEngine : IComparisonEngine
                     return canonical;
                 }
             }
+            if (native.Count > 0 && native.Count == a.Count && native.Count == b.Count &&
+                native.All(pair => pair.Score == 1.0))
+                System.Threading.Interlocked.Increment(ref _wholeExactRustMatches);
             System.Threading.Interlocked.Increment(ref _wholeMatchRustParityMatches);
             return native.Select(x => new PartMatch(x.Old, x.New, x.Score)).ToList();
         }

@@ -4,14 +4,15 @@
 //! normalization, word sets, similarity scores and matching decisions.
 //! Full final pair lists are parity-checked against the reference C# engine.
 use crate::{
-    doc_character_score, doc_cross_level, doc_move_candidates, doc_normalize, doc_parts,
-    doc_same_label, doc_same_ordinal, doc_unit_lineage_raw,
+    doc_character_score, doc_cross_level, doc_match_exact, doc_move_candidates, doc_normalize,
+    doc_parts, doc_same_label, doc_same_ordinal, doc_unit_lineage_raw,
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::{cmp::Ordering, collections::HashSet, sync::LazyLock};
 
 const MAX_ITEMS: usize = 128;
+const MAX_EXACT_ITEMS: usize = 256;
 const MAX_PAIRS: usize = 8_192;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -522,32 +523,71 @@ pub fn compare(input: &Input) -> Result {
     Result { matches: matched }
 }
 
+fn exact_full(input: &Input) -> Option<Result> {
+    let (a, b) = (&input.old, &input.new);
+    if a.is_empty() || a.len() != b.len() || a.len() > MAX_EXACT_ITEMS {
+        return None;
+    }
+    // Preserve the canonical C# protection against one-sided list structure.
+    let structured_a = a.iter().filter(|p| p.label != "본문" && !p.label.is_empty()).count();
+    let structured_b = b.iter().filter(|p| p.label != "본문" && !p.label.is_empty()).count();
+    if (structured_a >= 2 && structured_b == 0)
+        || (structured_b >= 2 && structured_a == 0)
+    {
+        return None;
+    }
+    let keys = |items: &[Item]| -> Vec<String> {
+        items
+            .iter()
+            .map(|p| doc_normalize::convert(&doc_normalize::Input {
+                text: p.core.clone(),
+                mode: "lineage".into(),
+            }).text)
+            .collect()
+    };
+    let old_keys = keys(a);
+    let new_keys = keys(b);
+    if old_keys.iter().chain(&new_keys).any(String::is_empty) {
+        return None;
+    }
+    let pairs = doc_match_exact::pair(&old_keys, &new_keys).ok()?.pairs;
+    if pairs.len() != a.len() {
+        return None;
+    }
+    Some(Result {
+        matches: pairs
+            .into_iter()
+            .map(|p| Match { old: p.old, new: p.new, score: 1.0 })
+            .collect(),
+    })
+}
+
 pub fn checked(input: &Input) -> Result {
     // FFI validation is performed before selecting the matcher.
-    compare(input)
+    exact_full(input).unwrap_or_else(|| compare(input))
 }
 
 pub fn validate(input: &Input) -> bool {
     let (na, nb) = (input.old.len(), input.new.len());
+    if na > MAX_EXACT_ITEMS || nb > MAX_EXACT_ITEMS ||
+        !input.old.iter().chain(input.new.iter()).all(|p| {
+            p.label.encode_utf16().count() <= 128 && p.core.encode_utf16().count() <= 16_384
+        })
+    {
+        return false;
+    }
+    if exact_full(input).is_some() {
+        return true;
+    }
     if na > MAX_ITEMS || nb > MAX_ITEMS || na.saturating_mul(nb) > MAX_PAIRS {
         return false;
     }
-    let work_old: usize = input
-        .old
-        .iter()
-        .map(|p| p.core.encode_utf16().count())
-        .sum();
-    let work_new: usize = input
-        .new
-        .iter()
-        .map(|p| p.core.encode_utf16().count())
-        .sum();
-    if work_old.saturating_mul(work_new) > 32_000_000 {
-        return false;
-    }
-    input.old.iter().chain(input.new.iter()).all(|item| {
-        item.label.encode_utf16().count() <= 128 && item.core.encode_utf16().count() <= 8192
-    })
+    let work_old: usize = input.old.iter().map(|p| p.core.encode_utf16().count()).sum();
+    let work_new: usize = input.new.iter().map(|p| p.core.encode_utf16().count()).sum();
+    work_old.saturating_mul(work_new) <= 32_000_000
+        && input.old.iter().chain(input.new.iter()).all(|p| {
+            p.core.encode_utf16().count() <= 8192
+        })
 }
 
 #[cfg(test)]
@@ -609,6 +649,20 @@ mod tests {
         assert!(y.word_tokens.contains(&"personal".into()));
         assert!(y.word_tokens.contains(&"1,000".into()));
         assert!(y.has_trimmed_content);
+    }
+    #[test]
+    fn supports_exact_reorder_of_two_hundred_parts() {
+        let old = (0..200)
+            .map(|i| item("1.", &format!("unique_content_{i:03}"), 1))
+            .collect::<Vec<_>>();
+        let new = old.iter().cloned().rev().collect::<Vec<_>>();
+        let request = Input { old, new };
+        assert!(validate(&request));
+        let result = checked(&request);
+        assert_eq!(result.matches.len(), 200);
+        assert!(result.matches.iter().enumerate().all(|(i, m)| {
+            m.old == i && m.new == 199 - i && m.score == 1.0
+        }));
     }
     #[test]
     fn validates_large_but_bounded_nonidentical_documents() {
