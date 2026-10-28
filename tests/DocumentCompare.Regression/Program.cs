@@ -4212,6 +4212,27 @@ if (NativeCodeVersionComparer.IsAvailable)
         MatchesWhole()==beforeLarge+1,
         "96 x 80 nonidentical full parts must preserve native Rust parity");
     checkedWhole++;
+    // Semantic full matching above the old 8,192-pair budget must stay
+    // in native Rust and match the independent C# matching oracle.
+    var biggerSemanticOld=string.Join("\n",Enumerable.Range(1,144)
+        .Select(i=>$"({i}) Document provision {i:D3} baseline wording"));
+    var biggerSemanticNew=string.Join("\n",Enumerable.Range(1,96)
+        .Select(i=>$"({i}) Document provision {i:D3} revised wording"));
+    var biggerSemanticOldParts=wholeParser.Invoke(null,new object[]{biggerSemanticOld})!;
+    var biggerSemanticNewParts=wholeParser.Invoke(null,new object[]{biggerSemanticNew})!;
+    Check(((System.Collections.IEnumerable)biggerSemanticOldParts).Cast<object>().Count()==144 &&
+        ((System.Collections.IEnumerable)biggerSemanticNewParts).Cast<object>().Count()==96,
+        "144 x 96 semantic Rust matcher parser setup failed");
+    var biggerSemanticBefore=MatchesWhole();
+    var biggerSemanticExpected=FetchWhole(wholeCSharp,biggerSemanticOldParts,biggerSemanticNewParts);
+    var biggerSemanticActual=FetchWhole(wholeLive,biggerSemanticOldParts,biggerSemanticNewParts);
+    Check(biggerSemanticActual.Length==biggerSemanticExpected.Length &&
+        biggerSemanticActual.Zip(biggerSemanticExpected).All(x=>
+            x.First.Old==x.Second.Old && x.First.New==x.Second.New &&
+            Math.Abs(x.First.Score-x.Second.Score)<1e-12) &&
+        MatchesWhole()==biggerSemanticBefore+1,
+        "144 x 96 semantic part matching must use Rust with C# score parity");
+    checkedWhole++;
     Check(MissesWhole()==initialWholeMismatches,
         "whole MatchParts Rust differs from C# in tested document structures; "+
         (MissesWhole()-initialWholeMismatches)+" mismatches");

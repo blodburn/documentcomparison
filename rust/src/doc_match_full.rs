@@ -11,10 +11,10 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::{cmp::Ordering, collections::HashSet, sync::LazyLock};
 
-const MAX_ITEMS: usize = 128;
+const MAX_ITEMS: usize = 256;
 const MAX_EXACT_ITEMS: usize = 1_024;
 const MAX_TOTAL_UTF16_UNITS: usize = 524_288;
-const MAX_PAIRS: usize = 8_192;
+const MAX_PAIRS: usize = 16_384;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -735,6 +735,27 @@ mod tests {
                 .collect(),
         };
         assert!(!validate(&above_pair_budget));
+    }
+    #[test]
+    fn semantic_144_by_96_parts_fits_new_candidate_limit() {
+        let request = Input {
+            old: (0..144)
+                .map(|i| item("1.", &format!("old_unique_clause_{i:03}"), 1))
+                .collect(),
+            new: (0..96)
+                .map(|i| item("1.", &format!("new_unique_clause_{i:03}"), 1))
+                .collect(),
+        };
+        assert!(validate(&request));
+        let over_limit = Input {
+            old: (0..160)
+                .map(|i| item("1.", &format!("old_unique_clause_{i:03}"), 1))
+                .collect(),
+            new: (0..105)
+                .map(|i| item("1.", &format!("new_unique_clause_{i:03}"), 1))
+                .collect(),
+        };
+        assert!(!validate(&over_limit));
     }
     #[test]
     fn one_sided_structure_does_not_invent_pairs() {

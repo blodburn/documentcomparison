@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 const MAX_PARTS: usize = 256;
-const MAX_CANDIDATES: usize = 8192;
+const MAX_CANDIDATES: usize = 16_384;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
