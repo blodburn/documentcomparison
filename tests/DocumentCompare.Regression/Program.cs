@@ -4167,6 +4167,27 @@ if (NativeCodeVersionComparer.IsAvailable)
         (long)fastProp.GetValue(null)!>fastBefore,
         "Rust-only exact full matcher must preserve 96-part reorder lineage");
     checkedWhole++;
+    // Nonidentical documents beyond the legacy 64-part cap now use Rust
+    // without exceeding the independent candidate-stage 8,192 pair budget.
+    var bigChangedOld=string.Join("\n",Enumerable.Range(1,96)
+        .Select(i=>$"({i}) Unique clause {i:D3} baseline content"));
+    var bigChangedNew=string.Join("\n",Enumerable.Range(1,80)
+        .Select(i=>$"({i}) Unique clause {i:D3} revised content"));
+    var bigChangedOldParts=wholeParser.Invoke(null,new object[]{bigChangedOld})!;
+    var bigChangedNewParts=wholeParser.Invoke(null,new object[]{bigChangedNew})!;
+    Check(((System.Collections.IEnumerable)bigChangedOldParts).Cast<object>().Count()==96 &&
+        ((System.Collections.IEnumerable)bigChangedNewParts).Cast<object>().Count()==80,
+        "large nonidentical full matcher parsing setup failed");
+    var beforeLarge=MatchesWhole();
+    var bigExpected=FetchWhole(wholeCSharp,bigChangedOldParts,bigChangedNewParts);
+    var bigActual=FetchWhole(wholeLive,bigChangedOldParts,bigChangedNewParts);
+    Check(bigActual.Length==bigExpected.Length &&
+        bigActual.Zip(bigExpected).All(x=>x.First.Old==x.Second.Old &&
+            x.First.New==x.Second.New &&
+            Math.Abs(x.First.Score-x.Second.Score)<1e-12) &&
+        MatchesWhole()==beforeLarge+1,
+        "96 x 80 nonidentical full parts must preserve native Rust parity");
+    checkedWhole++;
     Check(MissesWhole()==initialWholeMismatches,
         "whole MatchParts Rust differs from C# in tested document structures; "+
         (MissesWhole()-initialWholeMismatches)+" mismatches");

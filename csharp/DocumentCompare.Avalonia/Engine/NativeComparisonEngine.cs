@@ -3381,8 +3381,8 @@ public sealed class NativeComparisonEngine : IComparisonEngine
 
         // Rust owns candidate selection for other bounded documents.
         // C# remains an emergency fallback and the CI parity reference.
-        if (a.Count > 64 || b.Count > 64 ||
-            (long)a.Count * b.Count > 4_096 ||
+        if (a.Count > 128 || b.Count > 128 ||
+            (long)a.Count * b.Count > 8_192 ||
             a.Sum(p => (long)p.Core.Length) + b.Sum(p => (long)p.Core.Length) > 65_536 ||
             a.Any(p => p.Core.Length > 8_192) ||
             b.Any(p => p.Core.Length > 8_192))
