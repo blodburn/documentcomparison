@@ -1,7 +1,8 @@
 #![allow(clippy::needless_range_loop)]
 //! Entire MatchParts match-choice orchestration ported from C#.
-//! C# still supplies original normalized keys, parent hierarchy and
-//! semantic pair scores. Full final pair lists are parity-checked.
+//! C# supplies normalized per-item contents, hierarchy and numeric pair
+//! similarity/containment. Rust owns edge and sibling/ordinal shape decisions.
+//! Full final pair lists are parity-checked against the reference C# engine.
 use crate::{doc_cross_level, doc_move_candidates, doc_same_label, doc_same_ordinal};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
@@ -17,16 +18,23 @@ pub struct Item {
     pub level: usize,
     pub parent: i32,
     pub ordinal: Option<i32>,
+    pub normalized: String,
+    pub family: String,
 }
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PairFeatures {
     pub similarity: f64,
     pub containment: f64,
-    pub edge: bool,
-    pub ordinal_shape: bool,
-    pub sibling_shape: bool,
-    pub exact_normalized: bool,
+}
+#[derive(Debug, Clone)]
+struct DerivedFeatures {
+    similarity: f64,
+    containment: f64,
+    edge: bool,
+    ordinal_shape: bool,
+    sibling_shape: bool,
+    exact_normalized: bool,
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -45,6 +53,91 @@ pub struct Match {
 #[derive(Debug, Serialize)]
 pub struct Result {
     pub matches: Vec<Match>,
+}
+
+// The managed edge rule examines UTF-16 units, not Unicode scalar values.
+fn stable_edge(a: &str, b: &str) -> bool {
+    let x: Vec<u16> = a.encode_utf16().collect();
+    let y: Vec<u16> = b.encode_utf16().collect();
+    let min = x.len().min(y.len());
+    if min < 40 {
+        return false;
+    }
+    let mut prefix = 0;
+    while prefix < min && x[prefix] == y[prefix] {
+        prefix += 1;
+    }
+    let mut suffix = 0;
+    while suffix < min - prefix && x[x.len() - 1 - suffix] == y[y.len() - 1 - suffix] {
+        suffix += 1;
+    }
+    prefix >= 18 || suffix >= 18
+}
+
+fn ordinal_shapes(items: &[Item]) -> Vec<Option<Vec<i32>>> {
+    items
+        .iter()
+        .map(|item| {
+            let sequence: Vec<Option<i32>> = items
+                .iter()
+                .filter(|other| {
+                    other.level == item.level
+                        && other.parent == item.parent
+                        && structural(other)
+                })
+                .map(|other| other.ordinal)
+                .collect();
+            if sequence.len() < 2 {
+                return None;
+            }
+            sequence.into_iter().collect::<Option<Vec<i32>>>()
+        })
+        .collect()
+}
+
+fn sibling_shapes(items: &[Item]) -> Vec<Vec<&str>> {
+    items
+        .iter()
+        .map(|item| {
+            items
+                .iter()
+                .filter(|other| {
+                    other.level == item.level
+                        && other.parent == item.parent
+                        && other.family == item.family
+                })
+                .map(|other| other.label.as_str())
+                .collect()
+        })
+        .collect()
+}
+
+fn derive_features(input: &Input) -> Vec<DerivedFeatures> {
+    let (a, b) = (&input.old, &input.new);
+    let nb = b.len();
+    let oa = ordinal_shapes(a);
+    let ob = ordinal_shapes(b);
+    let sa = sibling_shapes(a);
+    let sb = sibling_shapes(b);
+    input
+        .features
+        .iter()
+        .enumerate()
+        .map(|(pos, score)| {
+            let (i, j) = (pos / nb, pos % nb);
+            let same_level = a[i].level == b[j].level;
+            DerivedFeatures {
+                similarity: score.similarity,
+                containment: score.containment,
+                edge: stable_edge(&a[i].normalized, &b[j].normalized),
+                ordinal_shape: same_level
+                    && oa[i].is_some()
+                    && oa[i] == ob[j],
+                sibling_shape: same_level && sa[i] == sb[j],
+                exact_normalized: a[i].normalized == b[j].normalized,
+            }
+        })
+        .collect()
 }
 
 fn parents(a: i32, b: i32, matches: &[Match]) -> bool {
@@ -80,7 +173,8 @@ pub fn compare(input: &Input) -> Result {
     let a = &input.old;
     let b = &input.new;
     let (na, nb) = (a.len(), b.len());
-    let f = |i: usize, j: usize| &input.features[i * nb + j];
+    let features = derive_features(input);
+    let f = |i: usize, j: usize| &features[i * nb + j];
     let structured_a = a.iter().filter(|x| structural(x)).count();
     let structured_b = b.iter().filter(|x| structural(x)).count();
     if (structured_a >= 2 && structured_b == 0) || (structured_b >= 2 && structured_a == 0) {
@@ -352,6 +446,8 @@ pub fn validate(input: &Input) -> bool {
             item.label.len() <= 256
                 && item.key.len() <= 8192
                 && item.head.len() <= 8192
+                && item.normalized.len() <= 131_072
+                && item.family.len() <= 128
                 && item.level <= 4
                 && item.parent >= -1
                 && (if i < na {
@@ -379,16 +475,14 @@ mod tests {
             level,
             parent: -1,
             ordinal: None,
+            normalized: key.into(),
+            family: if label == "본문" { "body".into() } else { "number".into() },
         }
     }
     fn feat(score: f64) -> PairFeatures {
         PairFeatures {
             similarity: score,
             containment: score,
-            edge: false,
-            ordinal_shape: false,
-            sibling_shape: false,
-            exact_normalized: false,
         }
     }
     #[test]
@@ -430,6 +524,30 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(0, 0), (1, 2), (2, 3)]
         );
+    }
+    #[test]
+    fn derives_context_and_structure_in_rust() {
+        let prefix = format!("{}old", "개인정보보호".repeat(8));
+        let other = format!("{}new", "개인정보보호".repeat(8));
+        assert!(stable_edge(&prefix, &other));
+        assert!(!stable_edge("짧음", "짧음"));
+        let x = vec![
+            Item { ordinal: Some(1), ..item("1.", "original-a", 1) },
+            Item { ordinal: Some(2), ..item("2.", "original-b", 1) },
+        ];
+        let y = vec![
+            Item { ordinal: Some(1), ..item("1.", "revised-a", 1) },
+            Item { ordinal: Some(2), ..item("2.", "revised-b", 1) },
+        ];
+        let derived = derive_features(&Input {
+            old: x,
+            new: y,
+            features: vec![feat(0.6); 4],
+        });
+        assert!(derived[0].ordinal_shape && derived[0].sibling_shape);
+        assert!(!derived[1].exact_normalized);
+        assert!(!derived[1].ordinal_shape);
+        assert!(derived[1].sibling_shape);
     }
     #[test]
     fn one_sided_structure_does_not_invent_pairs() {

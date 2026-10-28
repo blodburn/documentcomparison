@@ -131,10 +131,12 @@ public static class NativeCodeVersionComparer
         int Old, int New, double Similarity, double Containment,
         bool SameOrdinal, bool Edge);
     public sealed record FullDocumentMatchItem(
-        string Label, string Key, string Head, int Level, int Parent, int? Ordinal);
+        string Label, string Key, string Head, int Level, int Parent, int? Ordinal,
+        string Normalized, string Family);
+    // Rust calculates edge, sibling/ordinal shape and normalized equality
+    // from these per-item fields. Managed code supplies numeric scores only.
     public sealed record FullDocumentMatchFeatures(
-        double Similarity, double Containment, bool Edge,
-        bool OrdinalShape, bool SiblingShape, bool ExactNormalized);
+        double Similarity, double Containment);
     public sealed record FullDocumentMatch(int Old, int New, double Score);
     public sealed record DocumentSentenceReviewEvent(
         string Kind, int OldStart, int OldEnd, int NewStart, int NewEnd,
@@ -1106,9 +1108,13 @@ public static class NativeCodeVersionComparer
             oldItems.Count > 64 || newItems.Count > 64 ||
             features.Count != oldItems.Count * newItems.Count ||
             oldItems.Any(x => x.Label is null || x.Key is null || x.Head is null ||
-                x.Key.Length > 8192 || x.Head.Length > 8192) ||
+                x.Normalized is null || x.Family is null ||
+                x.Key.Length > 8192 || x.Head.Length > 8192 ||
+                x.Normalized.Length > 32768 || x.Family.Length > 32) ||
             newItems.Any(x => x.Label is null || x.Key is null || x.Head is null ||
-                x.Key.Length > 8192 || x.Head.Length > 8192))
+                x.Normalized is null || x.Family is null ||
+                x.Key.Length > 8192 || x.Head.Length > 8192 ||
+                x.Normalized.Length > 32768 || x.Family.Length > 32))
             return null;
         var raw = JsonSerializer.SerializeToUtf8Bytes(
             new { old = oldItems, @new = newItems, features },
