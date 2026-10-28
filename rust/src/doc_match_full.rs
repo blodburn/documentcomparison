@@ -603,7 +603,7 @@ mod tests {
         let other = format!("{}new", "개인정보보호".repeat(8));
         assert!(stable_edge(&prefix, &other));
         assert!(!stable_edge("짧음", "짧음"));
-        let x = vec![
+        let x = [
             Item {
                 ordinal: Some(1),
                 ..item("1.", "original-a", 1)
@@ -613,7 +613,7 @@ mod tests {
                 ..item("2.", "original-b", 1)
             },
         ];
-        let y = vec![
+        let y = [
             Item {
                 ordinal: Some(1),
                 ..item("1.", "revised-a", 1)
