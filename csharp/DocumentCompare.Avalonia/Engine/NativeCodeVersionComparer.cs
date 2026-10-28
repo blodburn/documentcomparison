@@ -1098,12 +1098,11 @@ public static class NativeCodeVersionComparer
         ArgumentNullException.ThrowIfNull(newItems);
         var exports = Native.Value;
         if (exports?.FullDocumentMatch is null ||
-            oldItems.Count > 128 || newItems.Count > 128 ||
-            (long)oldItems.Count * newItems.Count > 8_192 ||
+            oldItems.Count > 256 || newItems.Count > 256 ||
             oldItems.Any(x => x.Label is null || x.Core is null ||
-                x.Label.Length > 128 || x.Core.Length > 8192) ||
+                x.Label.Length > 128 || x.Core.Length > 16_384) ||
             newItems.Any(x => x.Label is null || x.Core is null ||
-                x.Label.Length > 128 || x.Core.Length > 8192))
+                x.Label.Length > 128 || x.Core.Length > 16_384))
             return null;
         var raw = JsonSerializer.SerializeToUtf8Bytes(
             new { old = oldItems, @new = newItems },
