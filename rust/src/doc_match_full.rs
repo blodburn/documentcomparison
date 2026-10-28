@@ -1,11 +1,13 @@
 #![allow(clippy::needless_range_loop)]
 //! Entire MatchParts match-choice orchestration ported from C#.
-//! C# supplies normalized per-item contents, hierarchy and numeric pair
-//! similarity/containment. Rust owns edge and sibling/ordinal shape decisions.
+//! C# supplies per-item text normalization and token sets; Rust owns the
+//! similarity and containment scores plus edge and sibling/ordinal decisions.
 //! Full final pair lists are parity-checked against the reference C# engine.
-use crate::{doc_cross_level, doc_move_candidates, doc_same_label, doc_same_ordinal};
+use crate::{
+    doc_character_score, doc_cross_level, doc_move_candidates, doc_same_label, doc_same_ordinal,
+};
 use serde::{Deserialize, Serialize};
-use std::cmp::Ordering;
+use std::{cmp::Ordering, collections::HashSet};
 
 const MAX_ITEMS: usize = 64;
 
@@ -20,12 +22,8 @@ pub struct Item {
     pub ordinal: Option<i32>,
     pub normalized: String,
     pub family: String,
-}
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PairFeatures {
-    pub similarity: f64,
-    pub containment: f64,
+    pub has_trimmed_content: bool,
+    pub word_tokens: Vec<String>,
 }
 #[derive(Debug, Clone)]
 struct DerivedFeatures {
@@ -41,7 +39,6 @@ struct DerivedFeatures {
 pub struct Input {
     pub old: Vec<Item>,
     pub new: Vec<Item>,
-    pub features: Vec<PairFeatures>,
 }
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -112,28 +109,61 @@ fn sibling_shapes(items: &[Item]) -> Vec<Vec<&str>> {
 
 fn derive_features(input: &Input) -> Vec<DerivedFeatures> {
     let (a, b) = (&input.old, &input.new);
-    let nb = b.len();
     let oa = ordinal_shapes(a);
     let ob = ordinal_shapes(b);
     let sa = sibling_shapes(a);
     let sb = sibling_shapes(b);
-    input
-        .features
+    let aw: Vec<HashSet<&str>> = a
         .iter()
-        .enumerate()
-        .map(|(pos, score)| {
-            let (i, j) = (pos / nb, pos % nb);
+        .map(|item| item.word_tokens.iter().map(String::as_str).collect())
+        .collect();
+    let bw: Vec<HashSet<&str>> = b
+        .iter()
+        .map(|item| item.word_tokens.iter().map(String::as_str).collect())
+        .collect();
+    let mut features = Vec::with_capacity(a.len() * b.len());
+    for i in 0..a.len() {
+        for j in 0..b.len() {
+            let shared = aw[i].intersection(&bw[j]).count();
+            let smaller = aw[i].len().min(bw[j].len());
+            let containment = if smaller == 0 {
+                0.0
+            } else {
+                shared as f64 / smaller as f64
+            };
+            let similarity = if !a[i].has_trimmed_content || !b[j].has_trimmed_content {
+                0.0
+            } else if a[i].key == b[j].key {
+                1.0
+            } else {
+                let sequence = doc_character_score::compare(&doc_character_score::Input {
+                    old: a[i].key.clone(),
+                    new: b[j].key.clone(),
+                    mode: "sequence".into(),
+                    old_tokens: vec![],
+                    new_tokens: vec![],
+                })
+                .score;
+                let union = aw[i].union(&bw[j]).count().max(1);
+                let jaccard = shared as f64 / union as f64;
+                let mut score = (0.68 * sequence + 0.32 * jaccard).max(0.90 * containment);
+                if a[i].label == b[j].label && a[i].label != "본문" {
+                    score = (score + 0.08).min(1.0);
+                }
+                score
+            };
             let same_level = a[i].level == b[j].level;
-            DerivedFeatures {
-                similarity: score.similarity,
-                containment: score.containment,
+            features.push(DerivedFeatures {
+                similarity,
+                containment,
                 edge: stable_edge(&a[i].normalized, &b[j].normalized),
                 ordinal_shape: same_level && oa[i].is_some() && oa[i] == ob[j],
                 sibling_shape: same_level && sa[i] == sb[j],
                 exact_normalized: a[i].normalized == b[j].normalized,
-            }
-        })
-        .collect()
+            });
+        }
+    }
+    features
 }
 
 fn parents(a: i32, b: i32, matches: &[Match]) -> bool {
@@ -430,7 +460,12 @@ pub fn checked(input: &Input) -> Result {
 
 pub fn validate(input: &Input) -> bool {
     let (na, nb) = (input.old.len(), input.new.len());
-    if na > MAX_ITEMS || nb > MAX_ITEMS || input.features.len() != na * nb {
+    if na > MAX_ITEMS || nb > MAX_ITEMS {
+        return false;
+    }
+    let work_old: usize = input.old.iter().map(|p| p.key.encode_utf16().count()).sum();
+    let work_new: usize = input.new.iter().map(|p| p.key.encode_utf16().count()).sum();
+    if work_old.saturating_mul(work_new) > 32_000_000 {
         return false;
     }
     input
@@ -444,6 +479,8 @@ pub fn validate(input: &Input) -> bool {
                 && item.head.len() <= 8192
                 && item.normalized.len() <= 131_072
                 && item.family.len() <= 128
+                && item.word_tokens.len() <= 512
+                && item.word_tokens.iter().all(|token| token.len() <= 512)
                 && item.level <= 4
                 && item.parent >= -1
                 && (if i < na {
@@ -451,12 +488,6 @@ pub fn validate(input: &Input) -> bool {
                 } else {
                     item.parent < (i - na) as i32
                 })
-        })
-        && input.features.iter().all(|p| {
-            p.similarity.is_finite()
-                && p.containment.is_finite()
-                && (0.0..=1.0).contains(&p.similarity)
-                && (0.0..=1.0).contains(&p.containment)
         })
 }
 
@@ -477,12 +508,8 @@ mod tests {
             } else {
                 "number".into()
             },
-        }
-    }
-    fn feat(score: f64) -> PairFeatures {
-        PairFeatures {
-            similarity: score,
-            containment: score,
+            has_trimmed_content: !key.is_empty(),
+            word_tokens: key.split_whitespace().map(str::to_owned).collect(),
         }
     }
     #[test]
@@ -498,24 +525,7 @@ mod tests {
             item("3.", "two", 1),
             item("4.", "three", 1),
         ];
-        let features = (0..3)
-            .flat_map(|i| {
-                (0..4).map(move |j| {
-                    feat(
-                        if (i == 0 && j == 0) || (i == 1 && j == 2) || (i == 2 && j == 3) {
-                            1.0
-                        } else {
-                            0.0
-                        },
-                    )
-                })
-            })
-            .collect();
-        let result = compare(&Input {
-            old: a,
-            new: b,
-            features,
-        });
+        let result = compare(&Input { old: a, new: b });
         assert_eq!(
             result
                 .matches
@@ -551,11 +561,7 @@ mod tests {
                 ..item("2.", "revised-b", 1)
             },
         ];
-        let derived = derive_features(&Input {
-            old: x,
-            new: y,
-            features: vec![feat(0.6); 4],
-        });
+        let derived = derive_features(&Input { old: x, new: y });
         assert!(derived[0].ordinal_shape && derived[0].sibling_shape);
         assert!(!derived[1].exact_normalized);
         assert!(derived[1].ordinal_shape);
@@ -565,11 +571,7 @@ mod tests {
     fn one_sided_structure_does_not_invent_pairs() {
         let a = vec![item("본문", "x", 0)];
         let b = vec![item("1.", "first", 1), item("2.", "second", 1)];
-        let result = compare(&Input {
-            old: a,
-            new: b,
-            features: vec![feat(0.1), feat(0.2)],
-        });
+        let result = compare(&Input { old: a, new: b });
         assert!(result.matches.is_empty());
     }
 }

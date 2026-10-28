@@ -3395,23 +3395,20 @@ public sealed class NativeComparisonEngine : IComparisonEngine
                 new NativeCodeVersionComparer.FullDocumentMatchItem(
                     p.Label, LineageNormalize(p.Core), DefinitionHead(p.Core),
                     oldNodes[i].Level, oldNodes[i].Parent, PartOrdinalAt(a, i),
-                    Normalize(p.Core), oldNodes[i].Family)).ToArray();
+                    Normalize(p.Core), oldNodes[i].Family,
+                    p.Core.Trim().Length > 0,
+                    WordSet(p.Core).OrderBy(x => x, StringComparer.Ordinal).ToArray())).ToArray();
             var newItems = b.Select((p, i) =>
                 new NativeCodeVersionComparer.FullDocumentMatchItem(
                     p.Label, LineageNormalize(p.Core), DefinitionHead(p.Core),
                     newNodes[i].Level, newNodes[i].Parent, PartOrdinalAt(b, i),
-                    Normalize(p.Core), newNodes[i].Family)).ToArray();
-            var features = new List<NativeCodeVersionComparer.FullDocumentMatchFeatures>(
-                a.Count * b.Count);
-            for (var i = 0; i < a.Count; i++)
-            for (var j = 0; j < b.Count; j++)
-            {
-                features.Add(new(
-                    PartSimilarity(a[i], b[j]),
-                    Containment(a[i].Core, b[j].Core)));
-            }
+                    Normalize(p.Core), newNodes[i].Family,
+                    p.Core.Trim().Length > 0,
+                    WordSet(p.Core).OrderBy(x => x, StringComparer.Ordinal).ToArray())).ToArray();
+            // Rust owns every pair score and structural decision. Only
+            // per-part normalized values/token sets cross the native boundary.
             var native = NativeCodeVersionComparer.MatchDocumentPartsFull(
-                oldItems, newItems, features);
+                oldItems, newItems);
             if (native is null) return MatchPartsCSharp(a, b);
             if (Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_REQUIRE_NATIVE") == "1" ||
                 Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_VERIFY_DOCUMENT_MATCHES") == "1")
