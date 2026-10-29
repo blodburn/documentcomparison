@@ -12,7 +12,7 @@ static TOKEN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[가-힣A-Za-z0-9_
 static NUMERIC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\s*\d+\s*[.)]\s*").unwrap());
 static KOREAN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?m)^\s*[가-하]\s*[.)]\s*").unwrap());
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct RawUnit {
     pub kind: String,
     pub number: String,
