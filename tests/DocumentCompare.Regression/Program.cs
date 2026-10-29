@@ -5291,6 +5291,24 @@ if (NativeCodeVersionComparer.IsAvailable)
     Check(bigRawMatches is not null && bigRawMatches.Count==320 &&
         bigRawMatches.Select((m,i)=>m.Base==i&&m.Other==i&&m.Score==1.0).All(x=>x),
         "Rust raw matcher must own 320 generic document blocks");
+    // The previous >1024 C# shortcut must not intercept identical large
+    // generic documents. Rust returns the same positional greedy matches,
+    // including duplicate text whose diagonal rank wins by proximity.
+    var exactLargeBlocks=Enumerable.Range(0,1300)
+        .Select(i=>$"Article {i:D4}: 개인정보 clause {i:D4}").ToArray();
+    var exactLargeResult=NativeCodeVersionComparer.MatchGenericDocumentRaw(
+        exactLargeBlocks,exactLargeBlocks);
+    Check(exactLargeResult is not null && exactLargeResult.Count==1300 &&
+        exactLargeResult.Select((m,i)=>m.Base==i && m.Other==i &&
+            m.Score==1.0 && m.Mode=="same").All(x=>x),
+        "Rust raw matcher must handle >1024 unchanged generic blocks without C#");
+    var duplicateLargeBlocks=Enumerable.Repeat("repeated paragraph",1300).ToArray();
+    var duplicateLargeResult=NativeCodeVersionComparer.MatchGenericDocumentRaw(
+        duplicateLargeBlocks,duplicateLargeBlocks);
+    Check(duplicateLargeResult is not null && duplicateLargeResult.Count==1300 &&
+        duplicateLargeResult.Select((m,i)=>m.Base==i && m.Other==i &&
+            m.Score==1.0).All(x=>x),
+        "Rust large generic duplicate bodies must keep positional matches");
     // A 96-block general document must bypass the legal-article 48-block
     // guard and enter Rust matching directly (not via C# lineage fallback).
     var parsedGeneric=typeof(NativeComparisonEngine).GetMethod(

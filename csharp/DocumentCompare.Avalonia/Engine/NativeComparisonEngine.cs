@@ -1307,7 +1307,6 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     private static List<UnitMatch> MatchGenericUnits(
         IReadOnlyList<NativeUnit> a, IReadOnlyList<NativeUnit> b, CancellationToken token)
     {
-        if (a.Count > 1024 || b.Count > 1024) return MatchGenericUnitsCSharp(a, b, token);
         token.ThrowIfCancellationRequested();
         try
         {
