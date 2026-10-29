@@ -526,7 +526,12 @@ pub fn compare(input: &Input) -> Result {
 
 fn exact_full(input: &Input) -> Option<Result> {
     let (a, b) = (&input.old, &input.new);
-    if a.is_empty() || a.len() != b.len() || a.len() > MAX_EXACT_ITEMS {
+    // A complete exact match of the smaller side is also final: once all
+    // destinations (or all sources) are consumed, no later semantic stage
+    // can pair an unmatched part. This covers large insertion/deletion and
+    // reordering documents without returning to managed C# scoring.
+    if a.is_empty() || b.is_empty() ||
+        a.len() > MAX_EXACT_ITEMS || b.len() > MAX_EXACT_ITEMS {
         return None;
     }
     // Preserve the canonical C# protection against one-sided list structure.
@@ -559,7 +564,7 @@ fn exact_full(input: &Input) -> Option<Result> {
         return None;
     }
     let pairs = doc_match_exact::pair(&old_keys, &new_keys).ok()?.pairs;
-    if pairs.len() != a.len() {
+    if pairs.len() != a.len().min(b.len()) {
         return None;
     }
     Some(Result {
@@ -715,6 +720,47 @@ mod tests {
                 .all(|(i, m)| m.old == i && m.new == 511 - i && m.score == 1.0)
         );
     }
+    #[test]
+    fn exact_insertion_and_deletion_over_semantic_limits_stay_native() {
+        let old: Vec<_> = (0..512)
+            .map(|i| item("1.", &format!("unchanged clause {i:04}"), 1))
+            .collect();
+        let mut added = old.iter().cloned().rev().collect::<Vec<_>>();
+        added.insert(240, item("1.", "uniquely inserted clause content", 1));
+        let insertion = Input {
+            old: old.clone(),
+            new: added.clone(),
+        };
+        assert!(validate(&insertion));
+        let paired = checked(&insertion).matches;
+        assert_eq!(paired.len(), 512);
+        assert!(paired.iter().enumerate().all(|(i, m)| {
+            m.old == i && m.new == 512 - i + usize::from(512 - i >= 240)
+                && m.score == 1.0
+        }));
+
+        let deletion = Input { old: added, new: old };
+        assert!(validate(&deletion));
+        let paired = checked(&deletion).matches;
+        assert_eq!(paired.len(), 512);
+        assert!(paired.iter().all(|m| m.score == 1.0));
+        let mut used_old = std::collections::HashSet::new();
+        let mut used_new = std::collections::HashSet::new();
+        assert!(paired.iter().all(|m|
+            used_old.insert(m.old) && used_new.insert(m.new)));
+    }
+
+    #[test]
+    fn large_near_exact_with_substitution_does_not_bypass_semantic_budget() {
+        let old: Vec<_> = (0..300)
+            .map(|i| item("1.", &format!("original clause {i:04}"), 1))
+            .collect();
+        let mut new = old.clone();
+        new[100].core = "completely different replacement".into();
+        let input = Input { old, new };
+        assert!(!validate(&input));
+    }
+
     #[test]
     fn validates_large_but_bounded_nonidentical_documents() {
         let request = Input {
