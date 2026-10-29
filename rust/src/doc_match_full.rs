@@ -788,9 +788,9 @@ mod tests {
             "Shared introductory paragraph explaining legal information collection and handling",
             0,
         )];
-        old.extend((1..=400).map(|i| {
-            item("1.", &format!("Independent numbered provision {i:04}"), 1)
-        }));
+        old.extend(
+            (1..=400).map(|i| item("1.", &format!("Independent numbered provision {i:04}"), 1)),
+        );
         let new = vec![item(
             "본문",
             "Shared introductory paragraph explaining legal information collection and permitted handling",
@@ -806,9 +806,7 @@ mod tests {
     #[test]
     fn large_one_sided_unrelated_prose_does_not_pair() {
         let mut old = vec![item("본문", "Alpha beta gamma delta", 0)];
-        old.extend((1..=400).map(|i| {
-            item("1.", &format!("Provision {i:04}"), 1)
-        }));
+        old.extend((1..=400).map(|i| item("1.", &format!("Provision {i:04}"), 1)));
         let new = vec![item("본문", "대한민국 개인정보", 0)];
         let input = Input { old, new };
         assert!(validate(&input));
