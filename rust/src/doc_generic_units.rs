@@ -269,11 +269,13 @@ mod tests {
         assert!(validate_raw(&input));
         let result = match_raw(&input).expect("large exact document must run in Rust");
         assert_eq!(result.matches.len(), 1300);
-        assert!(result
-            .matches
-            .iter()
-            .enumerate()
-            .all(|(i, m)| m.base == i && m.other == i && m.score == 1.0));
+        assert!(
+            result
+                .matches
+                .iter()
+                .enumerate()
+                .all(|(i, m)| m.base == i && m.other == i && m.score == 1.0)
+        );
     }
     #[test]
     fn large_identical_duplicate_bodies_preserve_positional_pairs() {
@@ -283,11 +285,13 @@ mod tests {
             new: bodies,
         };
         let result = match_raw(&input).unwrap();
-        assert!(result
-            .matches
-            .iter()
-            .enumerate()
-            .all(|(i, m)| m.base == i && m.other == i));
+        assert!(
+            result
+                .matches
+                .iter()
+                .enumerate()
+                .all(|(i, m)| m.base == i && m.other == i)
+        );
     }
     #[test]
     fn large_changed_documents_still_reject_unsupported_semantic_matrix() {
