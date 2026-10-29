@@ -2273,8 +2273,7 @@ public static class NativeCodeVersionComparer
         ArgumentNullException.ThrowIfNull(revised);
         var exports=Native.Value;
         if(exports?.DocumentRawLineage is null ||
-            old.Count>48 || revised.Count>48 ||
-            (long)old.Count*revised.Count>1024 ||
+            old.Count>512 || revised.Count>512 ||
             old.Concat(revised).Any(x=>x.Body.Length>512 ||
                 x.Header.Length>512 || x.Title.Length>256))
             return null;
