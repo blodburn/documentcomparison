@@ -530,8 +530,7 @@ fn exact_full(input: &Input) -> Option<Result> {
     // destinations (or all sources) are consumed, no later semantic stage
     // can pair an unmatched part. This covers large insertion/deletion and
     // reordering documents without returning to managed C# scoring.
-    if a.is_empty() || b.is_empty() ||
-        a.len() > MAX_EXACT_ITEMS || b.len() > MAX_EXACT_ITEMS {
+    if a.is_empty() || b.is_empty() || a.len() > MAX_EXACT_ITEMS || b.len() > MAX_EXACT_ITEMS {
         return None;
     }
     // Preserve the canonical C# protection against one-sided list structure.
@@ -735,19 +734,24 @@ mod tests {
         let paired = checked(&insertion).matches;
         assert_eq!(paired.len(), 512);
         assert!(paired.iter().enumerate().all(|(i, m)| {
-            m.old == i && m.new == 511 - i + usize::from(511 - i >= 240)
-                && m.score == 1.0
+            m.old == i && m.new == 511 - i + usize::from(511 - i >= 240) && m.score == 1.0
         }));
 
-        let deletion = Input { old: added, new: old };
+        let deletion = Input {
+            old: added,
+            new: old,
+        };
         assert!(validate(&deletion));
         let paired = checked(&deletion).matches;
         assert_eq!(paired.len(), 512);
         assert!(paired.iter().all(|m| m.score == 1.0));
         let mut used_old = std::collections::HashSet::new();
         let mut used_new = std::collections::HashSet::new();
-        assert!(paired.iter().all(|m|
-            used_old.insert(m.old) && used_new.insert(m.new)));
+        assert!(
+            paired
+                .iter()
+                .all(|m| used_old.insert(m.old) && used_new.insert(m.new))
+        );
     }
 
     #[test]
