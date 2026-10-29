@@ -26,9 +26,7 @@ pub struct Input {
     pub new: Vec<RawUnit>,
 }
 fn dense_budget(v: &Input) -> bool {
-    v.old.len() <= 48
-        && v.new.len() <= 48
-        && v.old.len().saturating_mul(v.new.len()) <= 1024
+    v.old.len() <= 48 && v.new.len() <= 48 && v.old.len().saturating_mul(v.new.len()) <= 1024
 }
 
 pub fn validate(v: &Input) -> bool {
@@ -295,10 +293,7 @@ fn large_exact_reorder(v: &Input) -> Option<doc_unit_lineage::Result> {
         }
         let key = convert(&unit.title, "lineage");
         let &i = old_by_key.get(&key)?;
-        if old_to_new[i].is_some()
-            || v.old[i].title != unit.title
-            || v.old[i].body != unit.body
-        {
+        if old_to_new[i].is_some() || v.old[i].title != unit.title || v.old[i].body != unit.body {
             return None;
         }
         old_to_new[i] = Some(j);
@@ -320,9 +315,7 @@ fn large_exact_reorder(v: &Input) -> Option<doc_unit_lineage::Result> {
             base: i,
             other: j,
             score: 1.0,
-            mode: if moved[i]
-                || !v.old[i].number.eq_ignore_ascii_case(&v.new[j].number)
-            {
+            mode: if moved[i] || !v.old[i].number.eq_ignore_ascii_case(&v.new[j].number) {
                 "moved".into()
             } else {
                 "same".into()
@@ -417,26 +410,41 @@ mod tests {
             (b'a' + (i % 26) as u8) as char,
         ];
         let label = letters.iter().collect::<String>();
-        u(&(i + 1).to_string(), &format!("Topic {label}"), &format!("Clause {i} applies"))
+        u(
+            &(i + 1).to_string(),
+            &format!("Topic {label}"),
+            &format!("Clause {i} applies"),
+        )
     }
 
     #[test]
     fn large_article_permutation_preserves_exact_moved_lineage() {
         let old: Vec<_> = (0..96).map(titled).collect();
-        let new: Vec<_> = old.iter().rev().map(|unit| RawUnit {
-            kind: unit.kind.clone(),
-            number: unit.number.clone(),
-            title: unit.title.clone(),
-            header: unit.header.clone(),
-            body: unit.body.clone(),
-        }).collect();
+        let new: Vec<_> = old
+            .iter()
+            .rev()
+            .map(|unit| RawUnit {
+                kind: unit.kind.clone(),
+                number: unit.number.clone(),
+                title: unit.title.clone(),
+                header: unit.header.clone(),
+                body: unit.body.clone(),
+            })
+            .collect();
         let input = Input { old, new };
         assert!(validate(&input));
         let result = match_raw(&input);
         assert_eq!(result.matches.len(), 96);
-        assert!(result.matches.iter().enumerate().all(|(i, pair)|
-            pair.base == i && pair.other == 95 - i
-                && pair.score == 1.0 && pair.mode == "moved"));
+        assert!(
+            result
+                .matches
+                .iter()
+                .enumerate()
+                .all(|(i, pair)| pair.base == i
+                    && pair.other == 95 - i
+                    && pair.score == 1.0
+                    && pair.mode == "moved")
+        );
     }
 
     #[test]
@@ -444,7 +452,10 @@ mod tests {
         let old: Vec<_> = (0..96).map(titled).collect();
         let mut new: Vec<_> = (0..96).map(titled).collect();
         new[55].body.push_str(" revised");
-        assert!(!validate(&Input { old: old.clone(), new }));
+        assert!(!validate(&Input {
+            old: old.clone(),
+            new
+        }));
         let mut new: Vec<_> = (0..96).map(titled).collect();
         new[12].title = "Topic aaa".into();
         assert!(!validate(&Input { old, new }));
