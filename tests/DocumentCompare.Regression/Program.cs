@@ -4264,6 +4264,30 @@ if (NativeCodeVersionComparer.IsAvailable)
         MatchesWhole()==biggerSemanticBefore+1,
         "144 x 96 semantic part matching must use Rust with C# score parity");
     checkedWhole++;
+    // A large one-sided numbered-list rewrite can produce at most one
+    // shared prose body; Rust must decide this without dense pair scoring
+    // or falling back to the managed comparison engine.
+    var listProseOld="Shared explanatory preamble concerning the contractual "+
+        "obligations and processing of information";
+    var listProseNew="Shared explanatory preamble concerning the contractual "+
+        "obligations and authorized processing of information";
+    var oneSidedStructured=listProseOld+"\n"+string.Join("\n",
+        Enumerable.Range(1,320).Select(i=>$"({i}) Explicit provision {i:D3}"));
+    var oldListParts=wholeParser.Invoke(null,new object[]{oneSidedStructured})!;
+    var newProseParts=wholeParser.Invoke(null,new object[]{listProseNew})!;
+    Check(((System.Collections.IEnumerable)oldListParts).Cast<object>().Count()==321 &&
+        ((System.Collections.IEnumerable)newProseParts).Cast<object>().Count()==1,
+        "large one-sided list structure test setup failed");
+    var beforeOneSided=MatchesWhole();
+    var expectedOneSided=FetchWhole(wholeCSharp,oldListParts,newProseParts);
+    var actualOneSided=FetchWhole(wholeLive,oldListParts,newProseParts);
+    Check(actualOneSided.Length==expectedOneSided.Length &&
+        actualOneSided.Zip(expectedOneSided).All(x=>
+            x.First.Old==x.Second.Old && x.First.New==x.Second.New &&
+            Math.Abs(x.First.Score-x.Second.Score)<1e-12) &&
+        MatchesWhole()==beforeOneSided+1,
+        "large one-sided list-to-prose must dispatch Rust with exact C# parity");
+    checkedWhole++;
     Check(MissesWhole()==initialWholeMismatches,
         "whole MatchParts Rust differs from C# in tested document structures; "+
         (MissesWhole()-initialWholeMismatches)+" mismatches");

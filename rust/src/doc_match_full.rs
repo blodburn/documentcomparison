@@ -266,21 +266,35 @@ fn structural(i: &PreparedItem) -> bool {
     i.label != "본문" && !i.label.is_empty()
 }
 
+// Entirely one-sided explicit list structure has at most one body match,
+// regardless of how many numbered items it contains. This case can be
+// resolved in Rust without allocating a dense semantic pair matrix.
+fn one_sided_structure(input: &Input) -> bool {
+    let old_count = input
+        .old
+        .iter()
+        .filter(|p| p.label != "본문" && !p.label.is_empty())
+        .count();
+    let new_count = input
+        .new
+        .iter()
+        .filter(|p| p.label != "본문" && !p.label.is_empty())
+        .count();
+    (old_count >= 2 && new_count == 0) || (new_count >= 2 && old_count == 0)
+}
+
 pub fn compare(input: &Input) -> Result {
     let a = prepare_all(&input.old);
     let b = prepare_all(&input.new);
     let (na, nb) = (a.len(), b.len());
-    let features = derive_features(&a, &b);
-    let f = |i: usize, j: usize| &features[i * nb + j];
-    let structured_a = a.iter().filter(|x| structural(x)).count();
-    let structured_b = b.iter().filter(|x| structural(x)).count();
-    if (structured_a >= 2 && structured_b == 0) || (structured_b >= 2 && structured_a == 0) {
+    if one_sided_structure(input) {
         let old: Vec<_> = (0..na).filter(|&i| a[i].label == "본문").collect();
         let new: Vec<_> = (0..nb).filter(|&i| b[i].label == "본문").collect();
         if old.len() == 1 && new.len() == 1 {
             let (i, j) = (old[0], new[0]);
-            let score = f(i, j).similarity;
-            if score >= 0.32 || f(i, j).exact_normalized {
+            let f = derive_features(&a[i..i + 1], &b[j..j + 1]);
+            let score = f[0].similarity;
+            if score >= 0.32 || f[0].exact_normalized {
                 return Result {
                     matches: vec![Match {
                         old: i,
@@ -292,6 +306,8 @@ pub fn compare(input: &Input) -> Result {
         }
         return Result { matches: vec![] };
     }
+    let features = derive_features(&a, &b);
+    let f = |i: usize, j: usize| &features[i * nb + j];
     let mut matched: Vec<Match> = vec![];
     let mut used_a = vec![false; na];
     let mut used_b = vec![false; nb];
@@ -600,7 +616,7 @@ pub fn validate(input: &Input) -> bool {
     {
         return false;
     }
-    if exact_full(input).is_some() {
+    if exact_full(input).is_some() || one_sided_structure(input) {
         return true;
     }
     if na > MAX_ITEMS || nb > MAX_ITEMS || na.saturating_mul(nb) > MAX_PAIRS {
@@ -765,6 +781,37 @@ mod tests {
         assert!(!validate(&input));
     }
 
+    #[test]
+    fn large_one_sided_list_structure_uses_sparse_body_only_matching() {
+        let mut old = vec![item(
+            "본문",
+            "Shared introductory paragraph explaining legal information collection and handling",
+            0,
+        )];
+        old.extend(
+            (1..=400).map(|i| item("1.", &format!("Independent numbered provision {i:04}"), 1)),
+        );
+        let new = vec![item(
+            "본문",
+            "Shared introductory paragraph explaining legal information collection and permitted handling",
+            0,
+        )];
+        let request = Input { old, new };
+        assert!(validate(&request));
+        let result = checked(&request);
+        assert_eq!(result.matches.len(), 1);
+        assert_eq!((result.matches[0].old, result.matches[0].new), (0, 0));
+        assert!(result.matches[0].score >= 0.5);
+    }
+    #[test]
+    fn large_one_sided_unrelated_prose_does_not_pair() {
+        let mut old = vec![item("본문", "Alpha beta gamma delta", 0)];
+        old.extend((1..=400).map(|i| item("1.", &format!("Provision {i:04}"), 1)));
+        let new = vec![item("본문", "대한민국 개인정보", 0)];
+        let input = Input { old, new };
+        assert!(validate(&input));
+        assert!(checked(&input).matches.is_empty());
+    }
     #[test]
     fn validates_large_but_bounded_nonidentical_documents() {
         let request = Input {
