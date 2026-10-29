@@ -1266,7 +1266,7 @@ public static class NativeCodeVersionComparer
         ArgumentNullException.ThrowIfNull(revised);
         var exports=Native.Value;
         if(exports?.DocumentGenericUnitsRaw is null ||
-            old.Count>1024 || revised.Count>1024 ||
+            old.Count>4096 || revised.Count>4096 ||
             old.Any(x=>x is null || x.Length>8192) ||
             revised.Any(x=>x is null || x.Length>8192))
             return null;
