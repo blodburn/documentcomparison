@@ -3,7 +3,7 @@
 use crate::{doc_normalize, doc_unit_lineage};
 use regex::Regex;
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 static CONCEPT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[A-Za-z]+|[가-힣]+").unwrap());
 static WORD: LazyLock<Regex> =
@@ -12,7 +12,7 @@ static TOKEN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[가-힣A-Za-z0-9_
 static NUMERIC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\s*\d+\s*[.)]\s*").unwrap());
 static KOREAN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?m)^\s*[가-하]\s*[.)]\s*").unwrap());
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct RawUnit {
     pub kind: String,
     pub number: String,
@@ -25,17 +25,18 @@ pub struct Input {
     pub old: Vec<RawUnit>,
     pub new: Vec<RawUnit>,
 }
+fn dense_budget(v: &Input) -> bool {
+    v.old.len() <= 48 && v.new.len() <= 48 && v.old.len().saturating_mul(v.new.len()) <= 1024
+}
+
 pub fn validate(v: &Input) -> bool {
-    v.old.len() <= 48
-        && v.new.len() <= 48
-        && v.old.len().saturating_mul(v.new.len()) <= 1024
-        && v.old.iter().chain(&v.new).all(|u| {
-            u.title.encode_utf16().count() <= 256
-                && u.body.encode_utf16().count() <= 512
-                && u.header.encode_utf16().count() <= 512
-                && u.number.len() <= 120
-                && u.kind.len() <= 32
-        })
+    v.old.iter().chain(&v.new).all(|u| {
+        u.title.encode_utf16().count() <= 256
+            && u.body.encode_utf16().count() <= 512
+            && u.header.encode_utf16().count() <= 512
+            && u.number.len() <= 120
+            && u.kind.len() <= 32
+    }) && (dense_budget(v) || large_exact_reorder(v).is_some())
 }
 pub(crate) fn convert(s: &str, mode: &str) -> String {
     doc_normalize::convert(&doc_normalize::Input {
@@ -257,7 +258,79 @@ pub(crate) fn low_information(s: &str) -> bool {
             | "부칙"
     )
 }
+// Move/renumber preserved, uniquely titled articles without allocating an
+// N-by-M lineage feature matrix. This is a strict subset of the managed strong
+// title-anchor rule: each row and column has exactly one score-1 title.
+// Reject overlapping concept sets: two different titles can otherwise both
+// score 1.0 in the historical TitleSimilarity Jaccard calculation.
+fn large_exact_reorder(v: &Input) -> Option<doc_unit_lineage::Result> {
+    let n = v.old.len();
+    if n == 0 || n > 512 || v.new.len() != n {
+        return None;
+    }
+    let mut old_by_key = HashMap::with_capacity(n);
+    let mut concept_sets = HashSet::with_capacity(n);
+    for (i, unit) in v.old.iter().enumerate() {
+        if unit.kind != "article" || unit.title.is_empty() || !unit.number.is_ascii() {
+            return None;
+        }
+        let key = convert(&unit.title, "lineage");
+        if key.is_empty() || old_by_key.insert(key, i).is_some() {
+            return None;
+        }
+        let mut concepts = concepts(&unit.title).into_iter().collect::<Vec<_>>();
+        if !concepts.is_empty() {
+            concepts.sort();
+            if !concept_sets.insert(concepts) {
+                return None;
+            }
+        }
+    }
+    let mut old_to_new = vec![None; n];
+    for (j, unit) in v.new.iter().enumerate() {
+        if unit.kind != "article" || !unit.number.is_ascii() {
+            return None;
+        }
+        let key = convert(&unit.title, "lineage");
+        let &i = old_by_key.get(&key)?;
+        if old_to_new[i].is_some() || v.old[i].title != unit.title || v.old[i].body != unit.body {
+            return None;
+        }
+        old_to_new[i] = Some(j);
+    }
+    let positions = old_to_new.into_iter().collect::<Option<Vec<_>>>()?;
+    let mut moved = vec![false; n];
+    for i in 0..n {
+        for j in i + 1..n {
+            if positions[i] > positions[j] {
+                moved[i] = true;
+                moved[j] = true;
+            }
+        }
+    }
+    let matches = positions
+        .into_iter()
+        .enumerate()
+        .map(|(i, j)| doc_unit_lineage::Match {
+            base: i,
+            other: j,
+            score: 1.0,
+            mode: if moved[i] || !v.old[i].number.eq_ignore_ascii_case(&v.new[j].number) {
+                "moved".into()
+            } else {
+                "same".into()
+            },
+        })
+        .collect();
+    Some(doc_unit_lineage::Result { matches })
+}
+
 pub fn match_raw(v: &Input) -> doc_unit_lineage::Result {
+    if !dense_budget(v) {
+        // FFI validates inputs before entry; unsupported requests fail safely
+        // with status 3 instead of silently producing an incomplete mapping.
+        return large_exact_reorder(v).expect("validated large article permutation");
+    }
     let to_unit = |u: &RawUnit| doc_unit_lineage::Unit {
         article: u.kind == "article",
         number: u.number.clone(),
@@ -330,6 +403,64 @@ mod tests {
             body: b.into(),
         }
     }
+    fn titled(i: usize) -> RawUnit {
+        let letters = [
+            (b'a' + ((i / (26 * 26)) % 26) as u8) as char,
+            (b'a' + ((i / 26) % 26) as u8) as char,
+            (b'a' + (i % 26) as u8) as char,
+        ];
+        let label = letters.iter().collect::<String>();
+        u(
+            &(i + 1).to_string(),
+            &format!("Topic {label}"),
+            &format!("Clause {i} applies"),
+        )
+    }
+
+    #[test]
+    fn large_article_permutation_preserves_exact_moved_lineage() {
+        let old: Vec<_> = (0..96).map(titled).collect();
+        let new: Vec<_> = old
+            .iter()
+            .rev()
+            .map(|unit| RawUnit {
+                kind: unit.kind.clone(),
+                number: unit.number.clone(),
+                title: unit.title.clone(),
+                header: unit.header.clone(),
+                body: unit.body.clone(),
+            })
+            .collect();
+        let input = Input { old, new };
+        assert!(validate(&input));
+        let result = match_raw(&input);
+        assert_eq!(result.matches.len(), 96);
+        assert!(
+            result
+                .matches
+                .iter()
+                .enumerate()
+                .all(|(i, pair)| pair.base == i
+                    && pair.other == 95 - i
+                    && pair.score == 1.0
+                    && pair.mode == "moved")
+        );
+    }
+
+    #[test]
+    fn large_article_non_exact_or_ambiguous_titles_reject_sparse_path() {
+        let old: Vec<_> = (0..96).map(titled).collect();
+        let mut new: Vec<_> = (0..96).map(titled).collect();
+        new[55].body.push_str(" revised");
+        assert!(!validate(&Input {
+            old: old.clone(),
+            new
+        }));
+        let mut new: Vec<_> = (0..96).map(titled).collect();
+        new[12].title = "Topic aaa".into();
+        assert!(!validate(&Input { old, new }));
+    }
+
     #[test]
     fn direct_raw_lineage_follows_moved_article() {
         let v = Input {

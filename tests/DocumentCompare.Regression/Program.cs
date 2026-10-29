@@ -4405,6 +4405,58 @@ if (NativeCodeVersionComparer.IsAvailable)
     Check(Counter(accepts)-acceptedBefore==count,
         "whole article lineage path did not use Rust for all supported cases "+
         (Counter(accepts)-acceptedBefore)+"/"+count);
+    // Full managed baseline vs source-owned sparse Rust strong-title anchors.
+    // These 96-article legal documents previously went directly to C# due
+    // to the 48-unit / 1024-pair guards, even for unambiguous rearrangements.
+    var rawType=t.GetNestedType("NativeUnit",BindingFlags.NonPublic)!;
+    var rawFactory=rawType.GetMethod("Create",BindingFlags.Public|BindingFlags.Static)!;
+    var rawListType=typeof(List<>).MakeGenericType(rawType);
+    static string UniqueTopic(int i) =>
+        "Topic "+new string(new[]{
+            (char)('a'+(i/(26*26))%26),
+            (char)('a'+(i/26)%26),
+            (char)('a'+i%26)});
+    object LargeArticles(IReadOnlyList<int> order,bool renumber)
+    {
+        var list=(System.Collections.IList)Activator.CreateInstance(rawListType)!;
+        for(var j=0;j<order.Count;j++)
+        {
+            var i=order[j];
+            var number=(renumber?j+1:i+1).ToString();
+            var title=UniqueTopic(i);
+            var body=$"Clause {i:D3} applies to 개인정보 handling.";
+            list.Add(rawFactory.Invoke(null,new object?[]{
+                j,number,title,$"제{number}조({title})",body,"","article",null})!);
+        }
+        return list;
+    }
+    var largeOrder=Enumerable.Range(0,96).ToArray();
+    var sparseLegalOld=LargeArticles(largeOrder,false);
+    var largeReorders=new[]{
+        largeOrder.Reverse().ToArray(),
+        largeOrder.Skip(19).Concat(largeOrder.Take(19)).ToArray()};
+    var largeBefore=Counter(accepts);
+    var largeRejectedBefore=Counter(rejects);
+    var largeCount=0;
+    foreach(var order in largeReorders)
+    foreach(var renumber in new[]{false,true})
+    {
+        var largeNew=LargeArticles(order,renumber);
+        var baseline=Invoke(original,sparseLegalOld,largeNew);
+        var sparseLegalRust=Invoke(active,sparseLegalOld,largeNew);
+        Check(baseline.Length==96 && sparseLegalRust.Length==baseline.Length &&
+            baseline.Zip(sparseLegalRust).All(pair=>
+                pair.First.Base==pair.Second.Base &&
+                pair.First.Other==pair.Second.Other &&
+                pair.First.Mode==pair.Second.Mode &&
+                Math.Abs(pair.First.Score-pair.Second.Score)<1e-12),
+            "96-article reordering/renumbering must preserve complete C# lineage parity");
+        largeCount++;
+    }
+    Check(Counter(accepts)-largeBefore==largeCount &&
+          Counter(rejects)==largeRejectedBefore,
+        "96-article reordered legal documents must actually run through Rust, not C#");
+    Console.WriteLine($"PASS RUST LARGE LEGAL ARTICLE LINEAGE CSHARP PARITY {largeCount}/{largeCount}");
     Console.WriteLine($"PASS RUST WHOLE ARTICLE LINEAGE CSHARP PARITY {count}/{count}");
 }
 
