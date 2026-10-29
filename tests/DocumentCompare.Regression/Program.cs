@@ -4191,6 +4191,37 @@ if (NativeCodeVersionComparer.IsAvailable)
         ((long)fastProp.GetValue(null)!)==giantFastBefore+1,
         "320-part exact reordering must use Rust and match managed lineage");
     checkedWhole++;
+    // A one-sided insertion/deletion among 320 exactly preserved clauses
+    // must also stay on the native Rust path (not the managed fallback).
+    var extraClause="(999) Unique inserted amendment only in one version";
+    var insertedExactNew=string.Join("\n",Enumerable.Range(1,320).Reverse()
+        .Select(i=>$"({i}) Distinct exact contract provision {i:D4}")
+        .Take(170).Concat(new[]{extraClause})
+        .Concat(Enumerable.Range(1,320).Reverse().Skip(170)
+            .Select(i=>$"({i}) Distinct exact contract provision {i:D4}")));
+    var insertNewParts=wholeParser.Invoke(null,new object[]{insertedExactNew})!;
+    Check(((System.Collections.IEnumerable)insertNewParts).Cast<object>().Count()==321,
+        "321-part inserted document parser setup failed");
+    var beforeInsertRust=MatchesWhole();
+    var insertCanonical=FetchWhole(wholeCSharp,giantOldParts,insertNewParts);
+    var insertNative=FetchWhole(wholeLive,giantOldParts,insertNewParts);
+    Check(insertCanonical.Length==320 && insertNative.Length==320 &&
+        insertCanonical.Zip(insertNative).All(x=>
+            x.First.Old==x.Second.Old && x.First.New==x.Second.New &&
+            Math.Abs(x.First.Score-x.Second.Score)<1e-12) &&
+        MatchesWhole()==beforeInsertRust+1,
+        "320-to-321 exact+insertion must use Rust and match the C# oracle");
+    checkedWhole++;
+    var beforeDeleteRust=MatchesWhole();
+    var deleteCanonical=FetchWhole(wholeCSharp,insertNewParts,giantOldParts);
+    var deleteNative=FetchWhole(wholeLive,insertNewParts,giantOldParts);
+    Check(deleteCanonical.Length==320 && deleteNative.Length==320 &&
+        deleteCanonical.Zip(deleteNative).All(x=>
+            x.First.Old==x.Second.Old && x.First.New==x.Second.New &&
+            Math.Abs(x.First.Score-x.Second.Score)<1e-12) &&
+        MatchesWhole()==beforeDeleteRust+1,
+        "321-to-320 exact+deletion must use Rust and match the C# oracle");
+    checkedWhole++;
     // Nonidentical documents beyond the legacy 64-part cap now use Rust
     // without exceeding the independent candidate-stage 8,192 pair budget.
     var bigChangedOld=string.Join("\n",Enumerable.Range(1,96)
