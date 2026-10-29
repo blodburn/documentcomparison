@@ -8,6 +8,8 @@ use std::cmp::Ordering;
 const MAX_COUNT: usize = 256;
 // Raw-text scoring is budgeted separately and can accept larger documents.
 const MAX_RAW_COUNT: usize = 1024;
+// Exact, position-preserving large documents do not need a similarity matrix.
+const MAX_RAW_EXACT_COUNT: usize = 4096;
 // Bound pairwise LCS work for raw blocks before building the similarity matrix.
 const MAX_RAW_TOKEN_COMPARISONS: usize = 8_000_000;
 #[derive(Debug, Deserialize)]
@@ -87,14 +89,35 @@ pub struct RawInput {
     pub new: Vec<String>,
 }
 pub fn validate_raw(v: &RawInput) -> bool {
-    v.old.len() <= MAX_RAW_COUNT
-        && v.new.len() <= MAX_RAW_COUNT
+    v.old.len() <= MAX_RAW_EXACT_COUNT
+        && v.new.len() <= MAX_RAW_EXACT_COUNT
         && v.old
             .iter()
             .chain(&v.new)
             .all(|t| t.encode_utf16().count() <= 8192)
 }
 pub fn match_raw(v: &RawInput) -> Option<Result> {
+    if !validate_raw(v) {
+        return None;
+    }
+    // Each identical diagonal pair has rank 1.015, strictly greater than
+    // any off-diagonal candidate (including duplicate bodies). This is
+    // exactly the C# greedy selection without quadratic pair scoring.
+    if v.old.len() > MAX_RAW_COUNT || v.new.len() > MAX_RAW_COUNT {
+        if v.old != v.new {
+            return None;
+        }
+        return Some(Result {
+            matches: (0..v.old.len())
+                .map(|i| Matched {
+                    base: i,
+                    other: i,
+                    score: 1.0,
+                    mode: "same".into(),
+                })
+                .collect(),
+        });
+    }
     use crate::doc_normalize::{Input as NormalInput, convert};
     use regex::Regex;
     use std::sync::LazyLock;
@@ -233,6 +256,49 @@ mod tests {
             })
             .is_none()
         );
+    }
+    #[test]
+    fn large_identical_documents_match_in_rust_without_pair_matrix() {
+        let old: Vec<_> = (0..1300)
+            .map(|i| format!("제{i}조 Article {i} 개인 정보"))
+            .collect();
+        let input = RawInput {
+            old: old.clone(),
+            new: old,
+        };
+        assert!(validate_raw(&input));
+        let result = match_raw(&input).expect("large exact document must run in Rust");
+        assert_eq!(result.matches.len(), 1300);
+        assert!(result
+            .matches
+            .iter()
+            .enumerate()
+            .all(|(i, m)| m.base == i && m.other == i && m.score == 1.0));
+    }
+    #[test]
+    fn large_identical_duplicate_bodies_preserve_positional_pairs() {
+        let bodies = vec!["repeated paragraph".into(); 1300];
+        let input = RawInput {
+            old: bodies.clone(),
+            new: bodies,
+        };
+        let result = match_raw(&input).unwrap();
+        assert!(result
+            .matches
+            .iter()
+            .enumerate()
+            .all(|(i, m)| m.base == i && m.other == i));
+    }
+    #[test]
+    fn large_changed_documents_still_reject_unsupported_semantic_matrix() {
+        let old: Vec<_> = (0..1300).map(|i| format!("clause_{i:04}")).collect();
+        let mut new = old.clone();
+        new[700].push_str(" changed");
+        assert!(validate_raw(&RawInput {
+            old: old.clone(),
+            new: new.clone(),
+        }));
+        assert!(match_raw(&RawInput { old, new }).is_none());
     }
     #[test]
     fn greedy_prefers_semantics_over_nearest() {
