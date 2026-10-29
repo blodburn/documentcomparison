@@ -4431,7 +4431,7 @@ if (NativeCodeVersionComparer.IsAvailable)
         return list;
     }
     var largeOrder=Enumerable.Range(0,96).ToArray();
-    var largeOld=LargeArticles(largeOrder,false);
+    var sparseLegalOld=LargeArticles(largeOrder,false);
     var largeReorders=new[]{
         largeOrder.Reverse().ToArray(),
         largeOrder.Skip(19).Concat(largeOrder.Take(19)).ToArray()};
@@ -4442,10 +4442,10 @@ if (NativeCodeVersionComparer.IsAvailable)
     foreach(var renumber in new[]{false,true})
     {
         var largeNew=LargeArticles(order,renumber);
-        var baseline=Invoke(original,largeOld,largeNew);
-        var migrated=Invoke(active,largeOld,largeNew);
-        Check(baseline.Length==96 && migrated.Length==baseline.Length &&
-            baseline.Zip(migrated).All(pair=>
+        var baseline=Invoke(original,sparseLegalOld,largeNew);
+        var sparseLegalRust=Invoke(active,sparseLegalOld,largeNew);
+        Check(baseline.Length==96 && sparseLegalRust.Length==baseline.Length &&
+            baseline.Zip(sparseLegalRust).All(pair=>
                 pair.First.Base==pair.Second.Base &&
                 pair.First.Other==pair.Second.Other &&
                 pair.First.Mode==pair.Second.Mode &&
