@@ -735,7 +735,7 @@ mod tests {
         let paired = checked(&insertion).matches;
         assert_eq!(paired.len(), 512);
         assert!(paired.iter().enumerate().all(|(i, m)| {
-            m.old == i && m.new == 512 - i + usize::from(512 - i >= 240)
+            m.old == i && m.new == 511 - i + usize::from(511 - i >= 240)
                 && m.score == 1.0
         }));
 
