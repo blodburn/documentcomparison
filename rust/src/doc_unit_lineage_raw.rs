@@ -258,59 +258,83 @@ pub(crate) fn low_information(s: &str) -> bool {
             | "부칙"
     )
 }
-// Move/renumber preserved, uniquely titled articles without allocating an
-// N-by-M lineage feature matrix. This is a strict subset of the managed strong
-// title-anchor rule: each row and column has exactly one score-1 title.
-// Reject overlapping concept sets: two different titles can otherwise both
-// score 1.0 in the historical TitleSimilarity Jaccard calculation.
+// Match a sparse one-sided insertion/deletion, unchanged permutation, or
+// changed article body by its unique exact title. This is a strict subset of
+// the C# strong-title-anchor rule: every surviving title has score 1.0.
+// Unmatched articles can occur on only one side, so the managed residual and
+// DP passes cannot create further matches. Ambiguous lexical concepts are
+// rejected because different titles can otherwise also score 1.0.
 fn large_exact_reorder(v: &Input) -> Option<doc_unit_lineage::Result> {
     let n = v.old.len();
-    if n == 0 || n > 512 || v.new.len() != n {
+    let m = v.new.len();
+    if n == 0 || m == 0 || n > 512 || m > 512 {
         return None;
     }
-    let mut old_by_key = HashMap::with_capacity(n);
-    let mut concept_sets = HashSet::with_capacity(n);
-    for (i, unit) in v.old.iter().enumerate() {
-        if unit.kind != "article" || unit.title.is_empty() || !unit.number.is_ascii() {
+    let mut concept_keys = HashMap::<Vec<String>, String>::new();
+    for unit in v.old.iter().chain(&v.new) {
+        if unit.kind != "article"
+            || unit.title.is_empty()
+            || !unit.number.is_ascii()
+            || low_information(&unit.title)
+        {
             return None;
         }
         let key = convert(&unit.title, "lineage");
-        if key.is_empty() || old_by_key.insert(key, i).is_some() {
+        if key.is_empty() {
             return None;
         }
-        let mut concepts = concepts(&unit.title).into_iter().collect::<Vec<_>>();
-        if !concepts.is_empty() {
-            concepts.sort();
-            if !concept_sets.insert(concepts) {
+        let mut concept = concepts(&unit.title).into_iter().collect::<Vec<_>>();
+        if !concept.is_empty() {
+            concept.sort();
+            match concept_keys.get(&concept) {
+                Some(previous) if previous != &key => return None,
+                Some(_) => {}
+                None => {
+                    concept_keys.insert(concept, key);
+                }
+            }
+        }
+    }
+    let mut old_by_key = HashMap::with_capacity(n);
+    for (i, unit) in v.old.iter().enumerate() {
+        let key = convert(&unit.title, "lineage");
+        if old_by_key.insert(key, i).is_some() {
+            return None;
+        }
+    }
+    let mut new_keys = HashSet::with_capacity(m);
+    let mut matched = Vec::with_capacity(n.min(m));
+    for (j, unit) in v.new.iter().enumerate() {
+        let key = convert(&unit.title, "lineage");
+        if !new_keys.insert(key.clone()) {
+            return None;
+        }
+        if let Some(&i) = old_by_key.get(&key) {
+            // The body can change. A unique, exact title still gives the
+            // reference C# anchor a score of 1.0 independent of its body.
+            if v.old[i].title != unit.title {
                 return None;
             }
+            matched.push((i, j));
         }
     }
-    let mut old_to_new = vec![None; n];
-    for (j, unit) in v.new.iter().enumerate() {
-        if unit.kind != "article" || !unit.number.is_ascii() {
-            return None;
-        }
-        let key = convert(&unit.title, "lineage");
-        let &i = old_by_key.get(&key)?;
-        if old_to_new[i].is_some() || v.old[i].title != unit.title || v.old[i].body != unit.body {
-            return None;
-        }
-        old_to_new[i] = Some(j);
+    // At least one complete side must have a title counterpart. If both
+    // sides have unmatched articles, fuzzy DP/residual choices are required.
+    if matched.len() != n.min(m) {
+        return None;
     }
-    let positions = old_to_new.into_iter().collect::<Option<Vec<_>>>()?;
+    matched.sort_unstable_by_key(|pair| pair.0);
     let mut moved = vec![false; n];
-    for i in 0..n {
-        for j in i + 1..n {
-            if positions[i] > positions[j] {
-                moved[i] = true;
-                moved[j] = true;
+    for a in 0..matched.len() {
+        for b in a + 1..matched.len() {
+            if matched[a].1 > matched[b].1 {
+                moved[matched[a].0] = true;
+                moved[matched[b].0] = true;
             }
         }
     }
-    let matches = positions
+    let matches = matched
         .into_iter()
-        .enumerate()
         .map(|(i, j)| doc_unit_lineage::Match {
             base: i,
             other: j,
@@ -448,17 +472,71 @@ mod tests {
     }
 
     #[test]
-    fn large_article_non_exact_or_ambiguous_titles_reject_sparse_path() {
+    fn large_article_changed_bodies_preserve_title_anchor() {
         let old: Vec<_> = (0..96).map(titled).collect();
-        let mut new: Vec<_> = (0..96).map(titled).collect();
+        let mut new = old.clone();
         new[55].body.push_str(" revised");
+        new[26].body = "개인정보 동의 없이".into();
+        let input = Input { old, new };
+        assert!(validate(&input));
+        let result = match_raw(&input);
+        assert_eq!(result.matches.len(), 96);
+        assert!(
+            result
+                .matches
+                .iter()
+                .enumerate()
+                .all(|(i, pair)| pair.base == i
+                    && pair.other == i
+                    && pair.score == 1.0
+                    && pair.mode == "same")
+        );
+    }
+
+    #[test]
+    fn large_article_insertions_and_deletions_use_native_sparse_lineage() {
+        let old: Vec<_> = (0..96).map(titled).collect();
+        let mut inserted = old.clone();
+        inserted.insert(48, titled(150));
+        inserted[54].body.push_str(" revised");
+        let input = Input {
+            old: old.clone(),
+            new: inserted,
+        };
+        assert!(validate(&input));
+        let result = match_raw(&input);
+        assert_eq!(result.matches.len(), 96);
+        assert!(
+            result
+                .matches
+                .iter()
+                .enumerate()
+                .all(|(i, pair)| { pair.base == i && pair.other == i + usize::from(i >= 48) })
+        );
+
+        let mut deleted = old.clone();
+        deleted.remove(48);
+        let input = Input { old, new: deleted };
+        assert!(validate(&input));
+        let result = match_raw(&input);
+        assert_eq!(result.matches.len(), 95);
+        assert!(result.matches.iter().all(|pair| {
+            pair.base != 48 && pair.other == pair.base - usize::from(pair.base > 48)
+        }));
+    }
+
+    #[test]
+    fn large_article_two_sided_replacements_or_ambiguous_titles_reject_sparse_path() {
+        let old: Vec<_> = (0..96).map(titled).collect();
+        let mut changed = old.clone();
+        changed[12].title = "Topic aaa".into();
         assert!(!validate(&Input {
             old: old.clone(),
-            new
+            new: changed,
         }));
-        let mut new: Vec<_> = (0..96).map(titled).collect();
-        new[12].title = "Topic aaa".into();
-        assert!(!validate(&Input { old, new }));
+        let mut replaced = old.clone();
+        replaced[20] = titled(200);
+        assert!(!validate(&Input { old, new: replaced }));
     }
 
     #[test]
