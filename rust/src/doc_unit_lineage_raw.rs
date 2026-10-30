@@ -26,7 +26,20 @@ pub struct Input {
     pub new: Vec<RawUnit>,
 }
 fn dense_budget(v: &Input) -> bool {
-    v.old.len() <= 48 && v.new.len() <= 48 && v.old.len().saturating_mul(v.new.len()) <= 1024
+    let n = v.old.len();
+    let m = v.new.len();
+    if n <= 48 && m <= 48 && n.saturating_mul(m) <= 1024 {
+        return true;
+    }
+    // The full Rust feature matrix also handles two-sided legal changes.
+    // Bound the new dense path separately to avoid quadratic long-body work.
+    n <= 64
+        && m <= 64
+        && n.saturating_mul(m) <= 4096
+        && v.old
+            .iter()
+            .chain(&v.new)
+            .all(|u| u.title.encode_utf16().count() <= 128 && u.body.encode_utf16().count() <= 128)
 }
 
 pub fn validate(v: &Input) -> bool {
@@ -537,6 +550,37 @@ mod tests {
         let mut replaced = old.clone();
         replaced[20] = titled(200);
         assert!(!validate(&Input { old, new: replaced }));
+    }
+
+    #[test]
+    fn dense_large_legal_unit_matching_handles_two_sided_replacements() {
+        let old: Vec<_> = (0..60).map(titled).collect();
+        let mut new = old.clone();
+        new[12] = titled(160);
+        new[41] = titled(161);
+        new[25].body.push_str(" Revised obligations apply.");
+        let request = Input { old, new };
+        assert!(dense_budget(&request));
+        assert!(validate(&request));
+        let matched = match_raw(&request);
+        assert!(matched.matches.len() >= 58);
+        assert!(
+            matched
+                .matches
+                .iter()
+                .any(|m| { m.base == 25 && m.other == 25 && m.mode == "same" })
+        );
+    }
+
+    #[test]
+    fn dense_large_legal_unit_matching_rejects_oversize_two_sided_changes() {
+        let old: Vec<_> = (0..65).map(titled).collect();
+        let mut new = old.clone();
+        new[12] = titled(160);
+        new[41] = titled(161);
+        let request = Input { old, new };
+        assert!(!dense_budget(&request));
+        assert!(!validate(&request));
     }
 
     #[test]

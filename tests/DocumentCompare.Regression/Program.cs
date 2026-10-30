@@ -4482,9 +4482,60 @@ if (NativeCodeVersionComparer.IsAvailable)
             " renumber="+renumber);
         largeCount++;
     }
-    Check(Counter(accepts)-largeBefore==largeCount &&
+    // Two-sided title replacement, simultaneous insert/delete and edited
+    // bodies require the full Rust lineage DP rather than sparse title anchors.
+    // This 60/64-unit range previously rejected Rust raw matching.
+    var denseOldOrder=Enumerable.Range(0,60).ToArray();
+    var denseLegalOld=LargeArticles(denseOldOrder,false);
+    var denseScenarios=new[]{
+        (Name:"two replacements",Order:denseOldOrder.Select(i=>
+            i==12?160:i==41?161:i).ToArray(),Edited:25),
+        (Name:"insert and delete",Order:denseOldOrder.Where(i=>i!=7)
+            .Concat(new[]{160,161}).ToArray(),Edited:31),
+        (Name:"reorder and replacement",Order:denseOldOrder.Reverse()
+            .Select(i=>i==22?160:i).ToArray(),Edited:36),
+        (Name:"two-sided substitutions",Order:denseOldOrder.Where(i=>
+            i!=12&&i!=43).Concat(new[]{161,162}).ToArray(),Edited:15)
+    };
+    var denseBefore=Counter(accepts);
+    var denseRejectBefore=Counter(rejects);
+    var denseCount=0;
+    foreach(var scenario in denseScenarios)
+    foreach(var renumber in new[]{false,true})
+    {
+        var revised=LargeArticles(scenario.Order,renumber,scenario.Edited);
+        var canonical=Invoke(original,denseLegalOld,revised);
+        var rustDense=Invoke(active,denseLegalOld,revised);
+        Check(canonical.Length==rustDense.Length &&
+            canonical.Zip(rustDense).All(pair=>
+                pair.First.Base==pair.Second.Base &&
+                pair.First.Other==pair.Second.Other &&
+                pair.First.Mode==pair.Second.Mode &&
+                Math.Abs(pair.First.Score-pair.Second.Score)<1e-12),
+            "dense legal C#/Rust lineage mismatch: "+scenario.Name+
+            " renumber="+renumber);
+        denseCount++;
+    }
+    var dense64=Enumerable.Range(0,64).ToArray();
+    var dense64Old=LargeArticles(dense64,false);
+    var dense64Changed=dense64.Select(i=>i==18?160:i==51?161:i).ToArray();
+    var dense64Baseline=Invoke(original,dense64Old,LargeArticles(dense64Changed,true,26));
+    var dense64Rust=Invoke(active,dense64Old,LargeArticles(dense64Changed,true,26));
+    Check(dense64Baseline.Length==dense64Rust.Length &&
+        dense64Baseline.Zip(dense64Rust).All(pair=>
+            pair.First.Base==pair.Second.Base &&
+            pair.First.Other==pair.Second.Other &&
+            pair.First.Mode==pair.Second.Mode &&
+            Math.Abs(pair.First.Score-pair.Second.Score)<1e-12),
+        "64-article Rust lineage must match C# including two-sided replacement");
+    denseCount++;
+    Check(Counter(accepts)-denseBefore==denseCount &&
+          Counter(rejects)==denseRejectBefore,
+        "dense 60-64 article comparisons must execute Rust without C# fallback");
+    Console.WriteLine($"PASS RUST DENSE TWO-SIDED LEGAL LINEAGE CSHARP PARITY {denseCount}/{denseCount}");
+    Check(Counter(accepts)-largeBefore==largeCount+denseCount &&
           Counter(rejects)==largeRejectedBefore,
-        "96-article reordered legal documents must actually run through Rust, not C#");
+        "large sparse and dense legal comparisons must execute Rust without C# fallback");
     Console.WriteLine($"PASS RUST LARGE LEGAL ARTICLE EDIT/INSERT/DELETE CSHARP PARITY {largeCount}/{largeCount}");
     Console.WriteLine($"PASS RUST WHOLE ARTICLE LINEAGE CSHARP PARITY {count}/{count}");
 }
