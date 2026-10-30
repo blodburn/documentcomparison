@@ -4533,9 +4533,9 @@ if (NativeCodeVersionComparer.IsAvailable)
           Counter(rejects)==denseRejectBefore,
         "dense 60-64 article comparisons must execute Rust without C# fallback");
     Console.WriteLine($"PASS RUST DENSE TWO-SIDED LEGAL LINEAGE CSHARP PARITY {denseCount}/{denseCount}");
-    Check(Counter(accepts)-largeBefore==largeCount &&
+    Check(Counter(accepts)-largeBefore==largeCount+denseCount &&
           Counter(rejects)==largeRejectedBefore,
-        "96-article reordered legal documents must actually run through Rust, not C#");
+        "large sparse and dense legal comparisons must execute Rust without C# fallback");
     Console.WriteLine($"PASS RUST LARGE LEGAL ARTICLE EDIT/INSERT/DELETE CSHARP PARITY {largeCount}/{largeCount}");
     Console.WriteLine($"PASS RUST WHOLE ARTICLE LINEAGE CSHARP PARITY {count}/{count}");
 }
