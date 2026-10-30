@@ -553,6 +553,34 @@ mod tests {
     }
 
     #[test]
+    fn dense_large_legal_unit_matching_handles_two_sided_replacements() {
+        let old: Vec<_> = (0..60).map(titled).collect();
+        let mut new = old.clone();
+        new[12] = titled(160);
+        new[41] = titled(161);
+        new[25].body.push_str(" Revised obligations apply.");
+        let request = Input { old, new };
+        assert!(dense_budget(&request));
+        assert!(validate(&request));
+        let matched = match_raw(&request);
+        assert!(matched.matches.len() >= 58);
+        assert!(matched.matches.iter().any(|m| {
+            m.base == 25 && m.other == 25 && m.mode == "same"
+        }));
+    }
+
+    #[test]
+    fn dense_large_legal_unit_matching_rejects_oversize_two_sided_changes() {
+        let old: Vec<_> = (0..65).map(titled).collect();
+        let mut new = old.clone();
+        new[12] = titled(160);
+        new[41] = titled(161);
+        let request = Input { old, new };
+        assert!(!dense_budget(&request));
+        assert!(!validate(&request));
+    }
+
+    #[test]
     fn direct_raw_lineage_follows_moved_article() {
         let v = Input {
             old: vec![
