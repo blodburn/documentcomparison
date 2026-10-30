@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
-const MAX_UNITS: usize = 48;
+const MAX_UNITS: usize = 64;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Unit {
