@@ -472,17 +472,66 @@ mod tests {
     }
 
     #[test]
-    fn large_article_non_exact_or_ambiguous_titles_reject_sparse_path() {
+    fn large_article_changed_bodies_preserve_title_anchor() {
         let old: Vec<_> = (0..96).map(titled).collect();
-        let mut new: Vec<_> = (0..96).map(titled).collect();
+        let mut new = old.clone();
         new[55].body.push_str(" revised");
+        new[26].body = "개인정보 동의 없이".into();
+        let input = Input { old, new };
+        assert!(validate(&input));
+        let result = match_raw(&input);
+        assert_eq!(result.matches.len(), 96);
+        assert!(result
+            .matches
+            .iter()
+            .enumerate()
+            .all(|(i, pair)| pair.base == i
+                && pair.other == i
+                && pair.score == 1.0
+                && pair.mode == "same"));
+    }
+
+    #[test]
+    fn large_article_insertions_and_deletions_use_native_sparse_lineage() {
+        let old: Vec<_> = (0..96).map(titled).collect();
+        let mut inserted = old.clone();
+        inserted.insert(48, titled(150));
+        inserted[54].body.push_str(" revised");
+        let input = Input {
+            old: old.clone(),
+            new: inserted,
+        };
+        assert!(validate(&input));
+        let result = match_raw(&input);
+        assert_eq!(result.matches.len(), 96);
+        assert!(result.matches.iter().enumerate().all(|(i, pair)| {
+            pair.base == i && pair.other == i + usize::from(i >= 48)
+        }));
+
+        let mut deleted = old.clone();
+        deleted.remove(48);
+        let input = Input { old, new: deleted };
+        assert!(validate(&input));
+        let result = match_raw(&input);
+        assert_eq!(result.matches.len(), 95);
+        assert!(result.matches.iter().all(|pair| {
+            pair.base != 48
+                && pair.other == pair.base - usize::from(pair.base > 48)
+        }));
+    }
+
+    #[test]
+    fn large_article_two_sided_replacements_or_ambiguous_titles_reject_sparse_path() {
+        let old: Vec<_> = (0..96).map(titled).collect();
+        let mut changed = old.clone();
+        changed[12].title = "Topic aaa".into();
         assert!(!validate(&Input {
             old: old.clone(),
-            new
+            new: changed,
         }));
-        let mut new: Vec<_> = (0..96).map(titled).collect();
-        new[12].title = "Topic aaa".into();
-        assert!(!validate(&Input { old, new }));
+        let mut replaced = old.clone();
+        replaced[20] = titled(200);
+        assert!(!validate(&Input { old, new: replaced }));
     }
 
     #[test]
