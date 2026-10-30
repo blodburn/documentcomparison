@@ -36,10 +36,10 @@ fn dense_budget(v: &Input) -> bool {
     n <= 64
         && m <= 64
         && n.saturating_mul(m) <= 4096
-        && v.old.iter().chain(&v.new).all(|u| {
-            u.title.encode_utf16().count() <= 128
-                && u.body.encode_utf16().count() <= 128
-        })
+        && v.old
+            .iter()
+            .chain(&v.new)
+            .all(|u| u.title.encode_utf16().count() <= 128 && u.body.encode_utf16().count() <= 128)
 }
 
 pub fn validate(v: &Input) -> bool {
@@ -564,9 +564,12 @@ mod tests {
         assert!(validate(&request));
         let matched = match_raw(&request);
         assert!(matched.matches.len() >= 58);
-        assert!(matched.matches.iter().any(|m| {
-            m.base == 25 && m.other == 25 && m.mode == "same"
-        }));
+        assert!(
+            matched
+                .matches
+                .iter()
+                .any(|m| { m.base == 25 && m.other == 25 && m.mode == "same" })
+        );
     }
 
     #[test]
