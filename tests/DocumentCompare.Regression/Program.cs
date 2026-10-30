@@ -4416,7 +4416,7 @@ if (NativeCodeVersionComparer.IsAvailable)
             (char)('a'+(i/(26*26))%26),
             (char)('a'+(i/26)%26),
             (char)('a'+i%26)});
-    object LargeArticles(IReadOnlyList<int> order,bool renumber)
+    object LargeArticles(IReadOnlyList<int> order,bool renumber,int editedIndex=-1)
     {
         var list=(System.Collections.IList)Activator.CreateInstance(rawListType)!;
         for(var j=0;j<order.Count;j++)
@@ -4425,6 +4425,7 @@ if (NativeCodeVersionComparer.IsAvailable)
             var number=(renumber?j+1:i+1).ToString();
             var title=UniqueTopic(i);
             var body=$"Clause {i:D3} applies to 개인정보 handling.";
+            if(i==editedIndex) body+=" Revised consent handling requirement.";
             list.Add(rawFactory.Invoke(null,new object?[]{
                 j,number,title,$"제{number}조({title})",body,"","article",null})!);
         }
@@ -4453,10 +4454,38 @@ if (NativeCodeVersionComparer.IsAvailable)
             "96-article reordering/renumbering must preserve complete C# lineage parity");
         largeCount++;
     }
+    // Verify changed-body strong anchors, insertions, deletions and mixed
+    // reorders on >48 legal articles. Compare all matching indices, modes
+    // and floating scores against the preserved managed implementation.
+    var sparseLegalScenarios=new[]{
+        (Name:"changed bodies",Order:largeOrder,Edited:35),
+        (Name:"inserted article",Order:largeOrder.Take(47).Concat(new[]{150})
+            .Concat(largeOrder.Skip(47)).ToArray(),Edited:55),
+        (Name:"deleted article",Order:largeOrder.Where(i=>i!=45).ToArray(),Edited:55),
+        (Name:"reorder with insert",Order:largeOrder.Reverse().Take(51)
+            .Concat(new[]{180}).Concat(largeOrder.Reverse().Skip(51)).ToArray(),Edited:40)
+    };
+    foreach(var scenario in sparseLegalScenarios)
+    foreach(var renumber in new[]{false,true})
+    {
+        var revised=LargeArticles(scenario.Order,renumber,scenario.Edited);
+        var canonical=Invoke(original,sparseLegalOld,revised);
+        var native=Invoke(active,sparseLegalOld,revised);
+        Check(canonical.Length==Math.Min(largeOrder.Length,scenario.Order.Length) &&
+            native.Length==canonical.Length &&
+            canonical.Zip(native).All(pair=>
+                pair.First.Base==pair.Second.Base &&
+                pair.First.Other==pair.Second.Other &&
+                pair.First.Mode==pair.Second.Mode &&
+                Math.Abs(pair.First.Score-pair.Second.Score)<1e-12),
+            "large sparse legal edits must match C#: "+scenario.Name+
+            " renumber="+renumber);
+        largeCount++;
+    }
     Check(Counter(accepts)-largeBefore==largeCount &&
           Counter(rejects)==largeRejectedBefore,
         "96-article reordered legal documents must actually run through Rust, not C#");
-    Console.WriteLine($"PASS RUST LARGE LEGAL ARTICLE LINEAGE CSHARP PARITY {largeCount}/{largeCount}");
+    Console.WriteLine($"PASS RUST LARGE LEGAL ARTICLE EDIT/INSERT/DELETE CSHARP PARITY {largeCount}/{largeCount}");
     Console.WriteLine($"PASS RUST WHOLE ARTICLE LINEAGE CSHARP PARITY {count}/{count}");
 }
 
