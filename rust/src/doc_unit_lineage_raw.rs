@@ -481,14 +481,16 @@ mod tests {
         assert!(validate(&input));
         let result = match_raw(&input);
         assert_eq!(result.matches.len(), 96);
-        assert!(result
-            .matches
-            .iter()
-            .enumerate()
-            .all(|(i, pair)| pair.base == i
-                && pair.other == i
-                && pair.score == 1.0
-                && pair.mode == "same"));
+        assert!(
+            result
+                .matches
+                .iter()
+                .enumerate()
+                .all(|(i, pair)| pair.base == i
+                    && pair.other == i
+                    && pair.score == 1.0
+                    && pair.mode == "same")
+        );
     }
 
     #[test]
@@ -504,9 +506,13 @@ mod tests {
         assert!(validate(&input));
         let result = match_raw(&input);
         assert_eq!(result.matches.len(), 96);
-        assert!(result.matches.iter().enumerate().all(|(i, pair)| {
-            pair.base == i && pair.other == i + usize::from(i >= 48)
-        }));
+        assert!(
+            result
+                .matches
+                .iter()
+                .enumerate()
+                .all(|(i, pair)| { pair.base == i && pair.other == i + usize::from(i >= 48) })
+        );
 
         let mut deleted = old.clone();
         deleted.remove(48);
@@ -515,8 +521,7 @@ mod tests {
         let result = match_raw(&input);
         assert_eq!(result.matches.len(), 95);
         assert!(result.matches.iter().all(|pair| {
-            pair.base != 48
-                && pair.other == pair.base - usize::from(pair.base > 48)
+            pair.base != 48 && pair.other == pair.base - usize::from(pair.base > 48)
         }));
     }
 
