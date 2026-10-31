@@ -567,6 +567,36 @@ mod tests {
     }
 
     #[test]
+    fn large_article_disjoint_bidirectional_replacement_uses_sparse_rust() {
+        let old: Vec<_> = (0..96).map(titled).collect();
+        let mut new = old.clone();
+        new[33] = u(
+            "34",
+            "Obsidian xylophone",
+            "Pulsar nebula calcium heliosphere",
+        );
+        new[22].body.push_str(" amended");
+        let input = Input { old, new };
+        assert!(validate(&input));
+        let matches = match_raw(&input).matches;
+        assert_eq!(matches.len(), 95);
+        assert!(matches.iter().all(|m| {
+            m.base != 33
+                && m.other == m.base
+                && m.score == 1.0
+                && m.mode == "same"
+        }));
+    }
+
+    #[test]
+    fn large_article_similar_bidirectional_replacement_stays_on_fallback() {
+        let old: Vec<_> = (0..96).map(titled).collect();
+        let mut new = old.clone();
+        new[33] = u("34", "Topic aaf", "Clause 33 applies");
+        assert!(!validate(&Input { old, new }));
+    }
+
+    #[test]
     fn large_article_two_sided_replacements_or_ambiguous_titles_reject_sparse_path() {
         let old: Vec<_> = (0..96).map(titled).collect();
         let mut changed = old.clone();
