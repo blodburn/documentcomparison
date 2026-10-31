@@ -1930,24 +1930,16 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     internal static long ReviewPiecesRustMismatches =>
         System.Threading.Interlocked.Read(ref _reviewPiecesRustMismatches);
 
+    // Rust is the single production authority for review-piece splitting.
+    // The independent C# algorithm is retained in regression tests only.
     private static List<EventPiece> EventParts(string fullText,int start,int end)
     {
         try
         {
             var rust=NativeCodeVersionComparer.ReviewDocumentTextPieces(
-                "events",fullText,string.Empty,start,end);
-            if(rust is null) return EventPartsCSharp(fullText,start,end);
+                "events",fullText,string.Empty,start,end)
+                ?? throw new InvalidDataException("Rust review-piece engine unavailable");
             var answer=rust.Pieces.Select(x=>new EventPiece(x.Start,x.End,x.Text)).ToList();
-            if(Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_REQUIRE_NATIVE")=="1" ||
-                Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_VERIFY_DOCUMENT_MATCHES")=="1")
-            {
-                var reference=EventPartsCSharp(fullText,start,end);
-                if(!answer.SequenceEqual(reference))
-                {
-                    System.Threading.Interlocked.Increment(ref _reviewPiecesRustMismatches);
-                    return reference;
-                }
-            }
             System.Threading.Interlocked.Increment(ref _reviewPiecesRustMatches);
             return answer;
         }
@@ -1955,29 +1947,8 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             System.Text.Json.JsonException or ArgumentException or OverflowException)
         {
             System.Threading.Interlocked.Increment(ref _reviewPiecesRustMismatches);
-            return EventPartsCSharp(fullText,start,end);
+            throw new InvalidDataException("Rust review-piece engine failed",ex);
         }
-    }
-
-    private static List<EventPiece> EventPartsCSharp(string fullText, int start, int end)
-    {
-        // Python V3.4 _v34_event_parts: keep a logical phrase together, splitting only a
-        // detached leading sentence delimiter separated from lexical text by whitespace.
-        start = Math.Clamp(start, 0, fullText.Length); end = Math.Clamp(end, start, fullText.Length);
-        while (start < end && char.IsWhiteSpace(fullText[start])) start++;
-        while (end > start && char.IsWhiteSpace(fullText[end - 1])) end--;
-        if (end <= start) return new();
-        var raw = fullText[start..end];
-        if (!raw.Any(char.IsLetterOrDigit)) return new() { new EventPiece(start, end, raw) };
-        var m = Regex.Match(raw, @"^([.!?;:]+)(\s+)(.+)$", RegexOptions.Singleline);
-        if (!m.Success) return new() { new EventPiece(start, end, raw) };
-        var punctEnd = start + m.Groups[1].Length;
-        var lexicalStart = punctEnd + m.Groups[2].Length;
-        return new()
-        {
-            new EventPiece(start, punctEnd, fullText[start..punctEnd]),
-            new EventPiece(lexicalStart, end, fullText[lexicalStart..end])
-        };
     }
 
     // Shadow-parity counters: keep C# as the authority until Rust spans match.
@@ -2492,25 +2463,17 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     internal static long HangulTrimRustMismatches =>
         System.Threading.Interlocked.Read(ref _hangulTrimRustMismatches);
 
+    // Rust is the single production authority for shared Hangul clipping.
+    // Preserve an independent C# oracle in the regression tests, not runtime.
     private static (string Old, string New, int OldDelta, int NewDelta)
         TrimSharedHangulPrefix(string oldText,string newText)
     {
         try
         {
             var native=NativeCodeVersionComparer.ReviewDocumentTextPieces(
-                "hangul",oldText,newText,0,0);
-            if(native is null) return TrimSharedHangulPrefixCSharp(oldText,newText);
+                "hangul",oldText,newText,0,0)
+                ?? throw new InvalidDataException("Rust Hangul prefix engine unavailable");
             var result=(native.Old,native.New,native.OldDelta,native.NewDelta);
-            if(Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_REQUIRE_NATIVE")=="1" ||
-                Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_VERIFY_DOCUMENT_MATCHES")=="1")
-            {
-                var reference=TrimSharedHangulPrefixCSharp(oldText,newText);
-                if(result!=reference)
-                {
-                    System.Threading.Interlocked.Increment(ref _hangulTrimRustMismatches);
-                    return reference;
-                }
-            }
             System.Threading.Interlocked.Increment(ref _hangulTrimRustMatches);
             return result;
         }
@@ -2518,23 +2481,8 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             System.Text.Json.JsonException or ArgumentException or OverflowException)
         {
             System.Threading.Interlocked.Increment(ref _hangulTrimRustMismatches);
-            return TrimSharedHangulPrefixCSharp(oldText,newText);
+            throw new InvalidDataException("Rust Hangul prefix engine failed",ex);
         }
-    }
-
-    private static (string Old, string New, int OldDelta, int NewDelta)
-        TrimSharedHangulPrefixCSharp(string oldText, string newText)
-    {
-        var n = Math.Min(oldText.Length, newText.Length); var i = 0;
-        while (i < n && oldText[i] == newText[i]) i++;
-        if (i < 2) return (oldText, newText, 0, 0);
-        var prefix = oldText[..i];
-        if (prefix.Any(char.IsWhiteSpace) || prefix.Count(ch => ch is >= '가' and <= '힣') < 2)
-            return (oldText, newText, 0, 0);
-        var o = oldText[i..]; var nn = newText[i..];
-        if (string.IsNullOrWhiteSpace(o) || string.IsNullOrWhiteSpace(nn)) return (oldText, newText, 0, 0);
-        var ol = o.Length - o.TrimStart().Length; var nl = nn.Length - nn.TrimStart().Length;
-        return (o.TrimStart(), nn.TrimStart(), i + ol, i + nl);
     }
 
     private sealed record WordSpan(int Start, int End, string Text);

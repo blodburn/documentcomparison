@@ -5169,15 +5169,51 @@ if (NativeCodeVersionComparer.IsAvailable)
 }
 
 // Rust change-span splitting and Hangul shared-prefix clipping.
-// Compare exact pieces and UTF-16 offsets against the original C# code.
+// Independent canonical implementations live in tests, not production C#.
 if (NativeCodeVersionComparer.IsAvailable)
 {
+    static (int Start,int End,string Text)[] ManagedEventPieces(string fullText,int start,int end)
+    {
+        start=Math.Clamp(start,0,fullText.Length);
+        end=Math.Clamp(end,start,fullText.Length);
+        while(start<end&&char.IsWhiteSpace(fullText[start]))start++;
+        while(end>start&&char.IsWhiteSpace(fullText[end-1]))end--;
+        if(end<=start)return Array.Empty<(int,int,string)>();
+        var raw=fullText[start..end];
+        if(!raw.Any(char.IsLetterOrDigit))
+            return new[]{(start,end,raw)};
+        var m=System.Text.RegularExpressions.Regex.Match(raw,
+            @"^([.!?;:]+)(\s+)(.+)$",
+            System.Text.RegularExpressions.RegexOptions.Singleline);
+        if(!m.Success)return new[]{(start,end,raw)};
+        var punctEnd=start+m.Groups[1].Length;
+        var lexicalStart=punctEnd+m.Groups[2].Length;
+        return new[]{
+            (start,punctEnd,fullText[start..punctEnd]),
+            (lexicalStart,end,fullText[lexicalStart..end])
+        };
+    }
+    static (string Old,string New,int OldDelta,int NewDelta)
+        ManagedSharedHangulPrefix(string oldText,string newText)
+    {
+        var n=Math.Min(oldText.Length,newText.Length);
+        var i=0;
+        while(i<n&&oldText[i]==newText[i])i++;
+        if(i<2)return(oldText,newText,0,0);
+        var prefix=oldText[..i];
+        if(prefix.Any(char.IsWhiteSpace)||
+            prefix.Count(ch=>ch is >= '가' and <= '힣')<2)
+            return(oldText,newText,0,0);
+        var o=oldText[i..];
+        var nn=newText[i..];
+        if(string.IsNullOrWhiteSpace(o)||string.IsNullOrWhiteSpace(nn))
+            return(oldText,newText,0,0);
+        var ol=o.Length-o.TrimStart().Length;
+        var nl=nn.Length-nn.TrimStart().Length;
+        return(o.TrimStart(),nn.TrimStart(),i+ol,i+nl);
+    }
     var owner=typeof(NativeComparisonEngine);
-    var csharpPieces=owner.GetMethod("EventPartsCSharp",
-        BindingFlags.Static|BindingFlags.NonPublic)!;
     var rustPieces=owner.GetMethod("EventParts",
-        BindingFlags.Static|BindingFlags.NonPublic)!;
-    var csharpHangul=owner.GetMethod("TrimSharedHangulPrefixCSharp",
         BindingFlags.Static|BindingFlags.NonPublic)!;
     var rustHangul=owner.GetMethod("TrimSharedHangulPrefix",
         BindingFlags.Static|BindingFlags.NonPublic)!;
@@ -5204,11 +5240,7 @@ if (NativeCodeVersionComparer.IsAvailable)
             .Select(_=>texts[rng.Next(texts.Length)]));
         var lo=rng.Next(0,full.Length+4);
         var hi=rng.Next(lo,full.Length+5);
-        var canonical=((System.Collections.IEnumerable)csharpPieces.Invoke(null,
-            new object[]{full,lo,hi})!).Cast<object>()
-            .Select(o=>(Start:(int)o.GetType().GetProperty("Start")!.GetValue(o)!,
-                End:(int)o.GetType().GetProperty("End")!.GetValue(o)!,
-                Text:(string)o.GetType().GetProperty("Text")!.GetValue(o)!)).ToArray();
+        var canonical=ManagedEventPieces(full,lo,hi);
         var native=((System.Collections.IEnumerable)rustPieces.Invoke(null,
             new object[]{full,lo,hi})!).Cast<object>()
             .Select(o=>(Start:(int)o.GetType().GetProperty("Start")!.GetValue(o)!,
@@ -5226,8 +5258,7 @@ if (NativeCodeVersionComparer.IsAvailable)
         var old=prefix+texts[rng.Next(texts.Length)];
         var revised=(i%3==0?prefix:bases[rng.Next(bases.Length)])+
             texts[rng.Next(texts.Length)];
-        var canonical=(ValueTuple<string,string,int,int>)csharpHangul.Invoke(null,
-            new object[]{old,revised})!;
+        var canonical=ManagedSharedHangulPrefix(old,revised);
         var native=(ValueTuple<string,string,int,int>)rustHangul.Invoke(null,
             new object[]{old,revised})!;
         Check(canonical.Equals(native),"Rust Hangul shared-prefix offset differs: "+i);
