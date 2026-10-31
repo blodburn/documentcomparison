@@ -4423,8 +4423,9 @@ if (NativeCodeVersionComparer.IsAvailable)
         {
             var i=order[j];
             var number=(renumber?j+1:i+1).ToString();
-            var title=UniqueTopic(i);
-            var body=$"Clause {i:D3} applies to 개인정보 handling.";
+            var title=i>=190 ? "Obsidian "+UniqueTopic(i).Substring(6) : UniqueTopic(i);
+            var body=i>=190 ? $"Xylophone quasar pulsar {i:D3} astrophysics."
+                            : $"Clause {i:D3} applies to 개인정보 handling.";
             if(i==editedIndex) body+=" Revised consent handling requirement.";
             list.Add(rawFactory.Invoke(null,new object?[]{
                 j,number,title,$"제{number}조({title})",body,"","article",null})!);
@@ -4482,6 +4483,31 @@ if (NativeCodeVersionComparer.IsAvailable)
             " renumber="+renumber);
         largeCount++;
     }
+    // Large disjoint two-sided edits are now fully handled by the Rust
+    // sparse correspondence path. C# remains the oracle for all scores/modes.
+    var bidirectionalOrders=new[]{
+        largeOrder.Select(i=>i==33?190:i).ToArray(),
+        largeOrder.Where(i=>i!=33).Concat(new[]{190}).ToArray(),
+        largeOrder.Reverse().Select(i=>i==33?190:i).ToArray()
+    };
+    var bidirectionalCount=0;
+    foreach(var order in bidirectionalOrders)
+    foreach(var renumber in new[]{false,true})
+    {
+        var revised=LargeArticles(order,renumber,22);
+        var baseline=Invoke(original,sparseLegalOld,revised);
+        var native=Invoke(active,sparseLegalOld,revised);
+        Check(baseline.Length==95 && native.Length==baseline.Length &&
+            baseline.Zip(native).All(pair=>
+                pair.First.Base==pair.Second.Base &&
+                pair.First.Other==pair.Second.Other &&
+                pair.First.Mode==pair.Second.Mode &&
+                Math.Abs(pair.First.Score-pair.Second.Score)<1e-12),
+            "96-unit disjoint two-sided changes must exactly match managed C#: renumber="+renumber);
+        largeCount++;
+        bidirectionalCount++;
+    }
+    Console.WriteLine($"PASS RUST LARGE BIDIRECTIONAL ARTICLE CSHARP PARITY {bidirectionalCount}/{bidirectionalCount}");
     // Two-sided title replacement, simultaneous insert/delete and edited
     // bodies require the full Rust lineage DP rather than sparse title anchors.
     // This 60/64-unit range previously rejected Rust raw matching.
