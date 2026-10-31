@@ -331,10 +331,34 @@ fn large_exact_reorder(v: &Input) -> Option<doc_unit_lineage::Result> {
             matched.push((i, j));
         }
     }
-    // At least one complete side must have a title counterpart. If both
-    // sides have unmatched articles, fuzzy DP/residual choices are required.
+    // On both-sided edits, the exact-title anchors remain authoritative only
+    // when the small unmatched residue cannot be paired by the C# DP or move
+    // pass. In particular, a shared number is not evidence on its own: a
+    // low-similarity pair costs more than the two .48 gaps.
     if matched.len() != n.min(m) {
-        return None;
+        let matched_old = matched.iter().map(|&(i, _)| i).collect::<HashSet<_>>();
+        let matched_new = matched.iter().map(|&(_, j)| j).collect::<HashSet<_>>();
+        let deleted = (0..n)
+            .filter(|i| !matched_old.contains(i))
+            .collect::<Vec<_>>();
+        let inserted = (0..m)
+            .filter(|j| !matched_new.contains(j))
+            .collect::<Vec<_>>();
+        if deleted.is_empty() || inserted.is_empty() || deleted.len() > 8 || inserted.len() > 8 {
+            return None;
+        }
+        for &i in &deleted {
+            for &j in &inserted {
+                let title = title_sim(&v.old[i], &v.new[j]);
+                let body = body_sim(&v.old[i], &v.new[j]);
+                if title >= 0.35
+                    || body >= 0.48
+                    || lineage_sim(&v.old[i], &v.new[j], title, body) >= 0.43
+                {
+                    return None;
+                }
+            }
+        }
     }
     matched.sort_unstable_by_key(|pair| pair.0);
     let mut moved = vec![false; n];
@@ -536,6 +560,35 @@ mod tests {
         assert!(result.matches.iter().all(|pair| {
             pair.base != 48 && pair.other == pair.base - usize::from(pair.base > 48)
         }));
+    }
+
+    #[test]
+    fn large_article_disjoint_bidirectional_replacement_uses_sparse_rust() {
+        let old: Vec<_> = (0..96).map(titled).collect();
+        let mut new = old.clone();
+        new[33] = u(
+            "34",
+            "Obsidian xylophone",
+            "Pulsar nebula calcium heliosphere",
+        );
+        new[22].body.push_str(" amended");
+        let input = Input { old, new };
+        assert!(validate(&input));
+        let matches = match_raw(&input).matches;
+        assert_eq!(matches.len(), 95);
+        assert!(
+            matches.iter().all(|m| {
+                m.base != 33 && m.other == m.base && m.score == 1.0 && m.mode == "same"
+            })
+        );
+    }
+
+    #[test]
+    fn large_article_similar_bidirectional_replacement_stays_on_fallback() {
+        let old: Vec<_> = (0..96).map(titled).collect();
+        let mut new = old.clone();
+        new[33] = u("34", "Topic aaf", "Clause 33 applies");
+        assert!(!validate(&Input { old, new }));
     }
 
     #[test]
