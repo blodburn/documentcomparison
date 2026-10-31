@@ -344,11 +344,7 @@ fn large_exact_reorder(v: &Input) -> Option<doc_unit_lineage::Result> {
         let inserted = (0..m)
             .filter(|j| !matched_new.contains(j))
             .collect::<Vec<_>>();
-        if deleted.is_empty()
-            || inserted.is_empty()
-            || deleted.len() > 8
-            || inserted.len() > 8
-        {
+        if deleted.is_empty() || inserted.is_empty() || deleted.len() > 8 || inserted.len() > 8 {
             return None;
         }
         for &i in &deleted {
@@ -580,12 +576,11 @@ mod tests {
         assert!(validate(&input));
         let matches = match_raw(&input).matches;
         assert_eq!(matches.len(), 95);
-        assert!(matches.iter().all(|m| {
-            m.base != 33
-                && m.other == m.base
-                && m.score == 1.0
-                && m.mode == "same"
-        }));
+        assert!(
+            matches.iter().all(|m| {
+                m.base != 33 && m.other == m.base && m.score == 1.0 && m.mode == "same"
+            })
+        );
     }
 
     #[test]
