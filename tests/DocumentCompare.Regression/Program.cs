@@ -4423,7 +4423,7 @@ if (NativeCodeVersionComparer.IsAvailable)
         {
             var i=order[j];
             var number=(renumber?j+1:i+1).ToString();
-            var title=i>=190 ? "Obsidian "+UniqueTopic(i).Substring(6) : UniqueTopic(i);
+            var title=i>=190 ? "Obsidian Xylophone" : UniqueTopic(i);
             var body=i>=190 ? $"Xylophone quasar pulsar {i:D3} astrophysics."
                             : $"Clause {i:D3} applies to 개인정보 handling.";
             if(i==editedIndex) body+=" Revised consent handling requirement.";
