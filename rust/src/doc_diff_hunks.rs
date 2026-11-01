@@ -33,9 +33,9 @@ pub struct Result {
 pub fn validate(v: &Input) -> bool {
     v.old_length <= 131072
         && v.new_length <= 131072
-        && v.old.len() <= 512
-        && v.new.len() <= 512
-        && v.old.len().saturating_mul(v.new.len()) <= 100_000
+        && v.old.len() <= 1024
+        && v.new.len() <= 1024
+        && v.old.len().saturating_mul(v.new.len()) <= 1_000_000
         && v.old
             .iter()
             .all(|x| x.start <= x.end && x.end <= v.old_length && x.key.len() <= 8192)
