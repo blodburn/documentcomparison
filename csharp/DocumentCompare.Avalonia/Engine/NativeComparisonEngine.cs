@@ -2394,12 +2394,12 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     internal static long DiffHunksRustMismatches =>
         System.Threading.Interlocked.Read(ref _diffHunksRustMismatches);
 
+    // Rust owns production hunk selection. Retain the managed reference
+    // algorithm exclusively in regression tests, not in the runtime.
     private static List<NativeCodeVersionComparer.DocumentDiffHunk>
         SelectReviewHunks(string before,string after,
             IReadOnlyList<TokenSpan> a,IReadOnlyList<TokenSpan> b)
     {
-        var original = new Func<List<NativeCodeVersionComparer.DocumentDiffHunk>>(()=>
-            SelectReviewHunksCSharp(a,b));
         try
         {
             var oldTokens=a.Select(t=>new NativeCodeVersionComparer.DocumentDiffToken(
@@ -2407,18 +2407,8 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             var newTokens=b.Select(t=>new NativeCodeVersionComparer.DocumentDiffToken(
                 t.Start,t.End,TokenKey(t.Text))).ToArray();
             var native=NativeCodeVersionComparer.SelectDocumentDiffHunks(
-                before.Length,after.Length,oldTokens,newTokens);
-            if(native is null)return original();
-            if(Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_REQUIRE_NATIVE")=="1" ||
-                Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_VERIFY_DOCUMENT_MATCHES")=="1")
-            {
-                var baseline=original();
-                if(!native.SequenceEqual(baseline))
-                {
-                    System.Threading.Interlocked.Increment(ref _diffHunksRustMismatches);
-                    return baseline;
-                }
-            }
+                before.Length,after.Length,oldTokens,newTokens)
+                ?? throw new InvalidDataException("Rust Diff Hunk engine unavailable or input unsupported");
             System.Threading.Interlocked.Increment(ref _diffHunksRustMatches);
             return native.ToList();
         }
@@ -2426,34 +2416,8 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             System.Text.Json.JsonException or ArgumentException or OverflowException)
         {
             System.Threading.Interlocked.Increment(ref _diffHunksRustMismatches);
-            return original();
+            throw new InvalidDataException("Rust Diff Hunk engine failed",ex);
         }
-    }
-
-    private static List<NativeCodeVersionComparer.DocumentDiffHunk>
-        SelectReviewHunksCSharp(IReadOnlyList<TokenSpan> a,IReadOnlyList<TokenSpan> b)
-    {
-        var matches=MatcherPairs(a.Select(x=>TokenKey(x.Text)).ToArray(),
-            b.Select(x=>TokenKey(x.Text)).ToArray());
-        var anchors=new List<(int A,int B)>{(-1,-1)};
-        anchors.AddRange(matches);
-        anchors.Add((a.Count,b.Count));
-        var hunks=new List<NativeCodeVersionComparer.DocumentDiffHunk>();
-        for(var k=0;k<anchors.Count-1;k++)
-        {
-            var left=anchors[k];var right=anchors[k+1];
-            var ai=left.A+1;var aj=right.A;
-            var bi=left.B+1;var bj=right.B;
-            if(ai>=aj && bi>=bj)continue;
-            var oldStart=ai<a.Count ? a[ai].Start :
-                (left.A>=0 ? a[left.A].End : 0);
-            var oldEnd=aj>ai ? a[aj-1].End : oldStart;
-            var newStart=bi<b.Count ? b[bi].Start :
-                (left.B>=0 ? b[left.B].End : 0);
-            var newEnd=bj>bi ? b[bj-1].End : newStart;
-            hunks.Add(new(oldStart,oldEnd,newStart,newEnd,k));
-        }
-        return hunks;
     }
 
     private static long _hangulTrimRustMatches;

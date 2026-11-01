@@ -33,9 +33,9 @@ pub struct Result {
 pub fn validate(v: &Input) -> bool {
     v.old_length <= 131072
         && v.new_length <= 131072
-        && v.old.len() <= 512
-        && v.new.len() <= 512
-        && v.old.len().saturating_mul(v.new.len()) <= 100_000
+        && v.old.len() <= 1024
+        && v.new.len() <= 1024
+        && v.old.len().saturating_mul(v.new.len()) <= 1_000_000
         && v.old
             .iter()
             .all(|x| x.start <= x.end && x.end <= v.old_length && x.key.len() <= 8192)
@@ -125,6 +125,32 @@ mod tests {
             }]
         );
     }
+    #[test]
+    fn supports_seven_hundred_token_review_without_managed_fallback() {
+        let old = (0..700)
+            .map(|i| t(i * 3, i * 3 + 1, &format!("unit{i}")))
+            .collect::<Vec<_>>();
+        let mut new = old.clone();
+        new[350].key = "revised".into();
+        let req = Input {
+            old_length: 2100,
+            new_length: 2100,
+            old,
+            new,
+        };
+        assert!(validate(&req));
+        assert_eq!(
+            select(&req).hunks,
+            vec![Hunk {
+                old_start: 1050,
+                old_end: 1051,
+                new_start: 1050,
+                new_end: 1051,
+                hunk_order: 350
+            }]
+        );
+    }
+
     #[test]
     fn insertion_when_other_empty() {
         let req = Input {
