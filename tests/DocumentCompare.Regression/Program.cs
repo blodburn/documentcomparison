@@ -5338,10 +5338,52 @@ if (NativeCodeVersionComparer.IsAvailable)
 {
     var core=typeof(NativeComparisonEngine);
     var lexer=core.GetMethod("LexTokens",BindingFlags.NonPublic|BindingFlags.Static)!;
-    var managed=core.GetMethod("SelectReviewHunksCSharp",
+    // Keep the original managed Hunk oracle in tests only. Use the
+    // independent managed MatcherBlocksCSharp to avoid mirroring Rust.
+    var managedBlocks=core.GetMethod("MatcherBlocksCSharp",
+        BindingFlags.NonPublic|BindingFlags.Static)!;
+    var managedTokenKey=core.GetMethod("TokenKey",
         BindingFlags.NonPublic|BindingFlags.Static)!;
     var native=core.GetMethod("SelectReviewHunks",
         BindingFlags.NonPublic|BindingFlags.Static)!;
+    List<NativeCodeVersionComparer.DocumentDiffHunk> ManagedHunks(
+        object oldTokens,object newTokens)
+    {
+        static (int Start,int End,string Text)[] Spans(object source)=>
+            ((System.Collections.IEnumerable)source).Cast<object>()
+                .Select(o=>(Start:(int)o.GetType().GetProperty("Start")!.GetValue(o)!,
+                    End:(int)o.GetType().GetProperty("End")!.GetValue(o)!,
+                    Text:(string)o.GetType().GetProperty("Text")!.GetValue(o)!)).ToArray();
+        var a=Spans(oldTokens);
+        var b=Spans(newTokens);
+        string Key(string value)=>(string)managedTokenKey.Invoke(
+            null,new object[]{value})!;
+        var blockPairs=((System.Collections.IEnumerable)managedBlocks.Invoke(
+            null,new object[]{a.Select(x=>Key(x.Text)).ToArray(),
+                              b.Select(x=>Key(x.Text)).ToArray()})!)
+            .Cast<(int A,int B,int Size)>().ToArray();
+        var anchors=new List<(int A,int B)>{(-1,-1)};
+        foreach(var block in blockPairs)
+            for(var k=0;k<block.Size;k++)
+                anchors.Add((block.A+k,block.B+k));
+        anchors.Add((a.Length,b.Length));
+        var result=new List<NativeCodeVersionComparer.DocumentDiffHunk>();
+        for(var k=0;k<anchors.Count-1;k++)
+        {
+            var left=anchors[k];var right=anchors[k+1];
+            var ai=left.A+1;var aj=right.A;
+            var bi=left.B+1;var bj=right.B;
+            if(ai>=aj && bi>=bj)continue;
+            var oldStart=ai<a.Length?a[ai].Start:
+                (left.A>=0?a[left.A].End:0);
+            var oldEnd=aj>ai?a[aj-1].End:oldStart;
+            var newStart=bi<b.Length?b[bi].Start:
+                (left.B>=0?b[left.B].End:0);
+            var newEnd=bj>bi?b[bj-1].End:newStart;
+            result.Add(new(oldStart,oldEnd,newStart,newEnd,k));
+        }
+        return result;
+    }
     var accepted=core.GetProperty("DiffHunksRustMatches",
         BindingFlags.NonPublic|BindingFlags.Static)!;
     var rejected=core.GetProperty("DiffHunksRustMismatches",
@@ -5360,8 +5402,7 @@ if (NativeCodeVersionComparer.IsAvailable)
         var newText=k%7==0?oldText:MakeTokens();
         var aTokens=lexer.Invoke(null,new object[]{oldText})!;
         var bTokens=lexer.Invoke(null,new object[]{newText})!;
-        var reference=((System.Collections.IEnumerable)managed.Invoke(null,
-            new[]{aTokens,bTokens})!).Cast<object>().ToArray();
+        var reference=ManagedHunks(aTokens,bTokens).Cast<object>().ToArray();
         var actual=((System.Collections.IEnumerable)native.Invoke(null,
             new[]{(object)oldText,(object)newText,aTokens,bTokens})!)
             .Cast<object>().ToArray();
