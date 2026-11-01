@@ -5411,6 +5411,21 @@ if (NativeCodeVersionComparer.IsAvailable)
             " old="+oldText+" new="+newText);
         cases++;
     }
+    // Input beyond the former 512-token gate must be accepted by Rust.
+    // Keep the independent managed C# oracle for UTF-16 spans and hunk order.
+    var wideOld=string.Join(" ",Enumerable.Range(0,700)
+        .Select(i=>$"Clause{i}"));
+    var wideNew=wideOld.Replace("Clause350","Revised350",
+        StringComparison.Ordinal);
+    var wideA=lexer.Invoke(null,new object[]{wideOld})!;
+    var wideB=lexer.Invoke(null,new object[]{wideNew})!;
+    var wideExpected=ManagedHunks(wideA,wideB).Cast<object>().ToArray();
+    var wideNative=((System.Collections.IEnumerable)native.Invoke(null,
+        new[]{(object)wideOld,(object)wideNew,wideA,wideB})!)
+        .Cast<object>().ToArray();
+    Check(wideExpected.Length==1&&wideExpected.SequenceEqual(wideNative),
+        "700-token Rust hunk parity must match independent managed baseline");
+    cases++;
     Check(((long)accepted.GetValue(null)!)-beforeAccepted==cases &&
         ((long)rejected.GetValue(null)!) == beforeRejected,
         "Rust review hunk selector did not accept every supported case");
