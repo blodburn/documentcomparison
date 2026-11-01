@@ -1668,8 +1668,8 @@ public static class NativeCodeVersionComparer
         var exports=Native.Value;
         if (exports?.DocumentDiffHunks is null ||
             oldLength is < 0 or > 131072 || newLength is < 0 or > 131072 ||
-            oldTokens.Count>512 || newTokens.Count>512 ||
-            (long)oldTokens.Count*newTokens.Count>100_000 ||
+            oldTokens.Count>1024 || newTokens.Count>1024 ||
+            (long)oldTokens.Count*newTokens.Count>1_000_000 ||
             oldTokens.Any(t=>t.Start<0 || t.End<t.Start || t.End>oldLength ||
                 t.Key is null || t.Key.Length>8192) ||
             newTokens.Any(t=>t.Start<0 || t.End<t.Start || t.End>newLength ||
