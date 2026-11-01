@@ -126,6 +126,32 @@ mod tests {
         );
     }
     #[test]
+    fn supports_seven_hundred_token_review_without_managed_fallback() {
+        let old = (0..700)
+            .map(|i| t(i * 3, i * 3 + 1, &format!("unit{i}")))
+            .collect::<Vec<_>>();
+        let mut new = old.clone();
+        new[350].key = "revised".into();
+        let req = Input {
+            old_length: 2100,
+            new_length: 2100,
+            old,
+            new,
+        };
+        assert!(validate(&req));
+        assert_eq!(
+            select(&req).hunks,
+            vec![Hunk {
+                old_start: 1050,
+                old_end: 1051,
+                new_start: 1050,
+                new_end: 1051,
+                hunk_order: 350
+            }]
+        );
+    }
+
+    #[test]
     fn insertion_when_other_empty() {
         let req = Input {
             old_length: 0,
