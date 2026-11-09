@@ -3709,25 +3709,16 @@ public sealed class NativeComparisonEngine : IComparisonEngine
     internal static long TokenMatchRustMismatches =>
         System.Threading.Interlocked.Read(ref _tokenMatchRustMismatches);
 
+    // Rust owns the token longest-block matcher. The original managed
+    // algorithm is retained only as an independent regression-test oracle.
     private static List<(int A, int B, int Size)> MatcherBlocks(
         IReadOnlyList<string> a, IReadOnlyList<string> b)
     {
         try
         {
-            var rust=NativeCodeVersionComparer.MatchDocumentTokenBlocks(a,b);
-            if (rust is null) return MatcherBlocksCSharp(a,b);
-            if (Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_REQUIRE_NATIVE")=="1" ||
-                Environment.GetEnvironmentVariable("DOCUMENTCOMPARE_VERIFY_DOCUMENT_MATCHES")=="1")
-            {
-                var reference=MatcherBlocksCSharp(a,b);
-                if (rust.Count!=reference.Count ||
-                    rust.Where((x,i)=>x.A!=reference[i].A ||
-                        x.B!=reference[i].B || x.Size!=reference[i].Size).Any())
-                {
-                    System.Threading.Interlocked.Increment(ref _tokenMatchRustMismatches);
-                    return reference;
-                }
-            }
+            var rust=NativeCodeVersionComparer.MatchDocumentTokenBlocks(a,b)
+                ?? throw new InvalidDataException(
+                    "Rust token matcher unavailable or input unsupported");
             System.Threading.Interlocked.Increment(ref _tokenMatchRustMatches);
             return rust.Select(x=>(x.A,x.B,x.Size)).ToList();
         }
@@ -3735,67 +3726,8 @@ public sealed class NativeComparisonEngine : IComparisonEngine
             System.Text.Json.JsonException or ArgumentException or OverflowException)
         {
             System.Threading.Interlocked.Increment(ref _tokenMatchRustMismatches);
-            return MatcherBlocksCSharp(a,b);
+            throw new InvalidDataException("Rust token matcher failed",ex);
         }
-    }
-
-    private static List<(int A, int B, int Size)> MatcherBlocksCSharp(
-        IReadOnlyList<string> a, IReadOnlyList<string> b)
-    {
-        var b2j = new Dictionary<string, List<int>>(StringComparer.Ordinal);
-        for (var j = 0; j < b.Count; j++)
-        {
-            if (!b2j.TryGetValue(b[j], out var list)) b2j[b[j]] = list = new List<int>();
-            list.Add(j);
-        }
-        var queue = new Stack<(int Alo, int Ahi, int Blo, int Bhi)>();
-        queue.Push((0, a.Count, 0, b.Count));
-        var found = new List<(int A, int B, int Size)>();
-        while (queue.Count > 0)
-        {
-            var (alo, ahi, blo, bhi) = queue.Pop();
-            var bestI = alo; var bestJ = blo; var bestSize = 0;
-            var j2len = new Dictionary<int, int>();
-            var next = new Dictionary<int, int>();
-            for (var i = alo; i < ahi; i++)
-            {
-                next.Clear();
-                if (b2j.TryGetValue(a[i], out var js))
-                {
-                    foreach (var j in js)
-                    {
-                        if (j < blo) continue;
-                        if (j >= bhi) break;
-                        var k = (j2len.TryGetValue(j - 1, out var prev) ? prev : 0) + 1;
-                        next[j] = k;
-                        if (k > bestSize) { bestI = i - k + 1; bestJ = j - k + 1; bestSize = k; }
-                    }
-                }
-                (j2len, next) = (next, j2len);
-            }
-            if (bestSize == 0) continue;
-            found.Add((bestI, bestJ, bestSize));
-            if (alo < bestI && blo < bestJ) queue.Push((alo, bestI, blo, bestJ));
-            if (bestI + bestSize < ahi && bestJ + bestSize < bhi)
-                queue.Push((bestI + bestSize, ahi, bestJ + bestSize, bhi));
-        }
-        found.Sort((x, y) => x.A != y.A ? x.A.CompareTo(y.A) : x.B.CompareTo(y.B));
-        var merged = new List<(int A, int B, int Size)>();
-        foreach (var block in found)
-        {
-            if (merged.Count > 0)
-            {
-                var last = merged[^1];
-                if (last.A + last.Size == block.A && last.B + last.Size == block.B)
-                {
-                    merged[^1] = (last.A, last.B, last.Size + block.Size);
-                    continue;
-                }
-            }
-            merged.Add(block);
-        }
-        merged.Add((a.Count, b.Count, 0));
-        return merged;
     }
 
     private static List<(int A, int B)> MatcherPairs(IReadOnlyList<string> a, IReadOnlyList<string> b)

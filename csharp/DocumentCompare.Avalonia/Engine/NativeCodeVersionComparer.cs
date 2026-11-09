@@ -1454,12 +1454,37 @@ public static class NativeCodeVersionComparer
         ArgumentNullException.ThrowIfNull(newTokens);
         var exports=Native.Value;
         if (exports?.DocumentTokenMatcher is null ||
-            oldTokens.Count>512 || newTokens.Count>512 ||
-            (long)oldTokens.Count * newTokens.Count>100_000 ||
+            oldTokens.Count>1024 || newTokens.Count>1024 ||
+            (long)oldTokens.Count * newTokens.Count>1_000_000 ||
             oldTokens.Any(t=>t is null || t.Length>2048) ||
             newTokens.Any(t=>t is null || t.Length>2048))
             return null;
-        var bytes=JsonSerializer.SerializeToUtf8Bytes(new {old=oldTokens,@new=newTokens});
+        // JSON cannot safely transport isolated UTF-16 surrogate code units.
+        // BaseMapBoundary uses char.ToString() for each UTF-16 code unit, so
+        // distinct surrogate halves can otherwise collapse to the same
+        // replacement character and produce false Rust matching blocks.
+        // Encode *all* tokens on both sides when any contains a surrogate.
+        // The fixed-width UTF-16 hex key is injective for .NET string values.
+        static string Utf16Key(string value)
+        {
+            return string.Create(value.Length*4,value,static (output,input)=>
+            {
+                const string hex="0123456789ABCDEF";
+                for(var i=0;i<input.Length;i++)
+                {
+                    var code=(int)input[i];
+                    output[i*4]=hex[code>>12];
+                    output[i*4+1]=hex[(code>>8)&15];
+                    output[i*4+2]=hex[(code>>4)&15];
+                    output[i*4+3]=hex[code&15];
+                }
+            });
+        }
+        var needsUtf16Keys=oldTokens.Concat(newTokens)
+            .Any(text=>text.Any(char.IsSurrogate));
+        var wireOld=needsUtf16Keys?oldTokens.Select(Utf16Key).ToArray():oldTokens.ToArray();
+        var wireNew=needsUtf16Keys?newTokens.Select(Utf16Key).ToArray():newTokens.ToArray();
+        var bytes=JsonSerializer.SerializeToUtf8Bytes(new {old=wireOld,@new=wireNew});
         if (bytes.Length>2*1024*1024) return null;
         var status=exports.DocumentTokenMatcher(bytes,(nuint)bytes.Length,out var output);
         try

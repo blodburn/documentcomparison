@@ -4615,11 +4615,72 @@ if (NativeCodeVersionComparer.IsAvailable)
     Console.WriteLine($"PASS RUST FULL DOCX TABLE CORRESPONDENCE {tableMatches} actual comparisons; 0 drift");
 }
 
+// Frozen managed longest-contiguous-block oracle. Keep this independent
+// baseline in regression tests; production matching is now Rust-only.
+static (int A,int B,int Size)[] ManagedTokenBlocks(
+    IReadOnlyList<string> a,IReadOnlyList<string> b)
+{
+    var b2j=new Dictionary<string,List<int>>(StringComparer.Ordinal);
+    for(var j=0;j<b.Count;j++)
+    {
+        if(!b2j.TryGetValue(b[j],out var list))
+            b2j[b[j]]=list=new List<int>();
+        list.Add(j);
+    }
+    var queue=new Stack<(int Alo,int Ahi,int Blo,int Bhi)>();
+    queue.Push((0,a.Count,0,b.Count));
+    var found=new List<(int A,int B,int Size)>();
+    while(queue.Count>0)
+    {
+        var (alo,ahi,blo,bhi)=queue.Pop();
+        var bestI=alo;var bestJ=blo;var bestSize=0;
+        var j2len=new Dictionary<int,int>();
+        var next=new Dictionary<int,int>();
+        for(var i=alo;i<ahi;i++)
+        {
+            next.Clear();
+            if(b2j.TryGetValue(a[i],out var js))
+                foreach(var j in js)
+                {
+                    if(j<blo)continue;
+                    if(j>=bhi)break;
+                    var k=(j2len.TryGetValue(j-1,out var prev)?prev:0)+1;
+                    next[j]=k;
+                    if(k>bestSize)
+                    {
+                        bestI=i-k+1;bestJ=j-k+1;bestSize=k;
+                    }
+                }
+            (j2len,next)=(next,j2len);
+        }
+        if(bestSize==0)continue;
+        found.Add((bestI,bestJ,bestSize));
+        if(alo<bestI&&blo<bestJ)queue.Push((alo,bestI,blo,bestJ));
+        if(bestI+bestSize<ahi&&bestJ+bestSize<bhi)
+            queue.Push((bestI+bestSize,ahi,bestJ+bestSize,bhi));
+    }
+    found.Sort((x,y)=>x.A!=y.A?x.A.CompareTo(y.A):x.B.CompareTo(y.B));
+    var merged=new List<(int A,int B,int Size)>();
+    foreach(var block in found)
+    {
+        if(merged.Count>0)
+        {
+            var last=merged[^1];
+            if(last.A+last.Size==block.A&&last.B+last.Size==block.B)
+            {
+                merged[^1]=(last.A,last.B,last.Size+block.Size);
+                continue;
+            }
+        }
+        merged.Add(block);
+    }
+    merged.Add((a.Count,b.Count,0));
+    return merged.ToArray();
+}
+
 // Entire token-anchor longest-block matcher against frozen C# reference.
 if (NativeCodeVersionComparer.IsAvailable)
 {
-    var method=typeof(NativeComparisonEngine).GetMethod("MatcherBlocksCSharp",
-        BindingFlags.NonPublic|BindingFlags.Static)!;
     var live=typeof(NativeComparisonEngine).GetMethod("MatcherBlocks",
         BindingFlags.NonPublic|BindingFlags.Static)!;
     var accepts=typeof(NativeComparisonEngine).GetProperty("TokenMatchRustMatches",
@@ -4647,7 +4708,7 @@ if (NativeCodeVersionComparer.IsAvailable)
             .Select(_=>tokens[rng.Next(tokens.Length)]).ToArray();
         var after=Enumerable.Range(0,rng.Next(0,38))
             .Select(_=>tokens[rng.Next(tokens.Length)]).ToArray();
-        var canonical=CSharpBlockPairs(method,before,after);
+        var canonical=ManagedTokenBlocks(before,after);
         var rust=NativeCodeVersionComparer.MatchDocumentTokenBlocks(before,after);
         Check(rust is not null && canonical.Length==rust.Count &&
             canonical.Zip(rust).All(pair=>
@@ -4660,6 +4721,37 @@ if (NativeCodeVersionComparer.IsAvailable)
             "live Rust token matcher changed canonical word-review span: "+n);
         checkedCases++;
     }
+    // Previous 512-token ceiling blocked this real-sized review case.
+    var largeTokenOld=Enumerable.Range(0,700).Select(i=>$"Clause{i}").ToArray();
+    var largeTokenNew=(string[])largeTokenOld.Clone();
+    largeTokenNew[351]="Revised351";
+    var largeTokenReference=ManagedTokenBlocks(largeTokenOld,largeTokenNew);
+    var largeTokenRust=NativeCodeVersionComparer.MatchDocumentTokenBlocks(largeTokenOld,largeTokenNew);
+    Check(largeTokenRust is not null && largeTokenReference.Length==largeTokenRust.Count &&
+        largeTokenReference.Zip(largeTokenRust).All(pair=>
+            pair.First.A==pair.Second.A&&pair.First.B==pair.Second.B&&
+            pair.First.Size==pair.Second.Size),
+        "700-token Rust longest-block parity must match independent C# reference");
+    Check(CSharpBlockPairs(live,largeTokenOld,largeTokenNew).SequenceEqual(largeTokenReference),
+        "700-token production Rust matcher must preserve managed block offsets");
+    checkedCases++;
+    // MapBoundary supplies individual UTF-16 code units. Isolated
+    // surrogate halves must retain their original identity through JSON FFI.
+    var surrogateBefore=new[]{"A","\uD83D","\uDE00","B"};
+    var surrogateAfter=new[]{"A","\uD83D","\uDE03","B"};
+    var surrogateExpected=ManagedTokenBlocks(surrogateBefore,surrogateAfter);
+    var surrogateRust=NativeCodeVersionComparer.MatchDocumentTokenBlocks(
+        surrogateBefore,surrogateAfter);
+    Check(surrogateRust is not null &&
+        surrogateExpected.Length==surrogateRust.Count &&
+        surrogateExpected.Zip(surrogateRust).All(pair=>
+            pair.First.A==pair.Second.A &&
+            pair.First.B==pair.Second.B &&
+            pair.First.Size==pair.Second.Size) &&
+        CSharpBlockPairs(live,surrogateBefore,surrogateAfter)
+            .SequenceEqual(surrogateExpected),
+        "Rust UTF-16 surrogate token transport changed character matching");
+    checkedCases++;
     Check(Count(accepts)-start==checkedCases && Count(rejects)==mismatchStart,
         "Rust token matcher must be adopted for all bounded test pairs, zero mismatch");
     Console.WriteLine($"PASS RUST TOKEN LONGEST BLOCK CSHARP PARITY {checkedCases}/{checkedCases}");
@@ -5338,10 +5430,7 @@ if (NativeCodeVersionComparer.IsAvailable)
 {
     var core=typeof(NativeComparisonEngine);
     var lexer=core.GetMethod("LexTokens",BindingFlags.NonPublic|BindingFlags.Static)!;
-    // Keep the original managed Hunk oracle in tests only. Use the
-    // independent managed MatcherBlocksCSharp to avoid mirroring Rust.
-    var managedBlocks=core.GetMethod("MatcherBlocksCSharp",
-        BindingFlags.NonPublic|BindingFlags.Static)!;
+    // Hunk oracle reuses the independent test-only token matcher.
     var managedTokenKey=core.GetMethod("TokenKey",
         BindingFlags.NonPublic|BindingFlags.Static)!;
     var native=core.GetMethod("SelectReviewHunks",
@@ -5358,10 +5447,9 @@ if (NativeCodeVersionComparer.IsAvailable)
         var b=Spans(newTokens);
         string Key(string value)=>(string)managedTokenKey.Invoke(
             null,new object[]{value})!;
-        var blockPairs=((System.Collections.IEnumerable)managedBlocks.Invoke(
-            null,new object[]{a.Select(x=>Key(x.Text)).ToArray(),
-                              b.Select(x=>Key(x.Text)).ToArray()})!)
-            .Cast<(int A,int B,int Size)>().ToArray();
+        var blockPairs=ManagedTokenBlocks(
+            a.Select(x=>Key(x.Text)).ToArray(),
+            b.Select(x=>Key(x.Text)).ToArray());
         var anchors=new List<(int A,int B)>{(-1,-1)};
         foreach(var block in blockPairs)
             for(var k=0;k<block.Size;k++)
