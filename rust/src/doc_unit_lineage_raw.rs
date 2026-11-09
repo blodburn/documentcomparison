@@ -606,11 +606,6 @@ mod tests {
         assert!(validate(&input));
         let matches = match_raw(&input).matches;
         assert_eq!(matches.len(), 80);
-        assert!(matches.iter().all(|pair| {
-            pair.base == pair.other
-                && pair.base != 2 + 5 * (pair.base.saturating_sub(2) / 5)
-                    || pair.base > 77
-        }) == false); // verify the complete surviving set below
         let expected = (0..96)
             .filter(|i| !(0..16).any(|k| *i == 2 + 5 * k))
             .collect::<Vec<_>>();
