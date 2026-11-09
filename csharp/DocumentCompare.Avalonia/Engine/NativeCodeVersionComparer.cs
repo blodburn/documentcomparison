@@ -1467,9 +1467,9 @@ public static class NativeCodeVersionComparer
         // The fixed-width UTF-16 hex key is injective for .NET string values.
         static string Utf16Key(string value)
         {
-            const string hex="0123456789ABCDEF";
             return string.Create(value.Length*4,value,static (output,input)=>
             {
+                const string hex="0123456789ABCDEF";
                 for(var i=0;i<input.Length;i++)
                 {
                     var code=(int)input[i];
