@@ -1454,8 +1454,8 @@ public static class NativeCodeVersionComparer
         ArgumentNullException.ThrowIfNull(newTokens);
         var exports=Native.Value;
         if (exports?.DocumentTokenMatcher is null ||
-            oldTokens.Count>512 || newTokens.Count>512 ||
-            (long)oldTokens.Count * newTokens.Count>100_000 ||
+            oldTokens.Count>1024 || newTokens.Count>1024 ||
+            (long)oldTokens.Count * newTokens.Count>1_000_000 ||
             oldTokens.Any(t=>t is null || t.Length>2048) ||
             newTokens.Any(t=>t is null || t.Length>2048))
             return null;
