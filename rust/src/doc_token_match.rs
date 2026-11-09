@@ -22,9 +22,9 @@ pub struct Result {
     pub blocks: Vec<Block>,
 }
 pub fn validate(input: &Input) -> bool {
-    input.old.len() <= 512
-        && input.new.len() <= 512
-        && input.old.len().saturating_mul(input.new.len()) <= 100_000
+    input.old.len() <= 1024
+        && input.new.len() <= 1024
+        && input.old.len().saturating_mul(input.new.len()) <= 1_000_000
         && input
             .old
             .iter()
