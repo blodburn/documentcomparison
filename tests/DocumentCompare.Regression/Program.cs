@@ -4416,6 +4416,10 @@ if (NativeCodeVersionComparer.IsAvailable)
             (char)('a'+(i/(26*26))%26),
             (char)('a'+(i/26)%26),
             (char)('a'+i%26)});
+    static string UniqueReplacementTopic(int i) =>
+        "Obsidian Xylophone zzz"+new string(new[]{
+            (char)('a'+((i-190)/26)%26),
+            (char)('a'+(i-190)%26)});
     object LargeArticles(IReadOnlyList<int> order,bool renumber,int editedIndex=-1)
     {
         var list=(System.Collections.IList)Activator.CreateInstance(rawListType)!;
@@ -4423,7 +4427,7 @@ if (NativeCodeVersionComparer.IsAvailable)
         {
             var i=order[j];
             var number=(renumber?j+1:i+1).ToString();
-            var title=i>=190 ? "Obsidian Xylophone" : UniqueTopic(i);
+            var title=i>=190 ? UniqueReplacementTopic(i) : UniqueTopic(i);
             var body=i>=190 ? $"Xylophone quasar pulsar {i:D3} astrophysics."
                             : $"Clause {i:D3} applies to 개인정보 handling.";
             if(i==editedIndex) body+=" Revised consent handling requirement.";
@@ -4508,6 +4512,36 @@ if (NativeCodeVersionComparer.IsAvailable)
         bidirectionalCount++;
     }
     Console.WriteLine($"PASS RUST LARGE BIDIRECTIONAL ARTICLE CSHARP PARITY {bidirectionalCount}/{bidirectionalCount}");
+    // The 96-article sparse Rust path now handles 12-16 simultaneous
+    // disjoint insertions and deletions. Verify the independent managed
+    // oracle on normal/reversed order, numbering and a surviving body edit.
+    var multiReplacementCases=0;
+    foreach(var changedCount in new[]{12,16})
+    foreach(var reversed in new[]{false,true})
+    foreach(var renumber in new[]{false,true})
+    {
+        var slots=Enumerable.Range(0,changedCount).Select(k=>2+5*k).ToArray();
+        var baseOrder=reversed?largeOrder.Reverse().ToArray():largeOrder;
+        var revisedOrder=baseOrder.Select(i=>{
+            var slot=Array.IndexOf(slots,i);
+            return slot>=0?190+slot:i;
+        }).ToArray();
+        var revised=LargeArticles(revisedOrder,renumber,35);
+        var canonical=Invoke(original,sparseLegalOld,revised);
+        var native=Invoke(active,sparseLegalOld,revised);
+        Check(canonical.Length==96-changedCount &&
+            native.Length==canonical.Length &&
+            canonical.Zip(native).All(pair=>
+                pair.First.Base==pair.Second.Base &&
+                pair.First.Other==pair.Second.Other &&
+                pair.First.Mode==pair.Second.Mode &&
+                Math.Abs(pair.First.Score-pair.Second.Score)<1e-12),
+            "12-16 large disjoint legal replacements must preserve Rust/C# parity: "+
+            changedCount+" reversed="+reversed+" renumber="+renumber);
+        largeCount++;
+        multiReplacementCases++;
+    }
+    Console.WriteLine($"PASS RUST LARGE MULTI-REPLACEMENT CSHARP PARITY {multiReplacementCases}/{multiReplacementCases}");
     // Two-sided title replacement, simultaneous insert/delete and edited
     // bodies require the full Rust lineage DP rather than sparse title anchors.
     // This 60/64-unit range previously rejected Rust raw matching.

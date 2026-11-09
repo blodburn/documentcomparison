@@ -344,7 +344,7 @@ fn large_exact_reorder(v: &Input) -> Option<doc_unit_lineage::Result> {
         let inserted = (0..m)
             .filter(|j| !matched_new.contains(j))
             .collect::<Vec<_>>();
-        if deleted.is_empty() || inserted.is_empty() || deleted.len() > 8 || inserted.len() > 8 {
+        if deleted.is_empty() || inserted.is_empty() || deleted.len() > 16 || inserted.len() > 16 {
             return None;
         }
         for &i in &deleted {
@@ -581,6 +581,59 @@ mod tests {
                 m.base != 33 && m.other == m.base && m.score == 1.0 && m.mode == "same"
             })
         );
+    }
+
+    // Sixteen disjoint replacements in a 96-article document are proved
+    // unmatched by the original C# DP and residual move decisions.
+    #[test]
+    fn large_article_sixteen_disjoint_replacements_use_sparse_rust() {
+        let old: Vec<_> = (0..96).map(titled).collect();
+        let mut new = old.clone();
+        for k in 0..16 {
+            let i = 2 + 5 * k;
+            let suffix = format!(
+                "zzz{}{}",
+                (b'a' + (k / 26) as u8) as char,
+                (b'a' + (k % 26) as u8) as char
+            );
+            new[i] = u(
+                &(i + 1).to_string(),
+                &format!("Obsidian Xylophone {suffix}"),
+                "Pulsar nebula calcium heliosphere",
+            );
+        }
+        let input = Input { old, new };
+        assert!(validate(&input));
+        let matches = match_raw(&input).matches;
+        assert_eq!(matches.len(), 80);
+        let expected = (0..96)
+            .filter(|i| !(0..16).any(|k| *i == 2 + 5 * k))
+            .collect::<Vec<_>>();
+        assert_eq!(matches.iter().map(|m| m.base).collect::<Vec<_>>(), expected);
+        assert!(
+            matches
+                .iter()
+                .all(|m| m.base == m.other && m.score == 1.0 && m.mode == "same")
+        );
+    }
+
+    #[test]
+    fn large_article_seventeen_disjoint_replacements_remain_guarded() {
+        let old: Vec<_> = (0..96).map(titled).collect();
+        let mut new = old.clone();
+        for k in 0..17 {
+            let i = 2 + 5 * k;
+            new[i] = u(
+                &(i + 1).to_string(),
+                &format!(
+                    "Obsidian Xylophone zzz{}{}",
+                    (b'a' + (k / 26) as u8) as char,
+                    (b'a' + (k % 26) as u8) as char
+                ),
+                "Pulsar nebula calcium heliosphere",
+            );
+        }
+        assert!(!validate(&Input { old, new }));
     }
 
     #[test]
