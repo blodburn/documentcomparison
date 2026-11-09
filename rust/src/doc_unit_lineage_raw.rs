@@ -610,9 +610,11 @@ mod tests {
             .filter(|i| !(0..16).any(|k| *i == 2 + 5 * k))
             .collect::<Vec<_>>();
         assert_eq!(matches.iter().map(|m| m.base).collect::<Vec<_>>(), expected);
-        assert!(matches
-            .iter()
-            .all(|m| m.base == m.other && m.score == 1.0 && m.mode == "same"));
+        assert!(
+            matches
+                .iter()
+                .all(|m| m.base == m.other && m.score == 1.0 && m.mode == "same")
+        );
     }
 
     #[test]
@@ -623,8 +625,11 @@ mod tests {
             let i = 2 + 5 * k;
             new[i] = u(
                 &(i + 1).to_string(),
-                &format!("Obsidian Xylophone zzz{}{}", (b'a' + (k / 26) as u8) as char,
-                    (b'a' + (k % 26) as u8) as char),
+                &format!(
+                    "Obsidian Xylophone zzz{}{}",
+                    (b'a' + (k / 26) as u8) as char,
+                    (b'a' + (k % 26) as u8) as char
+                ),
                 "Pulsar nebula calcium heliosphere",
             );
         }
