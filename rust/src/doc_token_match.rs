@@ -29,7 +29,7 @@ pub fn validate(input: &Input) -> bool {
             .old
             .iter()
             .chain(input.new.iter())
-            .all(|s| s.len() <= 4096)
+            .all(|s| s.len() <= 8192)
 }
 pub fn blocks(input: &Input) -> Result {
     let (old, new) = (&input.old, &input.new);
