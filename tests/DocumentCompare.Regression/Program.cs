@@ -4735,6 +4735,23 @@ if (NativeCodeVersionComparer.IsAvailable)
     Check(CSharpBlockPairs(live,largeTokenOld,largeTokenNew).SequenceEqual(largeTokenReference),
         "700-token production Rust matcher must preserve managed block offsets");
     checkedCases++;
+    // MapBoundary supplies individual UTF-16 code units. Isolated
+    // surrogate halves must retain their original identity through JSON FFI.
+    var surrogateBefore=new[]{"A","\uD83D","\uDE00","B"};
+    var surrogateAfter=new[]{"A","\uD83D","\uDE03","B"};
+    var surrogateExpected=ManagedTokenBlocks(surrogateBefore,surrogateAfter);
+    var surrogateRust=NativeCodeVersionComparer.MatchDocumentTokenBlocks(
+        surrogateBefore,surrogateAfter);
+    Check(surrogateRust is not null &&
+        surrogateExpected.Length==surrogateRust.Count &&
+        surrogateExpected.Zip(surrogateRust).All(pair=>
+            pair.First.A==pair.Second.A &&
+            pair.First.B==pair.Second.B &&
+            pair.First.Size==pair.Second.Size) &&
+        CSharpBlockPairs(live,surrogateBefore,surrogateAfter)
+            .SequenceEqual(surrogateExpected),
+        "Rust UTF-16 surrogate token transport changed character matching");
+    checkedCases++;
     Check(Count(accepts)-start==checkedCases && Count(rejects)==mismatchStart,
         "Rust token matcher must be adopted for all bounded test pairs, zero mismatch");
     Console.WriteLine($"PASS RUST TOKEN LONGEST BLOCK CSHARP PARITY {checkedCases}/{checkedCases}");
