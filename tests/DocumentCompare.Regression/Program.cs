@@ -4722,17 +4722,17 @@ if (NativeCodeVersionComparer.IsAvailable)
         checkedCases++;
     }
     // Previous 512-token ceiling blocked this real-sized review case.
-    var largeOld=Enumerable.Range(0,700).Select(i=>$"Clause{i}").ToArray();
-    var largeNew=(string[])largeOld.Clone();
-    largeNew[351]="Revised351";
-    var largeCanonical=ManagedTokenBlocks(largeOld,largeNew);
-    var largeRust=NativeCodeVersionComparer.MatchDocumentTokenBlocks(largeOld,largeNew);
-    Check(largeRust is not null && largeCanonical.Length==largeRust.Count &&
-        largeCanonical.Zip(largeRust).All(pair=>
+    var largeTokenOld=Enumerable.Range(0,700).Select(i=>$"Clause{i}").ToArray();
+    var largeTokenNew=(string[])largeTokenOld.Clone();
+    largeTokenNew[351]="Revised351";
+    var largeTokenReference=ManagedTokenBlocks(largeTokenOld,largeTokenNew);
+    var largeTokenRust=NativeCodeVersionComparer.MatchDocumentTokenBlocks(largeTokenOld,largeTokenNew);
+    Check(largeTokenRust is not null && largeTokenReference.Length==largeTokenRust.Count &&
+        largeTokenReference.Zip(largeTokenRust).All(pair=>
             pair.First.A==pair.Second.A&&pair.First.B==pair.Second.B&&
             pair.First.Size==pair.Second.Size),
         "700-token Rust longest-block parity must match independent C# reference");
-    Check(CSharpBlockPairs(live,largeOld,largeNew).SequenceEqual(largeCanonical),
+    Check(CSharpBlockPairs(live,largeTokenOld,largeTokenNew).SequenceEqual(largeTokenReference),
         "700-token production Rust matcher must preserve managed block offsets");
     checkedCases++;
     Check(Count(accepts)-start==checkedCases && Count(rejects)==mismatchStart,
