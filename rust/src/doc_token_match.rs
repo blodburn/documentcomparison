@@ -106,6 +106,42 @@ pub fn blocks(input: &Input) -> Result {
 mod tests {
     use super::*;
     #[test]
+    fn seven_hundred_token_review_matches_reference_blocks() {
+        let old = (0..700).map(|i| format!("unit{i}")).collect::<Vec<_>>();
+        let mut new = old.clone();
+        new[351] = "revised351".into();
+        let input = Input { old, new };
+        assert!(validate(&input));
+        assert_eq!(
+            blocks(&input).blocks,
+            vec![
+                Block {
+                    a: 0,
+                    b: 0,
+                    size: 351
+                },
+                Block {
+                    a: 352,
+                    b: 352,
+                    size: 348
+                },
+                Block {
+                    a: 700,
+                    b: 700,
+                    size: 0
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn dense_token_review_limit_is_bounded() {
+        let old = vec!["repeated".to_string(); 1024];
+        let new = vec!["repeated".to_string(); 1024];
+        assert!(!validate(&Input { old, new }));
+    }
+
+    #[test]
     fn stable_tie_and_reordering() {
         let input = Input {
             old: vec!["a", "b", "a", "c"]
